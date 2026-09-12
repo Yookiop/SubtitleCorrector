@@ -82,6 +82,7 @@
       case 'probe': return Promise.resolve(probe());
       case 'apply': return apply(d.payload || {});
       case 'setOptions': return Promise.resolve(setPageOptions(d.payload || {}));
+      case 'setSubtitlesOff': return Promise.resolve(setSubtitlesOff(!!(d.payload && d.payload.off), 'content'));
       case 'state': return Promise.resolve({ videoId: currentVideoId(), current: readCurrentTrack(), captionsOn: captionsOn(), adShowing: isAd() });
       default: return Promise.resolve({ ok: false, reason: 'unknown-request:' + d.type });
     }
@@ -611,6 +612,8 @@
      captioninstellingen (player.getSubtitlesUserSettings), de grootte is een
      percentage bovenop YouTube's size-stand. */
   var BOOST_SIZE_PCT = 100;
+  var BOOST_LINES = 2;         // max. regels in de eigen weergave (1 of 2; optie, default 2)
+  var SUBTITLES_OFF = false;   // per-tab kill switch (knop in de controlbar)
   var boostStyle = { at: 0, textColor: 'rgba(255,255,255,1)', bgColor: 'rgba(0,0,0,1)', increment: 0, applied: '' };
 
   function refreshBoostStyle(force) {
@@ -636,6 +639,7 @@
     var key = Math.round(px * 10) + '|' + boostStyle.textColor + '|' + boostStyle.bgColor;
     if (key === boostStyle.applied) return;
     boostStyle.applied = key;
+    boost.cueKey = null; // stijl/grootte gewijzigd -> cue opnieuw opbouwen (en meten)
     el.style.fontSize = (Math.round(px * 10) / 10) + 'px';
     if (boost.box) {
       boost.box.style.color = boostStyle.textColor;
@@ -708,6 +712,51 @@
     hideBoost(false);
   }
 
+  /* ------------------------------------------------ *
+   * Regelafbreking (optie "Ondertitelregels": 1 of 2)
+   * ------------------------------------------------ */
+  var measureCanvas = null;
+  var measureCtx = null;
+
+  function textWidthPx(str, font) {
+    try {
+      if (!measureCtx) {
+        measureCanvas = document.createElement('canvas');
+        measureCtx = measureCanvas.getContext('2d');
+      }
+      if (measureCtx.font !== font) measureCtx.font = font;
+      return measureCtx.measureText(String(str)).width;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  /**
+   * Meet de volledige cue en zet de boxbreedte op het gekozen aantal regels
+   * (`L.captionBoxWidth`). Alle woorden staan al (verborgen) in de DOM, dus de
+   * regelafbreking wordt hier één keer bepaald en blijft daarna staan: woord 1
+   * verspringt nooit en de tekst wikkelt in maximaal 1 of 2 regels.
+   */
+  function applyCueWidth(ev) {
+    var box = boost.box;
+    if (!box || typeof L.captionBoxWidth !== 'function') return;
+    var p = player();
+    var hostW = (p && p.clientWidth) || box.offsetWidth || 400;
+    var maxW = Math.max(160, Math.round(hostW * 0.92));
+    var cs = window.getComputedStyle(box);
+    var font = cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
+    var text = String((ev && (ev.raw || ev.text)) || '').replace(/\s*\n\s*/g, ' ').replace(/\s+/g, ' ').trim();
+    var total = textWidthPx(text, font);
+    var longest = 0;
+    var words = text.split(' ');
+    for (var i = 0; i < words.length; i++) {
+      var w = textWidthPx(words[i], font);
+      if (w > longest) longest = w;
+    }
+    var px = L.captionBoxWidth(BOOST_LINES, total, longest, maxW, 4);
+    box.style.maxWidth = px > 0 ? Math.round(px) + 'px' : '';
+  }
+
   /**
    * Bouw de caption voor één cue. Alle woorden staan er in één keer in (met
    * hun vaste plek), maar zijn verborgen tot hun tijd; per frame toggelen we
@@ -746,6 +795,7 @@
       boost.cueSpans.push({ el: el, t: parts[s].t });
     }
     boost.cueShown = 0;
+    applyCueWidth(ev);
   }
 
   function renderBoost() {
@@ -803,7 +853,7 @@
   }
 
   function boostTick() {
-    if (!CAPTION_BOOST_ENABLED) { if (boost.rafActive) stopBoost(); return; }
+    if (!CAPTION_BOOST_ENABLED || SUBTITLES_OFF) { if (boost.rafActive) stopBoost(); return; }
     var cur = readCurrentTrack();
     if (!cur || !boostSupported(cur) || isAd()) { if (boost.rafActive) stopBoost(); return; }
     var id = currentVideoId();
@@ -830,6 +880,139 @@
     }
   }
 
+  /* ------------------------------------------------------------------ *
+   * Per-tab kill switch: een knop in de controlbar (links van de ondertitel-
+   * knop, in de groep van het tandwiel) waarmee je de ondertiteling van dít
+   * tabblad volledig uitzet: captions uit, Caption Boost uit en de content
+   * script stuurt niets meer naar de bridge. Nog een klik (of de hotkey)
+   * zet hem weer aan.
+   * ------------------------------------------------------------------ */
+  var PLAYER_BUTTON_ID = 'sc-cc-toggle';
+
+  function turnSubtitlesOff() {
+    var p = player();
+    try { if (p && p.setOption) p.setOption('captions', 'track', {}); } catch (e) { /* ignore */ }
+    stopBoost();
+  }
+
+  function setSubtitlesOff(off, source) {
+    SUBTITLES_OFF = !!off;
+    if (SUBTITLES_OFF) turnSubtitlesOff();
+    updatePlayerButton();
+    if (source === 'button') post({ type: 'subtitlesOffChanged', off: SUBTITLES_OFF, videoId: currentVideoId() });
+    return { subtitlesOff: SUBTITLES_OFF };
+  }
+
+  function ensureButtonStyle() {
+    if (document.getElementById('sc-cc-toggle-style')) return;
+    try {
+      var st = document.createElement('style');
+      st.id = 'sc-cc-toggle-style';
+      st.textContent =
+        '#' + PLAYER_BUTTON_ID + ' .sc-cc-slash{display:none}' +
+        '#' + PLAYER_BUTTON_ID + '.sc-off .sc-cc-slash{display:block}' +
+        '#' + PLAYER_BUTTON_ID + '.sc-off svg{opacity:.55}';
+      (document.head || document.documentElement).appendChild(st);
+    } catch (e) { /* ignore */ }
+  }
+
+  function updatePlayerButton(btn) {
+    btn = btn || document.getElementById(PLAYER_BUTTON_ID);
+    if (!btn) return;
+    var off = SUBTITLES_OFF;
+    if (btn.classList.contains('sc-off') !== off) btn.classList.toggle('sc-off', off);
+    var title = off
+      ? 'Ondertiteling weer aanzetten voor dit tabblad (Subtitle Corrector)'
+      : 'Ondertiteling uitzetten voor dit tabblad (Subtitle Corrector)';
+    if (btn.getAttribute('title') !== title) {
+      btn.setAttribute('title', title);
+      btn.setAttribute('aria-label', title);
+      btn.setAttribute('aria-pressed', off ? 'true' : 'false');
+    }
+  }
+
+  /**
+   * SVG-icon van de knop. Bewust opgebouwd met DOM-API's en niet met
+   * innerHTML: YouTube handhaaft Trusted Types in de pagina, dus een
+   * innerHTML-assignment wordt daar geblokkeerd (geverifieerd 2026-09-12).
+   */
+  function buildButtonIcon(btn) {
+    var NS = 'http://www.w3.org/2000/svg';
+    var svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('height', '100%');
+    svg.setAttribute('width', '100%');
+    svg.setAttribute('viewBox', '0 0 36 36');
+    var rect = document.createElementNS(NS, 'rect');
+    rect.setAttribute('x', '7');
+    rect.setAttribute('y', '9.5');
+    rect.setAttribute('width', '22');
+    rect.setAttribute('height', '17');
+    rect.setAttribute('rx', '3');
+    rect.setAttribute('fill', 'none');
+    rect.setAttribute('stroke', 'currentColor');
+    rect.setAttribute('stroke-width', '2');
+    svg.appendChild(rect);
+    var text = document.createElementNS(NS, 'text');
+    text.setAttribute('x', '18');
+    text.setAttribute('y', '23');
+    text.setAttribute('text-anchor', 'middle');
+    text.setAttribute('font-size', '10.5');
+    text.setAttribute('font-weight', '700');
+    text.setAttribute('fill', 'currentColor');
+    text.setAttribute('font-family', 'Roboto,Arial,sans-serif');
+    text.textContent = 'CC';
+    svg.appendChild(text);
+    var slash = document.createElementNS(NS, 'line');
+    slash.setAttribute('class', 'sc-cc-slash');
+    slash.setAttribute('x1', '9.5');
+    slash.setAttribute('y1', '27');
+    slash.setAttribute('x2', '26.5');
+    slash.setAttribute('y2', '9');
+    slash.setAttribute('stroke', '#ff5a5a');
+    slash.setAttribute('stroke-width', '2.6');
+    slash.setAttribute('stroke-linecap', 'round');
+    svg.appendChild(slash);
+    btn.appendChild(svg);
+  }
+
+  function ensurePlayerButton() {
+    var rc = document.querySelector('.ytp-right-controls');
+    if (!rc) return;
+    var btn = document.getElementById(PLAYER_BUTTON_ID);
+    if (!btn) {
+      ensureButtonStyle();
+      btn = document.createElement('button');
+      btn.id = PLAYER_BUTTON_ID;
+      btn.className = 'ytp-button';
+      buildButtonIcon(btn);
+      btn.addEventListener('click', function (ev) {
+        try { ev.preventDefault(); ev.stopPropagation(); } catch (e) { /* ignore */ }
+        setSubtitlesOff(!SUBTITLES_OFF, 'button');
+      }, true);
+    }
+    if (!rc.contains(btn)) {
+      // Zo dicht mogelijk links van het tandwiel (\"links naast het settings
+      // icoontje\"); staat er in de rechtergroep een '<'-knop (playlist /
+      // nieuwe UI), dan komt hij direct links daarvan te staan. De
+      // ondertitelknop (CC) is de terugvaloptie.
+      var anchors = ['.ytp-prev-button', '.ytp-settings-button', '.ytp-subtitles-button'];
+      var target = null;
+      for (var i = 0; i < anchors.length; i++) {
+        var cand = rc.querySelector(anchors[i]);
+        if (!cand) continue;
+        if (cand.offsetParent === null) { if (!target) target = cand; continue; }
+        target = cand;
+        break;
+      }
+      if (target && target.parentNode) target.parentNode.insertBefore(btn, target);
+      else {
+        var left = rc.querySelector('.ytp-right-controls-left') || rc;
+        left.insertBefore(btn, left.firstChild);
+      }
+    }
+    updatePlayerButton(btn);
+  }
+
   function setPageOptions(opts) {
     if (opts && Object.prototype.hasOwnProperty.call(opts, 'captionBoost')) {
       CAPTION_BOOST_ENABLED = !!opts.captionBoost;
@@ -841,7 +1024,12 @@
       if (isFinite(pct)) BOOST_SIZE_PCT = Math.max(50, Math.min(250, pct));
       applyBoostStyle();
     }
-    return { captionBoost: CAPTION_BOOST_ENABLED, captionSize: BOOST_SIZE_PCT };
+    if (opts && Object.prototype.hasOwnProperty.call(opts, 'captionLines')) {
+      var lines = Number(opts.captionLines) === 1 ? 1 : 2;
+      if (lines !== BOOST_LINES) { BOOST_LINES = lines; boost.cueKey = null; }
+      dbg('captionLines', BOOST_LINES);
+    }
+    return { captionBoost: CAPTION_BOOST_ENABLED, captionSize: BOOST_SIZE_PCT, captionLines: BOOST_LINES, subtitlesOff: SUBTITLES_OFF };
   }
 
   installTimedtextHooks();
@@ -897,6 +1085,11 @@
 
     // Caption Boost: eigen weergave aan/uitzetten zodra de juiste track actief is.
     boostTick();
+
+    // Kill switch-knop: aanwezig houden in de controlbar en de ondertitels van
+    // dit tabblad uit laten blijven, ook als YouTube ze opnieuw aanzet.
+    ensurePlayerButton();
+    if (SUBTITLES_OFF && cur) turnSubtitlesOff();
   }
 
   // Poll-ritme: snel als het tabblad zichtbaar is, langzaam op de achtergrond

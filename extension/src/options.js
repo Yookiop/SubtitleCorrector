@@ -17,6 +17,7 @@ const DEFAULTS = {
   audioFallbackInPlaylists: false,
   captionBoost: true,
   captionSize: 100,
+  captionLines: 2,
   bridgeUrl: 'http://127.0.0.1:8791',
   audioSeconds: 5,
   minConfidence: 0.5,
@@ -32,7 +33,7 @@ const BOOL_FIELDS = [
   'keepAudioDuringCapture', 'showToast', 'debug'
 ];
 const TEXT_FIELDS = ['hotkey', 'bridgeUrl'];
-const NUM_FIELDS = ['audioSeconds', 'minConfidence', 'captionSize'];
+const NUM_FIELDS = ['audioSeconds', 'minConfidence', 'captionSize', 'captionLines'];
 
 const $ = (id) => document.getElementById(id);
 
@@ -60,6 +61,7 @@ function collect() {
   out.audioSeconds = Math.max(2, Math.min(10, Math.round(out.audioSeconds || 5)));
   out.minConfidence = Math.max(0, Math.min(1, isFinite(out.minConfidence) ? out.minConfidence : 0.5));
   out.captionSize = Math.max(50, Math.min(250, Math.round(out.captionSize || 100)));
+  out.captionLines = Number(out.captionLines) === 1 ? 1 : 2;
   return out;
 }
 

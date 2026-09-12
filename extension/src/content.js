@@ -27,6 +27,7 @@
     audioFallbackInPlaylists: false,
     captionBoost: true,
     captionSize: 100,
+    captionLines: 2,
     audioSeconds: 5,
     minConfidence: 0.5,
     keepAudioDuringCapture: true,
@@ -48,6 +49,7 @@
     waitingPlayback: null,
     retryCount: 0,
     lastCaptureAt: 0,
+    subtitlesOff: false,
     fixCooldown: Object.create(null)
   };
 
@@ -81,7 +83,7 @@
       });
       if (touched) {
         if (settings.debug !== undefined) ask('setDebug', { value: !!settings.debug }).catch(function () {});
-        ask('setOptions', { captionBoost: !!settings.captionBoost, captionSize: Number(settings.captionSize) || 100 }).catch(function () {});
+        pushPageOptions();
         if (settings.autoApply && settings.enabled) scheduleAuto(state.videoId, autoDelay(600), true);
       }
     });
@@ -128,8 +130,18 @@
         state.videoId = d.videoId;
         state.retryCount = 0;
         state.waitingPlayback = null;
-        setBadge('');
+        setBadge(state.subtitlesOff ? 'off' : '');
         if (settings.autoApply && settings.enabled) scheduleAuto(d.videoId, autoDelay(1800));
+        break;
+
+      case 'subtitlesOffChanged':
+        applySubtitlesOff(!!d.off, 'button');
+        if (!d.off) {
+          var vidOn = d.videoId || state.videoId;
+          delete state.optedOut[vidOn];
+          delete state.fixed[vidOn];
+          if (settings.autoApply && settings.enabled) scheduleAuto(vidOn, autoDelay(600), true);
+        }
         break;
 
       case 'adChanged':
@@ -208,6 +220,61 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * Kill switch per tabblad (het CC-knopje in de speler)
+   *
+   * Staat hij uit, dan doet dit tabblad helemaal niets meer: geen captions,
+   * geen Caption Boost, geen bridge/audio-analyse. De status wordt in de
+   * service worker per tab bewaard, zodat een herlaadbeurt hem niet wist.
+   * ------------------------------------------------------------------ */
+  function pushPageOptions() {
+    ask('setOptions', {
+      captionBoost: !!settings.captionBoost,
+      captionSize: Number(settings.captionSize) || 100,
+      captionLines: Number(settings.captionLines) === 1 ? 1 : 2
+    }).catch(function () {});
+  }
+
+  function setTabDisabledBg(off) {
+    try {
+      chrome.runtime.sendMessage({ type: 'setTabDisabled', off: !!off }, function () { void chrome.runtime.lastError; });
+    } catch (e) { /* ignore */ }
+  }
+
+  function getTabDisabled() {
+    return new Promise(function (resolve) {
+      try {
+        chrome.runtime.sendMessage({ type: 'getTabState' }, function (res) {
+          void chrome.runtime.lastError;
+          resolve(!!(res && res.subtitlesOff));
+        });
+      } catch (e) {
+        resolve(false);
+      }
+    });
+  }
+
+  function applySubtitlesOff(off, source) {
+    state.subtitlesOff = !!off;
+    setTabDisabledBg(state.subtitlesOff);
+    setBadge(state.subtitlesOff ? 'off' : '');
+    if (state.subtitlesOff) {
+      clearTimeout(state.autoTimer);
+      clearTimeout(state.retry);
+      state.waitingPlayback = null;
+    }
+    if (source === 'button' && settings.showToast) {
+      toast(state.subtitlesOff ? 'Ondertitels uit voor dit tabblad' : 'Ondertitels weer aan voor dit tabblad',
+        state.subtitlesOff ? 'warn' : 'ok');
+    }
+  }
+
+  function clearSubtitlesOff(source) {
+    if (!state.subtitlesOff) return Promise.resolve();
+    applySubtitlesOff(false, source);
+    return ask('setSubtitlesOff', { off: false }).catch(function () {});
+  }
+
+  /* ------------------------------------------------------------------ *
    * Hotkey
    * ------------------------------------------------------------------ */
   function isTypingTarget(el) {
@@ -246,7 +313,9 @@
     if (!hotkeyMatches(ev)) return;
     ev.preventDefault();
     ev.stopPropagation();
-    run('hotkey');
+    // De kill switch van dit tabblad gaat eerst uit: een hotkey is een
+    // expliciet verzoek om de ondertitels weer te regelen.
+    clearSubtitlesOff('hotkey').then(function () { run('hotkey'); });
   }, true);
 
   /* ------------------------------------------------------------------ *
@@ -323,6 +392,7 @@
 
   function scheduleAuto(videoId, delay, force) {
     if (!settings.enabled || !settings.autoApply) return;
+    if (state.subtitlesOff) return;
     if (!videoId) return;
     if (state.optedOut[videoId] && !force) return;
 
@@ -338,6 +408,7 @@
    * ------------------------------------------------------------------ */
   async function run(trigger) {
     if (!settings.enabled) return;
+    if (state.subtitlesOff) return;
     if (state.busy) return;
     state.busy = true;
 
@@ -497,9 +568,11 @@
     chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       if (!msg || typeof msg !== 'object') return;
       if (msg.type === 'popupRun') {
-        delete state.fixed[state.videoId];
-        delete state.optedOut[state.videoId];
-        run('hotkey');
+        clearSubtitlesOff('popup').then(function () {
+          delete state.fixed[state.videoId];
+          delete state.optedOut[state.videoId];
+          run('hotkey');
+        });
         sendResponse({ ok: true });
         return true;
       }
@@ -522,7 +595,13 @@
    * ------------------------------------------------------------------ */
   loadSettings(function () {
     if (settings.debug) ask('setDebug', { value: true }).catch(function () {});
-    ask('setOptions', { captionBoost: !!settings.captionBoost, captionSize: Number(settings.captionSize) || 100 }).catch(function () {});
+    pushPageOptions();
+    // kill switch van dit tabblad herstellen (bv. na een herlaadbeurt)
+    getTabDisabled().then(function (off) {
+      state.subtitlesOff = off;
+      if (off) setBadge('off');
+      ask('setSubtitlesOff', { off: off }).catch(function () {});
+    });
     // eerste probe, zodat de popup direct iets kan tonen
     ask('probe', null, 5000).then(function (p) {
       if (p && p.ok) {

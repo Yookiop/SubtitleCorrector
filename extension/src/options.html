@@ -23,7 +23,7 @@
     .field:last-child { border-bottom: 0; }
     .field label { flex: 1; }
     .field .hint { display: block; color: #77839a; font-size: 12px; }
-    .field input[type="text"], .field input[type="number"] {
+    .field input[type="text"], .field input[type="number"], .field select {
       width: 220px; padding: 7px 9px; font: inherit; color: #e8eef7;
       background: #10131a; border: 1px solid #333c4d; border-radius: 7px;
     }
@@ -120,6 +120,15 @@
           <span class="hint">50 - 250%. 100% is de standaardgrootte; de rest van de stijl (tekstkleur, achtergrondkleur en -opacity én de grove "Font size"-stand) wordt automatisch uit je YouTube-ondertitelinstellingen overgenomen.</span>
         </label>
         <input type="number" id="captionSize" min="50" max="250" step="5">
+      </div>
+      <div class="field">
+        <label>Ondertitelregels
+          <span class="hint">Maximaal aantal regels van de eigen weergave (Caption Boost). "2 regels" (standaard) verdeelt een langere ondertitel over twee uitgebalanceerde regels; korte cues blijven op één regel.</span>
+        </label>
+        <select id="captionLines">
+          <option value="2">2 regels (standaard)</option>
+          <option value="1">1 regel</option>
+        </select>
       </div>
       <div class="field">
         <label>Caption-prioriteit

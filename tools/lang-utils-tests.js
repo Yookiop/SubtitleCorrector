@@ -228,6 +228,16 @@
     ok(L.captionFontPx(400, 0, 200) > L.captionFontPx(400, 0, 100), '200% moet groter zijn dan 100%');
   });
 
+  test('captionBoxWidth: 1 regel = volle breedte, 2 regels = uitgebalanceerd', function (L) {
+    eq(L.captionBoxWidth(1, 400, 80, 368, 6), 368);   // 1 regel: niets dwingen
+    eq(L.captionBoxWidth(2, 400, 80, 368, 6), 206);   // helft + marge
+    eq(L.captionBoxWidth(2, 100, 80, 368, 6), 86);    // breedste woord wint (mag nooit afbreken)
+    eq(L.captionBoxWidth(2, 1000, 80, 368, 6), 368);  // nooit breder dan beschikbaar
+    eq(L.captionBoxWidth(2, 40, 30, 368, 4), 34);     // korte cue verdeelt ook
+    eq(L.captionBoxWidth(2, 0, 0, 368, 6), 368);      // zonder tekst: natuurlijke breedte
+    eq(L.captionBoxWidth(2, 100, 0, 0, 6), 0);        // geen ruimte -> 0
+  });
+
   /* ------------------------------------------------------------------ *
    * Audio-taal detectie
    * ------------------------------------------------------------------ */

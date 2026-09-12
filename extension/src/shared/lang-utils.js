@@ -423,6 +423,27 @@
     return Math.max(10, Math.min(160, px));
   }
 
+  /**
+   * Boxbreedte (px) voor de eigen captionweergave bij een maximaal aantal regels.
+   * lines: 1 of 2 (2 = de cue wordt zoveel mogelijk over twee regels verdeeld).
+   * totalPx: breedte van de hele cue op één regel.
+   * longestWordPx: breedte van het breedste woord (dat mag nooit afgebroken worden).
+   * maxWidthPx: beschikbare breedte (92% van de speler); padPx: kleine marge.
+   * Bij lines = 1 krijg je de volle breedte (alleen afbreken als het echt niet past).
+   */
+  function captionBoxWidth(lines, totalPx, longestWordPx, maxWidthPx, padPx) {
+    var max = typeof maxWidthPx === 'number' && isFinite(maxWidthPx) && maxWidthPx > 0 ? maxWidthPx : 0;
+    if (!max) return 0;
+    var total = typeof totalPx === 'number' && isFinite(totalPx) && totalPx > 0 ? totalPx : 0;
+    if (!total) return max;
+    if (lines < 2) return max;
+    var longest = typeof longestWordPx === 'number' && isFinite(longestWordPx) && longestWordPx > 0 ? longestWordPx : 0;
+    var pad = typeof padPx === 'number' && isFinite(padPx) && padPx > 0 ? padPx : 0;
+    var width = Math.ceil(total / 2) + pad;
+    if (longest + pad > width) width = longest + pad;
+    return Math.max(1, Math.min(max, width));
+  }
+
   /* ------------------------------------------------------------------ *
    * UI-tekst (Nederlands) voor de toast/badge
    * ------------------------------------------------------------------ */
@@ -496,6 +517,7 @@
     rgbaFromHex: rgbaFromHex,
     captionSizeScale: captionSizeScale,
     captionFontPx: captionFontPx,
+    captionBoxWidth: captionBoxWidth,
     describePlan: describePlan,
     toastText: toastText
   };

@@ -20,6 +20,45 @@ let healthCache = { at: 0, data: null };
 let lastTrackedTab = null;
 
 /* ------------------------------------------------------------------ *
+ * Per-tab kill switch (het CC-knopje in de speler)
+ *
+ * Houdt per tab bij of de gebruiker de ondertiteling van dat tabblad
+ * volledig uit heeft gezet. Zo'n tabblad mag geen audio meer naar de
+ * bridge sturen. De status staat in storage.session: een herlaadbeurt van
+ * het tabblad onthoudt hem, het afsluiten van de browser niet.
+ * ------------------------------------------------------------------ */
+const disabledTabs = new Set();
+const disabledReady = chrome.storage.session
+  .get({ scTabDisabled: {} })
+  .then((s) => {
+    const map = (s && s.scTabDisabled) || {};
+    Object.keys(map).forEach((k) => { if (map[k]) disabledTabs.add(Number(k)); });
+  })
+  .catch(() => {});
+
+function persistDisabledTabs() {
+  try {
+    const map = {};
+    disabledTabs.forEach((id) => { map[id] = true; });
+    chrome.storage.session.set({ scTabDisabled: map }).catch(() => {});
+  } catch (e) { /* ignore */ }
+}
+
+async function isTabDisabled(tabId) {
+  if (tabId == null) return false;
+  try { await disabledReady; } catch (e) { /* ignore */ }
+  return disabledTabs.has(tabId);
+}
+
+async function setTabDisabled(tabId, off) {
+  if (tabId == null) return;
+  try { await disabledReady; } catch (e) { /* ignore */ }
+  if (off) disabledTabs.add(tabId);
+  else disabledTabs.delete(tabId);
+  persistDisabledTabs();
+}
+
+/* ------------------------------------------------------------------ *
  * Badge
  * ------------------------------------------------------------------ */
 function paintBadge(text, tabId) {
@@ -151,6 +190,8 @@ let capturing = false;
 async function detectAudio(tab, msg) {
   const tabId = tab && tab.id;
   if (tabId == null) return { ok: false, reason: 'no-tab' };
+  // Kill switch: dit tabblad heeft de ondertiteling bewust uit staan.
+  if (await isTabDisabled(tabId)) return { ok: false, reason: 'subtitles-off' };
   if (capturing) return { ok: false, reason: 'capture-busy' };
 
   // Niet opnemen als de bridge offline is of het model nog laadt: dat kost
@@ -221,6 +262,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       detectAudio(sender && sender.tab, msg).then(sendResponse);
       return true;
 
+    case 'getTabState': {
+      const tabId = sender && sender.tab ? sender.tab.id : null;
+      isTabDisabled(tabId).then((off) => sendResponse({ ok: true, subtitlesOff: off }));
+      return true;
+    }
+
+    case 'setTabDisabled':
+      setTabDisabled(sender && sender.tab ? sender.tab.id : null, !!msg.off).then(() => sendResponse({ ok: true }));
+      return true;
+
     default:
       return false;
   }
@@ -228,4 +279,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (tabId === lastTrackedTab) lastTrackedTab = null;
+  if (disabledTabs.has(tabId)) {
+    disabledTabs.delete(tabId);
+    persistDisabledTabs();
+  }
 });
