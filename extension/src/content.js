@@ -28,11 +28,11 @@
     captionBoost: true,
     captionSize: 175,
     captionLines: 2,
-    captionOffset: 0,
-    captionWidth: 80,
+    captionOffset: 7,
+    captionWidth: 70,
     captionFont: 'youtube',
-    captionWeight: 600,
-    captionWordByWord: false,
+    captionWeight: 500,
+    captionWordByWord: true,
     audioSeconds: 5,
     minConfidence: 0.5,
     keepAudioDuringCapture: true,
@@ -231,15 +231,25 @@
    * geen Caption Boost, geen bridge/audio-analyse. De status wordt in de
    * service worker per tab bewaard, zodat een herlaadbeurt hem niet wist.
    * ------------------------------------------------------------------ */
+  /**
+   * Getal uit de instellingen met een terugvalwaarde. Let op: 0 is een geldige
+   * waarde (bv. Y-offset 0), dus niet met `||` werken maar met `isFinite`.
+   */
+  function numOr(value, fallback) {
+    if (value === '' || value === null || value === undefined) return fallback;
+    var n = Number(value);
+    return isFinite(n) ? n : fallback;
+  }
+
   function pushPageOptions() {
     ask('setOptions', {
       captionBoost: !!settings.captionBoost,
-      captionSize: Number(settings.captionSize) || 175,
+      captionSize: numOr(settings.captionSize, 175),
       captionLines: Number(settings.captionLines) === 1 ? 1 : 2,
-      captionOffset: Number(settings.captionOffset) || 0,
-      captionWidth: Number(settings.captionWidth) || 80,
+      captionOffset: numOr(settings.captionOffset, 7),
+      captionWidth: numOr(settings.captionWidth, 70),
       captionFont: settings.captionFont || 'youtube',
-      captionWeight: Number(settings.captionWeight) || 600,
+      captionWeight: numOr(settings.captionWeight, 500),
       captionWordByWord: !!settings.captionWordByWord
     }).catch(function () {});
   }

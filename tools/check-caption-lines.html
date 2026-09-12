@@ -33,13 +33,13 @@
     .stageWrap { overflow: auto; max-width: 100%; }
     /* Exact de stijlen van de eigen captionweergave (page-agent.js) */
     .sc-player { position: relative; background: linear-gradient(135deg, #45566b, #8a9aab); overflow: hidden; }
-    #sc-caption-overlay { position: absolute; left: 0; right: 0; bottom: 10.5%; text-align: center; pointer-events: none; z-index: 45; display: block;
-      font-weight: 600; line-height: 1.4; font-family: "YouTube Sans", "Roboto", Arial, sans-serif; }
-    #sc-caption-overlay .sc-caption-bar { position: absolute; left: 10%; right: 10%; top: 0; bottom: 0; background: rgba(8,8,8,.75); }
+    #sc-caption-overlay { position: absolute; left: 0; right: 0; bottom: 3.5%; text-align: center; pointer-events: none; z-index: 45; display: block;
+      font-weight: 500; line-height: 1.4; font-family: "YouTube Sans", "Roboto", Arial, sans-serif; }
+    #sc-caption-overlay .sc-caption-bar { position: absolute; left: 15%; right: 15%; top: 0; bottom: 0; background: rgba(8,8,8,.75); }
     /* display:block + margin:0 auto (geen inline-block): anders wordt de
        onderrand van de box de baseline en steekt de balk ~15px verder door
        onder de tekst dan erboven. Padding komt uit L.CAPTION_PAD_*_EM. */
-    #sc-caption-overlay .sc-caption-box { position: relative; display: block; margin: 0 auto; overflow: hidden; clip-path: inset(0); box-sizing: border-box; width: 80%; text-align: left; white-space: pre-wrap;
+    #sc-caption-overlay .sc-caption-box { position: relative; display: block; margin: 0 auto; overflow: hidden; clip-path: inset(0); box-sizing: border-box; width: 70%; text-align: left; white-space: pre-wrap;
       padding: .06em .32em .03em; text-shadow: 0 0 2px rgba(0,0,0,.8); color: rgba(255,255,255,1); }
     #sc-caption-overlay .sc-caption-scroll { position: relative; transition: top .2s ease-out; }
     .clock { display: flex; gap: 14px; align-items: center; margin: 6px 0 4px; flex-wrap: wrap; }
@@ -85,15 +85,15 @@
     <div><label>Ondertitelgrootte (%)</label><input type="number" id="sizePct" value="175" min="50" max="250" step="5"></div>
     <div><label>YouTube fontSizeIncrement</label><input type="number" id="increment" value="0" min="-3" max="4" step="1"></div>
     <div><label>Ondertitelregels</label><input type="number" id="maxLines" value="2" min="1" max="2" step="1"></div>
-    <div><label>Y-offset (%; + = omlaag)</label><input type="number" id="yOffset" value="0" min="-40" max="30" step="1"></div>
+    <div><label>Y-offset (%; + = omlaag)</label><input type="number" id="yOffset" value="7" min="-40" max="30" step="1"></div>
     <div><label>Lettertype</label><select id="fontKey"></select></div>
     <div><label>Letterdikte</label><select id="fontWeight">
       <option value="400">400 normaal</option>
-      <option value="500">500 medium</option>
-      <option value="600" selected>600 halfvet (standaard)</option>
+      <option value="500" selected>500 medium (standaard)</option>
+      <option value="600">600 halfvet</option>
       <option value="700">700 vet</option>
     </select></div>
-    <div><label>Balkbreedte (%)</label><input type="number" id="barWidth" value="80" min="30" max="100" step="1"></div>
+    <div><label>Balkbreedte (%)</label><input type="number" id="barWidth" value="70" min="30" max="100" step="1"></div>
     <div><label>Snelheid</label><select id="speed">
       <option value="1">1x</option>
       <option value="4" selected>4x</option>

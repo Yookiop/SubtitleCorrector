@@ -878,22 +878,22 @@
   /** Toegestane letterdiktes (400 = normaal, 600 = de oude standaard, 700 = vet). */
   var CAPTION_WEIGHTS = [400, 500, 600, 700];
 
-  /** Geldige letterdikte; onbekend wordt 600 (zoals de extensie altijd tekende). */
+  /** Geldige letterdikte; onbekend wordt 500 (de standaard van de extensie). */
   function captionFontWeight(value) {
     var v = Number(value);
     for (var i = 0; i < CAPTION_WEIGHTS.length; i++) {
       if (CAPTION_WEIGHTS[i] === v) return v;
     }
-    return 600;
+    return 500;
   }
 
   /**
    * Breedte van de ondertitelbalk in % van de spelerbreedte. De balk staat
    * gecentreerd (links en rechts evenveel video zichtbaar), dus hoe kleiner
-   * deze waarde, hoe smaller de balk. Geclamped op 30-100%; ontbrekend = 80.
+   * deze waarde, hoe smaller de balk. Geclamped op 30-100%; ontbrekend = 70.
    */
   function captionBarWidthPct(pct) {
-    var p = typeof pct === 'number' && isFinite(pct) ? pct : 80;
+    var p = typeof pct === 'number' && isFinite(pct) ? pct : 70;
     return Math.round(Math.max(30, Math.min(100, p)) * 10) / 10;
   }
 

@@ -493,7 +493,8 @@
    * dan blijft YouTube's eigen weergave gewoon staan.
    * ------------------------------------------------------------------ */
   var CAPTION_BOOST_ENABLED = true;
-  var BOOST_WORD_BY_WORD = false;   // optie "Word-for-Word" (default uit = hele blokken)
+  var BOOST_WORD_BY_WORD = true;   // optie "Word-for-Word" (default aan = woord voor woord;
+                                   // uit = hele blokken van 2 volle zinnen)
   var BOOST_MAX_TRACKS = 2;
   var BOOST_BLOCK_SENTENCES = 2;    // zinnen per blok (user-keuze: 2 volle zinnen)
   var BOOST_SILENCE_GAP = 1.6;      // s stilte die een blok/run afsluit
@@ -638,10 +639,10 @@
      percentage bovenop YouTube's size-stand. */
   var BOOST_SIZE_PCT = 175;    // default ondertitelgrootte (%; optie 50-250)
   var BOOST_LINES = 2;         // max. regels in de eigen weergave (1 of 2; optie, default 2)
-  var BOOST_OFFSET_PCT = 0;    // y-offset van de balk in %-punten (optie; + = omlaag, - = omhoog)
+  var BOOST_OFFSET_PCT = 7;    // y-offset van de balk in %-punten (optie; + = omlaag, - = omhoog)
   var BOOST_FONT = 'youtube';  // lettertype (optie; sleutel uit L.CAPTION_FONTS)
-  var BOOST_WEIGHT = 600;      // letterdikte (optie; 400/500/600/700)
-  var BOOST_BAR_WIDTH_PCT = 80; // breedte van de ondertitelbalk in % van de spelerbreedte
+  var BOOST_WEIGHT = 500;      // letterdikte (optie; 400/500/600/700)
+  var BOOST_BAR_WIDTH_PCT = 70; // breedte van de ondertitelbalk in % van de spelerbreedte
                                 // (optie 30-100; de balk staat gecentreerd, dus links en
                                 // rechts blijft video zichtbaar)
   var SUBTITLES_OFF = false;   // per-tab kill switch (knop in de controlbar)
@@ -714,12 +715,12 @@
         st.id = 'sc-caption-style';
         st.textContent =
           '.sc-boost-on .ytp-caption-window-container{display:none!important}' +
-          '#sc-caption-overlay{position:absolute;left:0;right:0;bottom:10.5%;text-align:center;pointer-events:none;z-index:45;display:none;' +
-          'font-weight:600;line-height:1.4;font-family:"YouTube Sans","Roboto",Arial,sans-serif}' +
+          '#sc-caption-overlay{position:absolute;left:0;right:0;bottom:3.5%;text-align:center;pointer-events:none;z-index:45;display:none;' +
+          'font-weight:500;line-height:1.4;font-family:"YouTube Sans","Roboto",Arial,sans-serif}' +
           '#sc-caption-overlay.sc-on{display:block}' +
           // De breedte van de balk is een optie (BOOST_BAR_WIDTH_PCT, 30-100%);
           // de inline left/right op de balk en de inline width op de box komen
-          // uit applyBoostStyle(). De waarden hier zijn de terugval (80%). De
+          // uit applyBoostStyle(). De waarden hier zijn de terugval (70%). De
           // box is precies zo breed als de balk (border-box) en heeft een
           // VASTE hoogte van BOOST_LINES regels (inline, in em); de tekst
           // begint linksboven, links uitgelijnd. In de blokweergave staat het
@@ -742,9 +743,9 @@
           // het klipt ook eventueel gecompositeerde lagen op de rand van het
           // venster af, zodat er nooit tekst buiten het zwarte blok valt als
           // de tekst omhoog schuift (zie setWordShift()).
-          '#sc-caption-overlay .sc-caption-bar{position:absolute;top:0;bottom:0;left:10%;right:10%}' +
+          '#sc-caption-overlay .sc-caption-bar{position:absolute;top:0;bottom:0;left:15%;right:15%}' +
           '#sc-caption-overlay .sc-caption-box{position:relative;display:block;margin:0 auto;overflow:hidden;clip-path:inset(0);' +
-          'box-sizing:border-box;width:80%;text-align:left;white-space:pre-wrap;' +
+          'box-sizing:border-box;width:70%;text-align:left;white-space:pre-wrap;' +
           'padding:' + L.CAPTION_PAD_TOP_EM + 'em ' + L.CAPTION_PAD_X_EM + 'em ' + L.CAPTION_PAD_BOTTOM_EM + 'em;' +
           'text-shadow:0 0 2px rgba(0,0,0,.8)}' +
           // De tekst schuift met een korte overgang op `top` (en niet met
@@ -1244,7 +1245,7 @@
     }
     if (opts && Object.prototype.hasOwnProperty.call(opts, 'captionOffset')) {
       var off = Number(opts.captionOffset);
-      BOOST_OFFSET_PCT = isFinite(off) ? Math.max(-40, Math.min(30, off)) : 0;
+      BOOST_OFFSET_PCT = isFinite(off) ? Math.max(-40, Math.min(30, off)) : 7;
       applyBoostStyle(); // zet de nieuwe bottom op de overlay (en herrekent niets onnodig)
       dbg('captionOffset', BOOST_OFFSET_PCT);
     }

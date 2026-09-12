@@ -139,7 +139,7 @@
       </div>
       <div class="field">
         <label>Letterdikte
-          <span class="hint">400 = normaal (zoals YouTube's eigen ondertitels), 500 = medium, 600 = halfvet (de standaard van de extensie) en 700 = vet.</span>
+          <span class="hint">400 = normaal (zoals YouTube's eigen ondertitels), 500 = medium (de standaard), 600 = halfvet en 700 = vet.</span>
         </label>
         <select id="captionWeight">
           <option value="400">Normaal (400)</option>
@@ -150,7 +150,7 @@
       </div>
       <div class="field">
         <label>Ondertitelbreedte (%)
-          <span class="hint">Breedte van de ondertitelbalk als percentage van de spelerbreedte: 30 - 100%. De balk staat gecentreerd, dus je houdt links en rechts altijd video zichtbaar. Standaard 80%; lager = smaller.</span>
+          <span class="hint">Breedte van de ondertitelbalk als percentage van de spelerbreedte: 30 - 100%. De balk staat gecentreerd, dus je houdt links en rechts altijd video zichtbaar. Standaard 70%; lager = smaller.</span>
         </label>
         <input type="number" id="captionWidth" min="30" max="100" step="1">
       </div>
@@ -165,13 +165,13 @@
       </div>
       <div class="field">
         <label>Y-offset (%)
-          <span class="hint">Verticale positie van de ondertitelbalk, in procentpunten van de spelerhoogte. <b>Positief = omlaag</b> (dichter bij de onderrand), <b>negatief = omhoog</b>. 0 = de standaardpositie; bereik −40 tot +30. De balk blijft altijd binnen de speler.</span>
+          <span class="hint">Verticale positie van de ondertitelbalk, in procentpunten van de spelerhoogte. <b>Positief = omlaag</b> (dichter bij de onderrand), <b>negatief = omhoog</b>. De standaard is 7 (iets hoger dan het uitgangspunt); 0 = geen verschuiving. Bereik −40 tot +30. De balk blijft altijd binnen de speler.</span>
         </label>
         <input type="number" id="captionOffset" min="-40" max="30" step="1">
       </div>
       <div class="field">
         <label>Word-for-Word
-          <span class="hint">Toont de ondertiteling woord voor woord, zoals YouTube's auto-gegenereerde ondertitels: elk woord verschijnt op zijn eigen tijd en zodra de onderste regel vol is schuift het venster één regel omhoog (regel 1 verdwijnt, regel 2 wordt regel 1 en de nieuwe woorden gaan verder op regel 2). Heeft een cue geen per-woordtijden (één tijd voor de hele zin), dan worden de woorden over de cue verdeeld — er plopt dus nooit ineens een hele zin in beeld. Een stilte begint weer met een leeg venster. Uit (standaard) = de hele blokken van 2 volle zinnen in één keer.</span>
+          <span class="hint">Toont de ondertiteling woord voor woord, zoals YouTube's auto-gegenereerde ondertitels: elk woord verschijnt op zijn eigen tijd en zodra de onderste regel vol is schuift het venster één regel omhoog (regel 1 verdwijnt, regel 2 wordt regel 1 en de nieuwe woorden gaan verder op regel 2). Heeft een cue geen per-woordtijden (één tijd voor de hele zin), dan worden de woorden over de cue verdeeld — er plopt dus nooit ineens een hele zin in beeld. Een stilte begint weer met een leeg venster. <b>Aan is de standaard</b>; uit = de hele blokken van 2 volle zinnen in één keer.</span>
         </label>
         <input type="checkbox" id="captionWordByWord">
       </div>

@@ -511,26 +511,27 @@
     eq(L.captionFontStack('onbekend'), L.CAPTION_FONTS[0].stack);
   });
 
-  test('captionFontWeight: alleen 400/500/600/700, anders 600', function (L) {
+  test('captionFontWeight: alleen 400/500/600/700, anders 500 (de standaard)', function (L) {
     eq(L.CAPTION_WEIGHTS.length, 4);
     eq(L.captionFontWeight(400), 400);   // normaal, zoals YouTube
+    eq(L.captionFontWeight(500), 500);   // de standaard van de extensie
     eq(L.captionFontWeight(700), 700);
     eq(L.captionFontWeight('400'), 400); // uit een <select> komt een string
-    eq(L.captionFontWeight(300), 600);
-    eq(L.captionFontWeight(undefined), 600);
-    eq(L.captionFontWeight('vet'), 600);
+    eq(L.captionFontWeight(300), 500);
+    eq(L.captionFontWeight(undefined), 500);
+    eq(L.captionFontWeight('vet'), 500);
   });
 
-  test('captionBarWidthPct: balkbreedte 30-100%, standaard 80', function (L) {
+  test('captionBarWidthPct: balkbreedte 30-100%, standaard 70', function (L) {
     eq(L.captionBarWidthPct(80), 80);
-    eq(L.captionBarWidthPct(70), 70);
+    eq(L.captionBarWidthPct(70), 70);      // de standaard
     eq(L.captionBarWidthPct(100), 100);
     eq(L.captionBarWidthPct(30), 30);
     eq(L.captionBarWidthPct(10), 30);      // geclamped onder
     eq(L.captionBarWidthPct(200), 100);    // geclamped boven
     eq(L.captionBarWidthPct(72.5), 72.5);
-    eq(L.captionBarWidthPct(undefined), 80);
-    eq(L.captionBarWidthPct('x'), 80);
+    eq(L.captionBarWidthPct(undefined), 70);
+    eq(L.captionBarWidthPct('x'), 70);
   });
 
   test('rgbaFromHex maakt rgba met opacity', function (L) {
