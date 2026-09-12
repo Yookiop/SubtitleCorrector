@@ -1037,6 +1037,30 @@
     return 'Toepassen mislukt (' + describePlan(plan) + ')';
   }
 
+  /* ------------------------------------------------------------------ *
+   * Hotkey
+   *
+   * Standaard doet de hotkey één ding: geforceerd corrigeren ("Nu toepassen").
+   * Met de optie `hotkeyToggleSubtitles` wordt hij een echte aan/uit-schakelaar
+   * voor dít tabblad (dezelfde kill switch als het CC-knopje in de speler);
+   * bij "aan" blijft de bestaande hotkey-logica gelden.
+   * ------------------------------------------------------------------ */
+  /**
+   * Wat moet de hotkey doen?
+   *
+   * @param {Object} ctx
+   *   ctx.enabled       extensie aan? (anders: niets)
+   *   ctx.hotkeyToggle  optie `hotkeyToggleSubtitles` aan?
+   *   ctx.subtitlesOff  staat de kill switch van dit tabblad uit?
+   * @returns {'none'|'run'|'toggle-off'|'toggle-on'}
+   */
+  function hotkeyAction(ctx) {
+    ctx = ctx || {};
+    if (ctx.enabled === false) return 'none';
+    if (ctx.hotkeyToggle !== true) return 'run';
+    return ctx.subtitlesOff ? 'toggle-on' : 'toggle-off';
+  }
+
   root.SCLang = {
     SUPPORTED: SUPPORTED,
     SUPPORTED_LABEL: SUPPORTED_LABEL,
@@ -1052,6 +1076,7 @@
     isTranslatedLabel: isTranslatedLabel,
     queryHasPlaylist: queryHasPlaylist,
     shouldUseAudioFallback: shouldUseAudioFallback,
+    hotkeyAction: hotkeyAction,
     decodeAudioTrackLang: decodeAudioTrackLang,
     pickCaptionTrack: pickCaptionTrack,
     detectAudioLanguage: detectAudioLanguage,

@@ -171,6 +171,22 @@
   });
 
   /* ------------------------------------------------------------------ *
+   * Hotkey: forceren of aan/uit-schakelaar (optie hotkeyToggleSubtitles)
+   * ------------------------------------------------------------------ */
+  test('hotkeyAction: standaard forceert de hotkey alleen een correctie', function (L) {
+    eq(L.hotkeyAction({ enabled: true, hotkeyToggle: false, subtitlesOff: false }), 'run');
+    // Ontbrekende optie (oud profiel) = het oude gedrag.
+    eq(L.hotkeyAction({ enabled: true, subtitlesOff: true }), 'run');
+  });
+
+  test('hotkeyAction: met de toggle-optie schakelt de hotkey de kill switch', function (L) {
+    eq(L.hotkeyAction({ enabled: true, hotkeyToggle: true, subtitlesOff: false }), 'toggle-off');
+    eq(L.hotkeyAction({ enabled: true, hotkeyToggle: true, subtitlesOff: true }), 'toggle-on');
+    eq(L.hotkeyAction({ enabled: false, hotkeyToggle: true, subtitlesOff: false }), 'none');
+    eq(L.hotkeyAction({ enabled: false }), 'none');
+  });
+
+  /* ------------------------------------------------------------------ *
    * Caption Boost (json3 met per-woord timing)
    * ------------------------------------------------------------------ */
   test('parseCaptionJson leest json3 met per-woord offsets', function (L) {
