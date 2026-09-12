@@ -186,6 +186,16 @@
     eq(L.hotkeyAction({ enabled: false }), 'none');
   });
 
+  test('hotkeyAction: hotkeyEnabled = false zet de hotkey helemaal uit', function (L) {
+    // Uit wint van alles: geen correctie en geen toggle.
+    eq(L.hotkeyAction({ enabled: true, hotkeyEnabled: false, subtitlesOff: false }), 'none');
+    eq(L.hotkeyAction({ enabled: true, hotkeyEnabled: false, hotkeyToggle: true, subtitlesOff: false }), 'none');
+    eq(L.hotkeyAction({ enabled: true, hotkeyEnabled: false, hotkeyToggle: true, subtitlesOff: true }), 'none');
+    // Ontbrekende optie (oud profiel) = aan, dus het gedrag verandert niet.
+    eq(L.hotkeyAction({ enabled: true, subtitlesOff: false }), 'run');
+    eq(L.hotkeyAction({ enabled: true, hotkeyEnabled: true, hotkeyToggle: true, subtitlesOff: false }), 'toggle-off');
+  });
+
   /* ------------------------------------------------------------------ *
    * Caption Boost (json3 met per-woord timing)
    * ------------------------------------------------------------------ */
