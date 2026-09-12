@@ -125,6 +125,105 @@
   });
 
   /* ------------------------------------------------------------------ *
+   * Prestatie-regels (playlists rustig houden)
+   * ------------------------------------------------------------------ */
+  test('queryHasPlaylist herkent list= in de URL', function (L) {
+    eq(L.queryHasPlaylist('?v=abc&list=PL123&index=4'), true);
+    eq(L.queryHasPlaylist('?list=PL123'), true);
+    eq(L.queryHasPlaylist('?v=abc'), false);
+    eq(L.queryHasPlaylist(''), false);
+  });
+
+  test('shouldUseAudioFallback: in playlist standaard alleen via hotkey', function (L) {
+    var auto = L.shouldUseAudioFallback({
+      enabled: true, trigger: 'auto', inPlaylist: true, captionPriority: true,
+      allowInPlaylists: false, lastCaptureAt: 0, now: 1000
+    });
+    eq(auto.allowed, false);
+    eq(auto.reason, 'playlist-hotkey-only');
+
+    var hotkey = L.shouldUseAudioFallback({
+      enabled: true, trigger: 'hotkey', inPlaylist: true, captionPriority: true,
+      allowInPlaylists: false, lastCaptureAt: 0, now: 1000
+    });
+    eq(hotkey.allowed, true);
+  });
+
+  test('shouldUseAudioFallback: buiten playlist auto toegestaan, met cooldown', function (L) {
+    var first = L.shouldUseAudioFallback({ enabled: true, trigger: 'auto', inPlaylist: false, captionPriority: true, now: 100000, lastCaptureAt: 0 });
+    eq(first.allowed, true);
+
+    var tooSoon = L.shouldUseAudioFallback({ enabled: true, trigger: 'auto', inPlaylist: false, captionPriority: true, now: 110000, lastCaptureAt: 100000, cooldownMs: 45000 });
+    eq(tooSoon.allowed, false);
+    eq(tooSoon.reason, 'cooldown');
+
+    var later = L.shouldUseAudioFallback({ enabled: true, trigger: 'auto', inPlaylist: false, captionPriority: true, now: 150000, lastCaptureAt: 100000, cooldownMs: 45000 });
+    eq(later.allowed, true);
+  });
+
+  test('shouldUseAudioFallback: audioFallbackInPlaylists schakelt de playlist-rem uit', function (L) {
+    var r = L.shouldUseAudioFallback({ enabled: true, trigger: 'auto', inPlaylist: true, captionPriority: true, allowInPlaylists: true, now: 999999, lastCaptureAt: 0 });
+    eq(r.allowed, true);
+
+    var uit = L.shouldUseAudioFallback({ enabled: false, trigger: 'hotkey', inPlaylist: false });
+    eq(uit.allowed, false);
+    eq(uit.reason, 'fallback-disabled');
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Caption Boost (json3 met per-woord timing)
+   * ------------------------------------------------------------------ */
+  test('parseCaptionJson leest json3 met per-woord offsets', function (L) {
+    var events = L.parseCaptionJson({ events: [
+      { tStartMs: 4400, dDurationMs: 4159, segs: [
+        { utf8: 'This', tOffsetMs: 0 },
+        { utf8: ' is', tOffsetMs: 399 },
+        { utf8: ' a', tOffsetMs: 560 },
+        { utf8: ' three.', tOffsetMs: 800 }
+      ] },
+      { tStartMs: 4390, segs: [{ utf8: '\n' }] }
+    ] });
+    eq(events.length, 1);
+    eq(events[0].start, 4.4);
+    eq(L.boostTextFor(events, 4.5), 'This');
+    eq(L.boostTextFor(events, 4.85), 'This is');
+    eq(L.boostTextFor(events, 5.05), 'This is a');
+    eq(L.boostTextFor(events, 5.2), 'This is a three.');
+  });
+
+  test('boostTextFor toont niets vóór de start en de hele cue zonder offsets', function (L) {
+    var events = L.parseCaptionJson({ events: [
+      { tStartMs: 10000, dDurationMs: 2000, segs: [{ utf8: 'Hallo wereld' }] }
+    ] });
+    eq(events.length, 1);
+    eq(L.boostTextFor(events, 9), '');
+    eq(L.boostTextFor(events, 10.5), 'Hallo wereld');
+  });
+
+  test('boostTextFor bewaart regelovergangen voor meerregelige cues', function (L) {
+    var events = L.parseCaptionJson({ events: [
+      { tStartMs: 1000, dDurationMs: 3000, segs: [{ utf8: 'eerste regel\n' }, { utf8: 'tweede regel', tOffsetMs: 1200 }] }
+    ] });
+    eq(events.length, 1);
+    eq(L.boostTextFor(events, 1.6), 'eerste regel');
+    eq(L.boostTextFor(events, 2.3), 'eerste regel\ntweede regel');
+  });
+
+  test('rgbaFromHex maakt rgba met opacity', function (L) {
+    eq(L.rgbaFromHex('#080808', 0.75), 'rgba(8,8,8,0.75)');
+    eq(L.rgbaFromHex('#fff', 1), 'rgba(255,255,255,1)');
+    eq(L.rgbaFromHex('rood', 1), null);
+  });
+
+  test('captionSizeScale en captionFontPx rekenen de overlaygrootte uit', function (L) {
+    eq(L.captionSizeScale(0), 1);
+    eq(L.captionSizeScale(4), 1.48);
+    eq(L.captionSizeScale(-2), 0.76);
+    ok(Math.abs(L.captionFontPx(400, 0, 100) - 12.8) < 0.01, 'verwacht ~12.8px, kreeg ' + L.captionFontPx(400, 0, 100));
+    ok(L.captionFontPx(400, 0, 200) > L.captionFontPx(400, 0, 100), '200% moet groter zijn dan 100%');
+  });
+
+  /* ------------------------------------------------------------------ *
    * Audio-taal detectie
    * ------------------------------------------------------------------ */
   test('detectAudioLanguage: EN-video via de echte audiotrack', function (L) {

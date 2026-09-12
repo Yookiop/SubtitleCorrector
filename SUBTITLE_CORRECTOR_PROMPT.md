@@ -19,6 +19,10 @@
 > Engels en nederlands zijn de enige 2 talen waar rekening mee moet worden gehouden, overige talen mag je buiten scope laten. ik loop er namelijk tegenaan dat youtube op basis van de afgelopen video, de huidige ondertiteling instelt en ik luister veel engels en nederlandse videos door elkaar, waarbij youtube de engelse videos dan qua ondertiteling gaat vertalen naar nederlands wat ik absoluut niet wil. hetzelfde als ik na een engelse video een nederlandse video kijk, wordt de ondertiteling naar engels omgezet."
 >
 > "kunnen we het ook gewoon als een browser extensie bouwen die ik lokaal draai? het liefst publiceer ik (nog) niks naar de webstore. Dan moeten we gewoon dat script triggeren bij elke nieuwe youtube video die wordt afgespeeld, soms komt het namelijk ook voor dat de subtitles niet automatisch worden geactiveerd (dat is vreemd genoeg bij youtube in periodes en wisselend per browser. voor maanden worden de ondertitels automatisch geactiveerd bij nieuwe videos, maar dan ineens niet meer)."
+>
+> **Vervolgvraag (2026-09-12):** "ik merk geregeld dat youtube veel van de gpu en cpu gebruikt en het haperend is met playlists. dit probleem speelt in vrijwel alle gevallen bij playlists, niet bij aparte videos. het gevolg is dat de auto-generated ondertiteling niet vloeiend meeloopt met het praten, maar een seconde of 2 achterloopt en dan in 1 blok een deel van een zin plaatst en dan weer wat laggt enzo... kun jij inbouwen dat er meer capaciteit beschikbaar wordt gesteld voor de ondertitels en daarmee de laggy auto-generated subtitles problemen worden opgelost?"
+
+> **Aanvullende info (2026-09-12, later die dag):** "zonder de extensie ingeschakeld is dit probleem er ook op youtube. de video zelf speelt wel vloeiend af, maar de auto-generated ondertiteling volgt de audio niet vloeiend. stel we kunnen de ondertiteling wat meer capaciteit geven van de cpu/gpu dan zal dit waarschijnlijk het oplossen"
 
 ---
 
@@ -36,6 +40,8 @@
 | 8 | Automatisch triggeren bij **elke nieuwe video** | De page agent meldt elke video-wissel (SPA-navigatie), ad-einde en ondertitelwijziging; de content script plant dan automatisch een correctie. |
 | 9 | Ondertitels ook aanzetten als YouTube ze niet activeert | `forceSubtitlesOn` (default aan): staat er een bruikbare track, dan wordt die geactiveerd. Zet de gebruiker ze zelf uit, dan respecteren we dat per video (`respectUserOff`). |
 | 10 | Deze prompt versterken en als .md in de repo | Dit bestand. |
+| 11 | Playlists soepel houden / ondertitels voorrang geven (vervolgvraag) | **Caption-prioriteit** (default aan, §7.1): geen zwaar eigen werk tijdens het afspelen — in playlists alleen audio-analyse via de hotkey, bridge-check vóór opnemen, max. 1 opname per 45 s, langere startvertraging en rustiger pollen op de achtergrond. |
+| 12 | Achterlopende auto-ondertiteling vloeiend krijgen, ook als YouTube zélf achterloopt | **Caption Boost** (§7.1.1, default aan): de json3-track van de speler (per-woord `tOffsetMs`) wordt opgevangen en zelf woord voor woord getekend, synchroon met `getCurrentTime()`; YouTube's caption-venster blijft verborgen zolang dat lukt. Stijl (kleuren/achtergrond/size-stand) komt uit YouTube's eigen captioninstellingen, grootte is extra instelbaar via `captionSize` (50-250%). |
 
 ---
 
@@ -179,6 +185,36 @@ getOption('captions','track')
 * Per video wordt het resultaat onthouden; dezelfde correctie wordt niet herhaald.
 * Zet de gebruiker de ondertitels **zelf** uit, dan zetten we ze voor die video niet meer aan (`respectUserOff`, standaard aan).
 * Bij het wisselen van video wordt de badge leeggemaakt en de retry-teller gereset.
+* In playlists wacht de extensie langer met auto-correctie (zie §7.1) zodat videostart en captionopbouw niet concurreren.
+
+---
+
+## 7.1 Caption-prioriteit: playlists soepel houden (vervolgvraag 2026-09-12)
+
+**Wat wel kan:** de extensie kan YouTube's caption-renderer géén extra CPU/GPU geven — dat kan geen enkele extensie. Wat wél kan is ervoor zorgen dat de extensie zelf zo weinig mogelijk concurreert op de momenten dat de speler het drukst is (playlists: prefetchen, advertenties, videostart). Dat is wat **Caption-prioriteit** (`captionPriority`, default **aan**) doet:
+
+| Regel | Effect |
+|-------|--------|
+| Laag 4 (tab-capture + Whisper) draait **in playlists alleen via de hotkey** (optie `audioFallbackInPlaylists`, default uit) | Geen 5 s durende opnames + CPU/GPU-piek precies bij elke videowissel |
+| Vóór elke opname wordt de **bridge-health** gecheckt (gecachet) | Geen opname als de bridge offline is of het model nog laadt |
+| Maximaal **één automatische opname per 45 s** (`CAPTURE_COOLDOWN_MS`) | Playlists wisselen snel; nooit capture op capture |
+| In playlists langer wachten: auto-correctie ±4 s na videostart en 2,2 s tussen retries | Speler en captions krijgen eerst de ruimte |
+| Page agent pollt met 900 ms als het tabblad zichtbaar is, **2,6 s als het verborgen is** | Minder achtergrondwerk als een playlist in een niet-actief tabblad speelt |
+| Offscreen document maakt **geen echte AudioContext** als "geluid hoorbaar houden" uit staat | Geen audio-uitvoer/DSP-werk dat niet nodig is |
+| **Caption Boost** tekent de ondertitel zelf woord voor woord (timedtext json3 wordt passief uit de XHR van de speler gelezen) | Geen last meer van YouTube's caption-venster dat in playlists 1-2 s achterloopt en dan in blokken plopt |
+
+De regels zitten in pure logica: `L.queryHasPlaylist()` en `L.shouldUseAudioFallback()` in `lang-utils.js` (getest in `tools/lang-utils-tests.js`). De hotkey (en "Nu toepassen" in de popup) omzeilen de playlist-rem en de cooldown altijd — handmatig blijft alles werken.
+
+**Eerlijk verwachtingsmanagement:** loopt de ondertiteling in een playlist daarna nóg achter, dan zit dat in YouTube zelf (buffering/rendering); de extensie kan dat niet verhelpen, ze kan alleen zorgen dat ze zelf geen extra vertraging veroorzaakt.
+
+### 7.1.1 Hoe Caption Boost werkt (live geverifieerd, 2026-09-12)
+
+* De speler haalt de ondertitel-track op via **XMLHttpRequest** met een `pot`-token; een eigen `fetch` van dezelfde `baseUrl` zonder token geeft **HTTP 200 met een lege body** (live getest). Daarom patcht de page agent `XMLHttpRequest.open/send` **observerend** (de respons zelf blijft ongemoeid) en bewaart per video de json3-track; fetch-varianten worden voor de zekerheid ook gevolgd.
+* ASR-json3 bevat per segment `segs[].tOffsetMs` (per woord); gemeten op een echte video: 999 events / ~361 KB. `L.parseCaptionJson()` zet dat om naar events met woord-grenzen; `L.boostTextFor(events, t)` geeft de tekst die bij tijd `t` (seconden) hoort (onbekende offset = start van het event).
+* De overlay (`#sc-caption-overlay` in `#movie_player`) wordt met `requestAnimationFrame` bijgewerkt; YouTube's venster (`.ytp-caption-window-container`) wordt via `.sc-boost-on` verborgen zodra er eigen tekst staat. Bij advertenties, actieve vertaling, ontbrekende track of een videowissel gaat alles direct terug naar YouTube's eigen weergave.
+* **Stijl komt van YouTube zelf:** `player.getSubtitlesUserSettings()` geeft bv. `{color:'#fff', textOpacity:1, background:'#080808', backgroundOpacity:0.75, fontSizeIncrement:0, …}` (live geverifieerd). Die waarden worden via `L.rgbaFromHex()` op de overlay toegepast; de overlay is één inline `<span>` met `box-decoration-break: clone`, zodat elke regel zijn eigen achtergrondbox krijgt (ook als er geen API is: wit op zwart).
+* **Grootte:** `captionSize` (50-250%, opties) × 3,2% van de spelerhoogte × `L.captionSizeScale(fontSizeIncrement)` (`1 + 0,12·increment`, geclamped), via `L.captionFontPx()`. Live gemeten op een 389px-speler: 100/150/200% → 12,4/18,7/24,9 px; twee-regelige cue gaf twee boxen (202×16 en 99×16 px), gecentreerd in de speler.
+* Beide functies zijn puur en getest (31/31 in `tools/test-lang-utils.html`).
 
 ---
 
@@ -260,6 +296,8 @@ tools/
 
 * De **auto-gegenereerde** track is alleen via het menu te kiezen (beperking van de YouTube-API, §5). Daardoor flitst het settings-menu ~1 s open bij het aanpassen. Is dat onwenselijk, zet `preferAutoGenerated` uit: dan gebruikt de extensie het snelle API-pad en blijft het menu dicht.
 * De bridge moet draaien voor laag 4; zonder bridge werkt alles behalve de audio-analyse.
+* De extensie kan YouTube's caption-renderer **geen extra CPU/GPU geven**; `captionPriority` (§7.1) zorgt alleen dat de extensie zelf niet concurreert: geen audio-analyse in playlists zonder hotkey, geen capture zonder werkende (geladen) bridge, max. 1 opname per 45 s, langere wachttijden en rustiger pollen op de achtergrond.
+* Caption Boost werkt alleen als de track-data opgevangen is; lukt dat niet (of staat de track vertaald), dan blijft YouTube's eigen (soms achterlopende) caption-venster gewoon staan. De overlay is een benadering van YouTube's captionstijl en schaalt mee met de speler.
 * YouTube kan zijn menu-DOM wijzigen; dan werkt de ASR-keuze tijdelijk niet (het handmatige API-pad blijft werken). Zie §13.
 * Een video waarvan de audio in een dub staat: de extensie volgt de **hoorbare** taal (dat is de taal waar de ondertitel bij moet passen).
 
@@ -285,7 +323,13 @@ Diagnose-tips: zet **Debug-logging** aan (opties) → console toont `[SC]`-regel
 | Speler-API op echte YouTube-video's (EN 3Blue1Brown, NL NOS Jeugdjournaal) | ✅ live getest in een Chromium-browser |
 | `setOption` kan géén ASR-track zetten (en wél handmatige) | ✅ getest met 4 varianten |
 | Menu-klik op `Dutch (auto-generated)` wist de vertaling naar Engels | ✅ getest (state vóór/na + aangevinkt menu-item) |
-| Pure logica (21 testcases, o.a. planFix met echte probe-payloads) | ✅ 22/22 in `tools/test-lang-utils.html` |
+| Pure logica (31 testcases, o.a. planFix, Caption Boost-timing en stijl/grootte-berekening) | ✅ 31/31 in `tools/test-lang-utils.html` |
+| Caption-prioriteit (playlist-rem, cooldown, bridge-check) | ✅ unit-getest in dezelfde 31/31; runtime-gedrag op een echte playlist nog te ervaren |
+| Timedtext json3-formaat met per-woord `tOffsetMs` | ✅ live geverifieerd op een echte video (999 events / ~361 KB, offsets aanwezig) |
+| Eigen fetch van de timedtext-URL zonder `pot`-token | ✅ lege HTTP 200 — daarom XHR-observatie in plaats van eigen fetch |
+| XHR-interceptor leest de timedtext-respons (playback ongemoeid) | ✅ live getest (volledige 361 KB json3 opgevangen) |
+| Caption Boost-overlay (positie, stijl, verbergen van YouTube's venster) | ✅ visueel gecontroleerd in een echte speler; volledige extensie-run op een playlist nog te ervaren |
+| Captionstijl-API (`getSubtitlesUserSettings`/`updateSubtitlesUserSettings`) | ✅ live geverifieerd op een echte video (kleuren, opacity en `fontSizeIncrement`); stijl- en grootteberekening unit-getest |
 | Python-bestanden | ✅ syntax gecontroleerd (`ast.parse`) |
 | Extensie geladen in Brave **op een echte video** | ⏳ nog te doen door jou (Load unpacked → `]` testen) |
 | Bridge end-to-end met echte spraak | ⏳ nog te doen (draai `bridge\setup.ps1` en daarna `tools\bridge-smoke-test.py`) |

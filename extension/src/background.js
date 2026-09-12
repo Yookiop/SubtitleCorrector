@@ -146,10 +146,29 @@ function clampSeconds(v) {
   return Math.max(2, Math.min(10, Math.round(n)));
 }
 
+let capturing = false;
+
 async function detectAudio(tab, msg) {
   const tabId = tab && tab.id;
   if (tabId == null) return { ok: false, reason: 'no-tab' };
+  if (capturing) return { ok: false, reason: 'capture-busy' };
 
+  // Niet opnemen als de bridge offline is of het model nog laadt: dat kost
+  // alleen CPU/GPU zonder resultaat (belangrijk in playlists).
+  const health = await bridgeHealth(false);
+  if (!health || !health.ok || !health.ready) {
+    return { ok: false, reason: health && health.ok ? 'bridge-loading' : 'bridge-offline' };
+  }
+
+  capturing = true;
+  try {
+    return await captureAndDetect(tabId, msg);
+  } finally {
+    capturing = false;
+  }
+}
+
+async function captureAndDetect(tabId, msg) {
   try {
     await ensureOffscreen();
   } catch (e) {

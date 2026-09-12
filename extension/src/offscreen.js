@@ -72,19 +72,27 @@ async function record(msg) {
     return { ok: false, reason: 'capture-failed', detail: String((e && e.message) || e) };
   }
 
-  const ctx = new AudioContext();
-  await ctx.resume().catch(() => {});
-  const source = ctx.createMediaStreamSource(stream);
-
-  // Terugspelen zodat de gebruiker blijft horen wat er speelt.
+  // Terugspelen zodat de gebruiker blijft horen wat er speelt. Alleen dan is een
+  // echte AudioContext + MediaStreamAudioSourceNode nodig; decoderen kan met
+  // een offline context (dat scheelt een audio-uitvoer + DSP-werk).
+  let ctx = null;
+  let source = null;
   let gain = null;
   if (keepAudio) {
     try {
+      ctx = new AudioContext();
+      await ctx.resume().catch(() => {});
+      source = ctx.createMediaStreamSource(stream);
       gain = ctx.createGain();
       gain.gain.value = 1;
       source.connect(gain);
       gain.connect(ctx.destination);
-    } catch (e) { gain = null; }
+    } catch (e) {
+      try { if (ctx) ctx.close(); } catch (e2) { /* ignore */ }
+      ctx = null;
+      source = null;
+      gain = null;
+    }
   }
 
   const mime = pickMime();
@@ -106,7 +114,7 @@ async function record(msg) {
     await sleep(seconds * 1000);
     try { rec.stop(); } catch (e) { /* ignore */ }
     await stopped;
-    result = await analyse(chunks, ctx, seconds, minConfidence);
+    result = await analyse(chunks, seconds, minConfidence);
   } catch (e) {
     result = { ok: false, reason: 'analyse-failed', detail: String((e && e.message) || e) };
   } finally {
@@ -115,15 +123,15 @@ async function record(msg) {
 
   function cleanup() {
     try { stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* ignore */ }
-    try { source.disconnect(); } catch (e) { /* ignore */ }
+    try { if (source) source.disconnect(); } catch (e) { /* ignore */ }
     try { if (gain) gain.disconnect(); } catch (e) { /* ignore */ }
-    try { ctx.close(); } catch (e) { /* ignore */ }
+    try { if (ctx) ctx.close(); } catch (e) { /* ignore */ }
   }
 
   return result;
 }
 
-async function analyse(chunks, ctx, seconds, minConfidence) {
+async function analyse(chunks, seconds, minConfidence) {
   if (!chunks.length) return { ok: false, reason: 'capture-empty' };
 
   const blob = new Blob(chunks, { type: chunks[0].type || 'audio/webm' });
@@ -132,7 +140,8 @@ async function analyse(chunks, ctx, seconds, minConfidence) {
 
   let decoded;
   try {
-    decoded = await ctx.decodeAudioData(arr.slice(0));
+    const decodeCtx = new OfflineAudioContext(1, 1, TARGET_RATE);
+    decoded = await decodeCtx.decodeAudioData(arr.slice(0));
   } catch (e) {
     return { ok: false, reason: 'decode-failed', detail: String((e && e.message) || e) };
   }

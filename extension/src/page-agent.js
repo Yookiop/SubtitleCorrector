@@ -81,6 +81,7 @@
       case 'ping': return Promise.resolve({ pong: true, videoId: currentVideoId() });
       case 'probe': return Promise.resolve(probe());
       case 'apply': return apply(d.payload || {});
+      case 'setOptions': return Promise.resolve(setPageOptions(d.payload || {}));
       case 'state': return Promise.resolve({ videoId: currentVideoId(), current: readCurrentTrack(), captionsOn: captionsOn(), adShowing: isAd() });
       default: return Promise.resolve({ ok: false, reason: 'unknown-request:' + d.type });
     }
@@ -475,6 +476,308 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * Caption Boost: eigen vloeiende ondertitelweergave
+   *
+   * YouTube's eigen caption-venster loopt in playlists soms 1-2 s achter en
+   * toont dan in blokken tekst. De speler haalt de track zelf op via XHR
+   * (json3, met `tOffsetMs` per woord bij ASR); die respons vangen we
+   * passief op en we tekenen de tekst zelf woord voor woord synchroon met
+   * `getCurrentTime()`. YouTube's caption-venster verbergen we zolang dat
+   * lukt; lukt het niet, dan blijft YouTube's eigen weergave gewoon staan.
+   * ------------------------------------------------------------------ */
+  var CAPTION_BOOST_ENABLED = true;
+  var BOOST_MAX_TRACKS = 2;
+
+  var boost = {
+    videoId: null,
+    trackKey: null,
+    events: null,
+    lastText: null,
+    shownOnce: false,
+    frame: 0,
+    rafActive: false,
+    rafHandle: null,
+    overlay: null,
+    line: null,
+    styleReady: false
+  };
+
+  var boostTracks = Object.create(null);
+  var boostTrackOrder = [];
+
+  function boostKey(videoId, lang, kind) {
+    return videoId + '|' + (lang || '') + '|' + (kind || '');
+  }
+
+  function urlParam(url, name) {
+    var m = new RegExp('[?&]' + name + '=([^&]*)').exec(String(url || ''));
+    return m ? decodeURIComponent(m[1]) : null;
+  }
+
+  /** Timedtext-respons (json3) bewaren; nooit een fout naar de speler laten lekken. */
+  function storeBoostTrack(url, body) {
+    if (!CAPTION_BOOST_ENABLED) return;
+    try {
+      var lang = urlParam(url, 'lang');
+      var v = urlParam(url, 'v');
+      if (!v || !lang || !L.isSupported(lang)) return;
+      if (urlParam(url, 'tlang')) return; // vertaalde variant: nooit gebruiken
+      var data = body;
+      if (typeof data === 'string') {
+        try { data = JSON.parse(data); } catch (e) { return; }
+      }
+      if (!data || !data.events) return;
+      var events = L.parseCaptionJson(data);
+      if (!events.length) return;
+      var key = boostKey(v, L.baseLang(lang), urlParam(url, 'kind') || '');
+      if (!boostTracks[key]) boostTrackOrder.push(key);
+      boostTracks[key] = { at: Date.now(), events: events };
+      while (boostTrackOrder.length > BOOST_MAX_TRACKS) {
+        var old = boostTrackOrder.shift();
+        if (old !== key) delete boostTracks[old];
+      }
+      dbg('timedtext opgevangen', key, events.length);
+    } catch (e) { /* ignore */ }
+  }
+
+  /**
+   * De speler gebruikt XMLHttpRequest (met pot-token) voor timedtext; direct
+   * fetchen levert een lege 200 op. We observeren alleen — de respons zelf
+   * blijft ongemoeid. fetch-varianten worden voor de zekerheid ook gevolgd.
+   */
+  function installTimedtextHooks() {
+    try {
+      if (window.__scTtHooked) return;
+      window.__scTtHooked = true;
+      var origOpen = XMLHttpRequest.prototype.open;
+      var origSend = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function (method, url) {
+        try {
+          this.__scTtUrl = String(url || '');
+          this.__scTt = this.__scTtUrl.indexOf('/api/timedtext') !== -1;
+        } catch (e) { /* ignore */ }
+        return origOpen.apply(this, arguments);
+      };
+      XMLHttpRequest.prototype.send = function () {
+        if (this.__scTt) {
+          try {
+            var xhr = this;
+            xhr.addEventListener('load', function () {
+              try {
+                var txt = null;
+                try { txt = xhr.responseText || null; } catch (e) { txt = null; }
+                if (!txt) {
+                  try { if (typeof xhr.response === 'string') txt = xhr.response; } catch (e) { /* ignore */ }
+                }
+                if (txt) storeBoostTrack(xhr.__scTtUrl, txt);
+              } catch (e) { /* ignore */ }
+            });
+          } catch (e) { /* ignore */ }
+        }
+        return origSend.apply(this, arguments);
+      };
+    } catch (e) { /* ignore */ }
+
+    try {
+      var origFetch = window.fetch;
+      if (origFetch && !origFetch.__scWrapped) {
+        var wrapped = function (input, init) {
+          var url = typeof input === 'string' ? input : (input && input.url) || '';
+          var pr = origFetch.apply(this, arguments);
+          if (String(url).indexOf('/api/timedtext') !== -1) {
+            try {
+              pr.then(function (res) {
+                try {
+                  res.clone().text().then(function (t) { storeBoostTrack(url, t); }).catch(function () {});
+                } catch (e) { /* ignore */ }
+              }).catch(function () {});
+            } catch (e) { /* ignore */ }
+          }
+          return pr;
+        };
+        wrapped.__scWrapped = true;
+        window.fetch = wrapped;
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  function boostSupported(cur) {
+    return !!cur && L.isSupported(cur.languageCode) && !cur.translated;
+  }
+
+  /* Stijl en grootte van de overlay: kleuren/opacity komen uit YouTube's eigen
+     captioninstellingen (player.getSubtitlesUserSettings), de grootte is een
+     percentage bovenop YouTube's size-stand. */
+  var BOOST_SIZE_PCT = 100;
+  var boostStyle = { at: 0, textColor: 'rgba(255,255,255,1)', bgColor: 'rgba(0,0,0,1)', increment: 0, applied: '' };
+
+  function refreshBoostStyle(force) {
+    var now = Date.now();
+    if (!force && now - boostStyle.at < 5000) return;
+    boostStyle.at = now;
+    var p = player();
+    var s = null;
+    try { s = p && p.getSubtitlesUserSettings ? p.getSubtitlesUserSettings() : null; } catch (e) { s = null; }
+    if (!s) return; // geen API: witte tekst op zwarte achtergrond (default) aanhouden
+    var tc = L.rgbaFromHex(s.color, typeof s.textOpacity === 'number' ? s.textOpacity : 1);
+    var bc = L.rgbaFromHex(s.background, typeof s.backgroundOpacity === 'number' ? s.backgroundOpacity : 1);
+    if (tc) boostStyle.textColor = tc;
+    if (bc) boostStyle.bgColor = bc;
+    boostStyle.increment = typeof s.fontSizeIncrement === 'number' ? s.fontSizeIncrement : 0;
+  }
+
+  function applyBoostStyle() {
+    var el = boost.overlay;
+    if (!el) return;
+    var p = player();
+    var px = L.captionFontPx(p ? p.clientHeight : 400, boostStyle.increment, BOOST_SIZE_PCT);
+    var key = Math.round(px * 10) + '|' + boostStyle.textColor + '|' + boostStyle.bgColor;
+    if (key === boostStyle.applied) return;
+    boostStyle.applied = key;
+    el.style.fontSize = (Math.round(px * 10) / 10) + 'px';
+    if (boost.line) {
+      boost.line.style.color = boostStyle.textColor;
+      boost.line.style.background = boostStyle.bgColor;
+    }
+  }
+
+  function ensureBoostDom() {
+    var p = player();
+    if (!p) return null;
+    if (!boost.styleReady) {
+      try {
+        var st = document.createElement('style');
+        st.id = 'sc-caption-style';
+        st.textContent =
+          '.sc-boost-on .ytp-caption-window-container{display:none!important}' +
+          '#sc-caption-overlay{position:absolute;left:5%;right:5%;bottom:10.5%;text-align:center;pointer-events:none;z-index:45;display:none;' +
+          'font-weight:600;line-height:1.4;font-family:"YouTube Sans","Roboto",Arial,sans-serif}' +
+          '#sc-caption-overlay.sc-on{display:block}' +
+          '#sc-caption-overlay .sc-caption-line{display:inline;white-space:pre-wrap;padding:.06em .32em;border-radius:3px;' +
+          '-webkit-box-decoration-break:clone;box-decoration-break:clone;text-shadow:0 0 2px rgba(0,0,0,.8)}';
+        (document.head || document.documentElement).appendChild(st);
+        boost.styleReady = true;
+      } catch (e) { /* ignore */ }
+    }
+    var el = document.getElementById('sc-caption-overlay');
+    if (el && el.parentNode && el.parentNode !== p) el.parentNode.removeChild(el);
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'sc-caption-overlay';
+    }
+    var line = el.querySelector('.sc-caption-line');
+    if (!line) {
+      line = document.createElement('span');
+      line.className = 'sc-caption-line';
+      el.appendChild(line);
+    }
+    if (el.parentNode !== p) p.appendChild(el);
+    boost.overlay = el;
+    boost.line = line;
+    applyBoostStyle();
+    return el;
+  }
+
+  function hideBoost(on) {
+    var p = player();
+    if (p) {
+      if (on) p.classList.add('sc-boost-on');
+      else p.classList.remove('sc-boost-on');
+    }
+    if (boost.overlay) {
+      if (on) boost.overlay.classList.add('sc-on');
+      else boost.overlay.classList.remove('sc-on');
+      if (!on && boost.line) boost.line.textContent = '';
+    }
+  }
+
+  function stopBoost() {
+    boost.rafActive = false;
+    if (boost.rafHandle) {
+      try { cancelAnimationFrame(boost.rafHandle); } catch (e) { /* ignore */ }
+      boost.rafHandle = null;
+    }
+    boost.lastText = null;
+    boost.shownOnce = false;
+    hideBoost(false);
+  }
+
+  function renderBoost() {
+    if (!boost.rafActive) return;
+    var p = player();
+    var cur = readCurrentTrack();
+    if (!CAPTION_BOOST_ENABLED || !p || !cur || !boostSupported(cur) || isAd() || !boost.events) {
+      stopBoost();
+      return;
+    }
+    boost.frame++;
+    if (boost.frame % 30 === 0) {
+      var idNow = currentVideoId();
+      if (idNow && boost.videoId && idNow !== boost.videoId) {
+        boost.events = null;
+        stopBoost();
+        return;
+      }
+      applyBoostStyle(); // spelerformaat kan veranderd zijn (fullscreen/theater)
+    }
+    var t = safe(function () { return p.getCurrentTime(); }, 0);
+    var text = L.boostTextFor(boost.events, t);
+    if (text !== boost.lastText) {
+      boost.lastText = text;
+      if (boost.line) boost.line.textContent = text;
+      if (text) {
+        boost.shownOnce = true;
+        hideBoost(true);
+      }
+    }
+    boost.rafHandle = requestAnimationFrame(renderBoost);
+  }
+
+  function boostTick() {
+    if (!CAPTION_BOOST_ENABLED) { if (boost.rafActive) stopBoost(); return; }
+    var cur = readCurrentTrack();
+    if (!cur || !boostSupported(cur) || isAd()) { if (boost.rafActive) stopBoost(); return; }
+    var id = currentVideoId();
+    if (!id) { if (boost.rafActive) stopBoost(); return; }
+    var key = boostKey(id, L.baseLang(cur.languageCode), cur.kind === 'asr' ? 'asr' : '');
+    if (boost.videoId !== id || boost.trackKey !== key) {
+      boost.events = null;
+      stopBoost();
+      boost.videoId = id;
+      boost.trackKey = key;
+    }
+    if (!boost.events) {
+      var rec = boostTracks[key];
+      if (rec) boost.events = rec.events;
+    }
+    if (boost.events) {
+      refreshBoostStyle(false);
+      ensureBoostDom();
+      if (!boost.rafActive) {
+        boost.rafActive = true;
+        boost.frame = 0;
+        boost.rafHandle = requestAnimationFrame(renderBoost);
+      }
+    }
+  }
+
+  function setPageOptions(opts) {
+    if (opts && Object.prototype.hasOwnProperty.call(opts, 'captionBoost')) {
+      CAPTION_BOOST_ENABLED = !!opts.captionBoost;
+      if (!CAPTION_BOOST_ENABLED) stopBoost();
+      dbg('captionBoost', CAPTION_BOOST_ENABLED);
+    }
+    if (opts && Object.prototype.hasOwnProperty.call(opts, 'captionSize')) {
+      var pct = Number(opts.captionSize);
+      if (isFinite(pct)) BOOST_SIZE_PCT = Math.max(50, Math.min(250, pct));
+      applyBoostStyle();
+    }
+    return { captionBoost: CAPTION_BOOST_ENABLED, captionSize: BOOST_SIZE_PCT };
+  }
+
+  installTimedtextHooks();
+
+  /* ------------------------------------------------------------------ *
    * Events naar de content script
    * ------------------------------------------------------------------ */
   var lastVideoId = null;
@@ -522,9 +825,22 @@
         translated: !!(cur && cur.translated)
       });
     }
+
+    // Caption Boost: eigen weergave aan/uitzetten zodra de juiste track actief is.
+    boostTick();
   }
 
-  setInterval(tick, 900);
-  try { tick(); } catch (e) { /* ignore */ }
+  // Poll-ritme: snel als het tabblad zichtbaar is, langzaam op de achtergrond
+  // (playlists spelen vaak in een niet-actief tabblad; dan is rust belangrijker).
+  var TICK_MS = 900;
+  var TICK_HIDDEN_MS = 2600;
+  function tickDelay() {
+    return document.hidden ? TICK_HIDDEN_MS : TICK_MS;
+  }
+  function loop() {
+    try { tick(); } catch (e) { /* ignore */ }
+    setTimeout(loop, tickDelay());
+  }
+  loop();
   dbg('page agent geladen');
 })();

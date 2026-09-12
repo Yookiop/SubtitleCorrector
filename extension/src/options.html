@@ -108,6 +108,34 @@
     </section>
 
     <section>
+      <h2>Prestaties (caption-prioriteit)</h2>
+      <div class="field">
+        <label>Eigen ondertitelweergave (Caption Boost)
+          <span class="hint">Tekent dezelfde ondertitel zelf woord voor woord, direct synchroon met de video. Verbergt YouTube's eigen caption-venster zolang dat lukt; lost het "loopt 1-2 seconden achter en plopt dan in blokken"-probleem op — ook als dat zonder deze extensie gebeurt.</span>
+        </label>
+        <input type="checkbox" id="captionBoost">
+      </div>
+      <div class="field">
+        <label>Ondertitelgrootte (%)
+          <span class="hint">50 - 250%. 100% is de standaardgrootte; de rest van de stijl (tekstkleur, achtergrondkleur en -opacity én de grove "Font size"-stand) wordt automatisch uit je YouTube-ondertitelinstellingen overgenomen.</span>
+        </label>
+        <input type="number" id="captionSize" min="50" max="250" step="5">
+      </div>
+      <div class="field">
+        <label>Caption-prioriteit
+          <span class="hint">De extensie doet tijdens het afspelen zo weinig mogelijk: langere wachttijd bij videostart in playlists, minder pollen op de achtergrond en geen zware audio-analyse zonder hotkey. Zo houdt YouTube meer CPU/GPU over voor het tekenen van de ondertitels.</span>
+        </label>
+        <input type="checkbox" id="captionPriority">
+      </div>
+      <div class="field">
+        <label>Audio-analyse ook automatisch in playlists
+          <span class="hint">Standaard uit. In playlists draait de audio-analyse dan alleen via de hotkey. Aanzetten kost meer CPU/GPU (Whisper) en kan het afspelen laten haperen.</span>
+        </label>
+        <input type="checkbox" id="audioFallbackInPlaylists">
+      </div>
+    </section>
+
+    <section>
       <h2>Lokale bridge (audio-analyse)</h2>
       <div class="field">
         <label>Bridge gebruiken als metadata onduidelijk is

@@ -72,6 +72,52 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * Prestatie-regels: wanneer mag de zware audio-analyse (laag 4)?
+   *
+   * Een extensie kan YouTube's caption-renderer geen CPU geven; ze kan
+   * alleen haar EIGEN zware werk (tab-capture + Whisper/GPU) uit de weg
+   * gaan op de momenten dat de speler het drukst is (playlists).
+   * ------------------------------------------------------------------ */
+
+  /** Zit deze query (location.search) in een playlist-context? */
+  function queryHasPlaylist(search) {
+    return /(?:^|[?&])list=/.test(String(search || ''));
+  }
+
+  /**
+   * Mag laag 4 (audio opnemen + bridge/Whisper) draaien?
+   *
+   * @param {Object} ctx
+   *   ctx.enabled          audioFallback-setting aan? (anders: nooit)
+   *   ctx.trigger          'auto' | 'hotkey'
+   *   ctx.inPlaylist       playlist-context?
+   *   ctx.captionPriority  caption-prioriteit aan? (default true)
+   *   ctx.allowInPlaylists audioFallbackInPlaylists-setting (default false)
+   *   ctx.lastCaptureAt    tijdstip (ms) van de vorige opname
+   *   ctx.now              nu (ms)
+   *   ctx.cooldownMs       min. tijd tussen opnames (default 45000)
+   * @returns {{allowed:boolean, reason:string}}
+   */
+  function shouldUseAudioFallback(ctx) {
+    ctx = ctx || {};
+    if (ctx.enabled === false) return { allowed: false, reason: 'fallback-disabled' };
+
+    // In een playlist standaard geen zware audio-analyse; alleen via de hotkey.
+    if (ctx.trigger !== 'hotkey' && ctx.captionPriority !== false && ctx.inPlaylist && ctx.allowInPlaylists !== true) {
+      return { allowed: false, reason: 'playlist-hotkey-only' };
+    }
+
+    // Nooit twee opnames kort na elkaar (Whisper is zwaar; playlists wisselen snel).
+    if (ctx.trigger !== 'hotkey') {
+      var cooldown = typeof ctx.cooldownMs === 'number' ? ctx.cooldownMs : 45000;
+      if (ctx.lastCaptureAt && ctx.now - ctx.lastCaptureAt < cooldown) {
+        return { allowed: false, reason: 'cooldown' };
+      }
+    }
+    return { allowed: true, reason: 'ok' };
+  }
+
+  /* ------------------------------------------------------------------ *
    * Audio-track taal
    *
    * YouTube geeft `player.getAudioTrack()`:
@@ -273,6 +319,114 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * Caption Boost: json3 timedtext parsen en per woord uitlezen
+   *
+   * De YouTube-speler haalt de ondertitel-track op als json3; ASR-tracks
+   * hebben per segment `tOffsetMs` per woord. Daarmee kan de extensie zelf
+   * woord-voor-woord renderen en zo het achterlopende caption-venster van
+   * YouTube omzeilen. Alles hier is puur (geen DOM) en dus testbaar.
+   * ------------------------------------------------------------------ */
+
+  /**
+   * @param {Object} data json3-object ({events:[{tStartMs,dDurationMs,segs:[{utf8,tOffsetMs}]}]})
+   * @returns {Array<{start:number,dur:number,raw:string,text:string,bounds:Array<{t:number,end:number}>}>}
+   */
+  function parseCaptionJson(data) {
+    var out = [];
+    var events = (data && data.events) || [];
+    for (var i = 0; i < events.length; i++) {
+      var e = events[i];
+      if (!e || !e.segs || !e.segs.length) continue;
+      var raw = '';
+      var bounds = [];
+      for (var j = 0; j < e.segs.length; j++) {
+        var s = e.segs[j];
+        var u = s && s.utf8 ? String(s.utf8) : '';
+        if (!u) continue;
+        raw += u;
+        var off = typeof s.tOffsetMs === 'number' ? s.tOffsetMs : 0;
+        bounds.push({ t: ((e.tStartMs || 0) + off) / 1000, end: raw.length });
+      }
+      var clean = raw.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!clean) continue;
+      out.push({
+        start: (e.tStartMs || 0) / 1000,
+        dur: (e.dDurationMs || 0) / 1000,
+        raw: raw,
+        text: clean,
+        bounds: bounds
+      });
+    }
+    out.sort(function (a, b) { return a.start - b.start; });
+    return out;
+  }
+
+  /** Index van het laatste event dat op tijd `t` (seconden) begonnen is. */
+  function findCaptionEvent(events, t) {
+    var lo = 0;
+    var hi = events.length - 1;
+    var ans = -1;
+    while (lo <= hi) {
+      var mid = (lo + hi) >> 1;
+      if (events[mid].start <= t) { ans = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    return ans;
+  }
+
+  /** Welke tekst hoort bij tijd `t` (seconden)? Woord-voor-woord bij offsets. */
+  function boostTextFor(events, t) {
+    if (!events || !events.length) return '';
+    var idx = findCaptionEvent(events, t);
+    if (idx < 0) return '';
+    var ev = events[idx];
+    var next = events[idx + 1];
+    if (!next && t > ev.start + ev.dur + 5) return '';
+    var text = ev.raw;
+    if (ev.bounds && ev.bounds.length) {
+      var last = -1;
+      for (var i = 0; i < ev.bounds.length; i++) {
+        if (ev.bounds[i].t <= t + 0.05) last = i;
+        else break;
+      }
+      text = last < 0 ? '' : ev.raw.slice(0, ev.bounds[last].end);
+    }
+    return String(text).replace(/[^\S\n]+/g, ' ').trim();
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Captionstijl: kleur/opacity en grootte van de eigen overlay
+   * ------------------------------------------------------------------ */
+
+  /** '#rgb'/'#rrggbb' + alpha (0-1) -> 'rgba(r,g,b,a)'; null bij een ongeldige kleur. */
+  function rgbaFromHex(color, alpha) {
+    var hex = String(color == null ? '' : color).trim();
+    var m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex);
+    if (!m) return null;
+    var h = m[1];
+    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    var n = parseInt(h, 16);
+    var a = typeof alpha === 'number' && isFinite(alpha) ? Math.max(0, Math.min(1, alpha)) : 1;
+    return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + (Math.round(a * 1000) / 1000) + ')';
+  }
+
+  /** YouTube's fontSizeIncrement -> schaalfactor voor onze overlay (milde benadering). */
+  function captionSizeScale(increment) {
+    var inc = typeof increment === 'number' && isFinite(increment) ? increment : 0;
+    return Math.max(0.5, Math.min(2, 1 + inc * 0.12));
+  }
+
+  /**
+   * Fontgrootte (px) voor de overlay: 3,2% van de spelerhoogte × YouTube's
+   * size-stand × het gebruikerspercentage (50-250).
+   */
+  function captionFontPx(playerHeight, increment, sizePercent) {
+    var h = typeof playerHeight === 'number' && isFinite(playerHeight) && playerHeight > 0 ? playerHeight : 400;
+    var pct = typeof sizePercent === 'number' && isFinite(sizePercent) ? Math.max(50, Math.min(250, sizePercent)) : 100;
+    var px = h * 0.032 * captionSizeScale(increment) * (pct / 100);
+    return Math.max(10, Math.min(160, px));
+  }
+
+  /* ------------------------------------------------------------------ *
    * UI-tekst (Nederlands) voor de toast/badge
    * ------------------------------------------------------------------ */
   var REASON_NL = {
@@ -333,10 +487,17 @@
     normalizeLabel: normalizeLabel,
     stripTranslationSuffix: stripTranslationSuffix,
     isTranslatedLabel: isTranslatedLabel,
+    queryHasPlaylist: queryHasPlaylist,
+    shouldUseAudioFallback: shouldUseAudioFallback,
     decodeAudioTrackLang: decodeAudioTrackLang,
     pickCaptionTrack: pickCaptionTrack,
     detectAudioLanguage: detectAudioLanguage,
     planFix: planFix,
+    parseCaptionJson: parseCaptionJson,
+    boostTextFor: boostTextFor,
+    rgbaFromHex: rgbaFromHex,
+    captionSizeScale: captionSizeScale,
+    captionFontPx: captionFontPx,
     describePlan: describePlan,
     toastText: toastText
   };

@@ -23,6 +23,10 @@
     respectUserOff: true,
     fixTranslation: true,
     audioFallback: true,
+    captionPriority: true,
+    audioFallbackInPlaylists: false,
+    captionBoost: true,
+    captionSize: 100,
     audioSeconds: 5,
     minConfidence: 0.5,
     keepAudioDuringCapture: true,
@@ -43,8 +47,12 @@
     retry: null,
     waitingPlayback: null,
     retryCount: 0,
+    lastCaptureAt: 0,
     fixCooldown: Object.create(null)
   };
+
+  // Laag 4 (audio-analyse) is zwaar; nooit vaker dan één keer per 45 s automatisch.
+  var CAPTURE_COOLDOWN_MS = 45000;
 
   /* ------------------------------------------------------------------ *
    * Instellingen
@@ -73,7 +81,8 @@
       });
       if (touched) {
         if (settings.debug !== undefined) ask('setDebug', { value: !!settings.debug }).catch(function () {});
-        if (settings.autoApply && settings.enabled) scheduleAuto(state.videoId, 600, true);
+        ask('setOptions', { captionBoost: !!settings.captionBoost, captionSize: Number(settings.captionSize) || 100 }).catch(function () {});
+        if (settings.autoApply && settings.enabled) scheduleAuto(state.videoId, autoDelay(600), true);
       }
     });
   } catch (e) { /* ignore */ }
@@ -120,17 +129,17 @@
         state.retryCount = 0;
         state.waitingPlayback = null;
         setBadge('');
-        if (settings.autoApply && settings.enabled) scheduleAuto(d.videoId, 1800);
+        if (settings.autoApply && settings.enabled) scheduleAuto(d.videoId, autoDelay(1800));
         break;
 
       case 'adChanged':
-        if (!d.adShowing && settings.autoApply && settings.enabled && d.videoId) scheduleAuto(d.videoId, 1200);
+        if (!d.adShowing && settings.autoApply && settings.enabled && d.videoId) scheduleAuto(d.videoId, autoDelay(1200));
         break;
 
       case 'playerState':
         if (d.state === 1 && state.waitingPlayback && state.waitingPlayback.videoId === d.videoId) {
           state.waitingPlayback = null;
-          scheduleAuto(d.videoId, 1500, true);
+          scheduleAuto(d.videoId, autoDelay(1500), true);
         }
         break;
 
@@ -142,7 +151,7 @@
           var last = state.fixCooldown[vid] || 0;
           if (now - last > 20000) {
             state.fixCooldown[vid] = now;
-            scheduleAuto(vid, 900, true);
+            scheduleAuto(vid, autoDelay(900), true);
           }
         }
         break;
@@ -264,6 +273,48 @@
   }, true);
 
   /* ------------------------------------------------------------------ *
+   * Prestaties: rustig omgaan met de speler (vooral in playlists)
+   *
+   * De extensie kan YouTube's caption-renderer geen CPU geven; ze kan alleen
+   * haar eigen zware werk uitstellen of overslaan zodat het afspelen (en dus
+   * het tekenen van de ondertitels) zo min mogelijk concurreert.
+   * ------------------------------------------------------------------ */
+  function isPlaylistContext() {
+    try {
+      if (L.queryHasPlaylist(location.search)) return true;
+      return !!document.querySelector('ytd-playlist-panel-renderer');
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /** Langere wachttijd in playlists: eerst de videostart laten afronden. */
+  function autoDelay(base) {
+    if (settings.captionPriority && isPlaylistContext()) return base + 2200;
+    return base;
+  }
+
+  /** Extra wachttijd tussen retries in playlists (speler is dan nog druk). */
+  function retryDelay() {
+    if (settings.captionPriority && isPlaylistContext()) return 2200;
+    return 1400;
+  }
+
+  /** Snelle, gecachete check of de bridge online én klaar is. */
+  function bridgeReady() {
+    return new Promise(function (resolve) {
+      try {
+        chrome.runtime.sendMessage({ type: 'bridgeHealth' }, function (res) {
+          void chrome.runtime.lastError;
+          resolve(!!(res && res.ok && res.ready));
+        });
+      } catch (e) {
+        resolve(false);
+      }
+    });
+  }
+
+  /* ------------------------------------------------------------------ *
    * Planning
    * ------------------------------------------------------------------ */
   function fixedSignature(info) {
@@ -316,16 +367,36 @@
       if (notReady && state.retryCount < 6) {
         state.retryCount++;
         clearTimeout(state.retry);
-        state.retry = setTimeout(function () { run(trigger); }, 1400);
+        state.retry = setTimeout(function () { run(trigger); }, retryDelay());
         return;
       }
 
       var det = L.detectAudioLanguage(probe);
       var viaBridge = false;
 
-      if ((!det.lang || det.ambiguous) && settings.audioFallback) {
+      var fallback = L.shouldUseAudioFallback({
+        enabled: settings.audioFallback,
+        trigger: trigger,
+        inPlaylist: isPlaylistContext(),
+        captionPriority: settings.captionPriority,
+        allowInPlaylists: settings.audioFallbackInPlaylists,
+        lastCaptureAt: state.lastCaptureAt,
+        now: Date.now(),
+        cooldownMs: CAPTURE_COOLDOWN_MS
+      });
+      if (!fallback.allowed && (!det.lang || det.ambiguous) && settings.debug) {
+        console.log('[SC] audio-analyse overgeslagen:', fallback.reason);
+      }
+
+      if ((!det.lang || det.ambiguous) && fallback.allowed) {
         if (probe.playerState === 1) {
-          var br = await bridgeDetect();
+          // Niet opnemen als de bridge niet klaar is: dat kost alleen CPU/GPU.
+          var ready = await bridgeReady();
+          var br = null;
+          if (ready) {
+            state.lastCaptureAt = Date.now();
+            br = await bridgeDetect();
+          }
           if (br && br.ok && br.language) {
             viaBridge = true;
             det = {
@@ -335,8 +406,8 @@
               outOfScope: br.language && !L.isSupported(br.language) ? br.language : null,
               candidates: []
             };
-          } else if (br && !br.ok && trigger === 'hotkey' && settings.showToast) {
-            toast('Audio-analyse niet gelukt (' + (br.reason || 'onbekend') + ')', 'warn');
+          } else if (trigger === 'hotkey' && settings.showToast) {
+            toast('Audio-analyse niet gelukt (' + ((br && br.reason) || (ready ? 'onbekend' : 'bridge niet klaar')) + ')', 'warn');
           }
         } else {
           // Nog geen audio: probeer opnieuw zodra het filmpje speelt.
@@ -451,6 +522,7 @@
    * ------------------------------------------------------------------ */
   loadSettings(function () {
     if (settings.debug) ask('setDebug', { value: true }).catch(function () {});
+    ask('setOptions', { captionBoost: !!settings.captionBoost, captionSize: Number(settings.captionSize) || 100 }).catch(function () {});
     // eerste probe, zodat de popup direct iets kan tonen
     ask('probe', null, 5000).then(function (p) {
       if (p && p.ok) {
