@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <title>Subtitle Corrector - syntax &amp; manifest check</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; padding: 24px; font: 14px/1.5 "Segoe UI", system-ui, sans-serif; background: #14161c; color: #e8eef7; }
+    h1 { font-size: 18px; margin: 0 0 6px; }
+    .sub { color: #93a1b5; margin-bottom: 18px; }
+    #summary { font-size: 15px; font-weight: 600; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; display: inline-block; }
+    .pass { background: #12331f; color: #56e39f; border: 1px solid #1e5a37; }
+    .fail { background: #3a1414; color: #ff9a9a; border: 1px solid #6a2020; }
+    ul { list-style: none; padding: 0; margin: 0; max-width: 950px; }
+    li { padding: 7px 10px; border-bottom: 1px solid #232936; display: flex; gap: 10px; }
+    li .mark { width: 18px; flex: 0 0 18px; font-weight: 700; }
+    li.ok .mark { color: #56e39f; }
+    li.err .mark { color: #ff7a7a; }
+    li .err-msg { color: #ff9a9a; font-size: 12.5px; margin-top: 3px; white-space: pre-wrap; }
+    code { font-family: Consolas, monospace; background: #232936; padding: 1px 5px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Subtitle Corrector - syntax- en manifestcheck</h1>
+  <div class="sub">
+    Parseert alle scripts met <code>new Function()</code> (dus alleen <em>syntax</em>, geen runtime) en controleert of
+    elk bestand waarnaar <code>manifest.json</code> verwijst bestaat. Draai dit via een lokale server, bv.<br>
+    <code>python -m http.server 8099</code> → <code>http://localhost:8099/tools/check-syntax.html</code>
+  </div>
+  <div id="summary">bezig...</div>
+  <ul id="results"></ul>
+
+  <script>
+    const SCRIPTS = [
+      '../extension/src/shared/lang-utils.js',
+      '../extension/src/page-agent.js',
+      '../extension/src/content.js',
+      '../extension/src/background.js',
+      '../extension/src/offscreen.js',
+      '../extension/src/popup.js',
+      '../extension/src/options.js',
+      'lang-utils-tests.js'
+    ];
+
+    const results = [];
+
+    function record(name, ok, error) {
+      results.push({ name, ok, error });
+    }
+
+    async function checkScript(rel) {
+      try {
+        const res = await fetch(rel, { cache: 'no-store' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const src = await res.text();
+        new Function(src); // parse-only
+        record(rel, true);
+      } catch (e) {
+        record(rel, false, String(e.message || e));
+      }
+    }
+
+    async function checkManifest() {
+      let manifest;
+      try {
+        const res = await fetch('../extension/manifest.json', { cache: 'no-store' });
+        manifest = await res.json();
+        record('manifest.json is geldige JSON (v' + manifest.version + ', MV' + manifest.manifest_version + ')', true);
+      } catch (e) {
+        record('manifest.json', false, String(e.message || e));
+        return;
+      }
+
+      const paths = new Set();
+      if (manifest.background && manifest.background.service_worker) paths.add(manifest.background.service_worker);
+      if (manifest.action && manifest.action.default_popup) paths.add(manifest.action.default_popup);
+      if (manifest.options_page) paths.add(manifest.options_page);
+      Object.values(manifest.icons || {}).forEach((p) => paths.add(p));
+      Object.values((manifest.action && manifest.action.default_icon) || {}).forEach((p) => paths.add(p));
+      (manifest.content_scripts || []).forEach((cs) => (cs.js || []).forEach((p) => paths.add(p)));
+
+      const checks = await Promise.all([...paths].map(async (p) => {
+        try {
+          const res = await fetch('../extension/' + p, { method: 'GET', cache: 'no-store' });
+          return { p, ok: res.ok, status: res.status };
+        } catch (e) {
+          return { p, ok: false, status: String(e.message || e) };
+        }
+      }));
+
+      const missing = checks.filter((c) => !c.ok);
+      record('alle ' + checks.length + ' manifest-verwijzingen bestaan' + (missing.length ? ': ' + missing.map((m) => m.p + ' (' + m.status + ')').join(', ') : ''), missing.length === 0);
+
+      const worlds = (manifest.content_scripts || []).map((cs) => cs.world || 'ISOLATED');
+      record('content scripts: ' + worlds.join(' + ') + ' (verwacht ISOLATED + MAIN)', worlds.includes('MAIN') && worlds.includes('ISOLATED'));
+
+      const hostOk = (manifest.host_permissions || []).some((h) => h.includes('youtube.com'));
+      record('host_permissions bevat youtube.com', hostOk);
+
+      const loopback = (manifest.host_permissions || []).some((h) => h.includes('127.0.0.1'));
+      record('host_permissions bevat 127.0.0.1 (bridge)', loopback);
+    }
+
+    (async function () {
+      for (const rel of SCRIPTS) await checkScript(rel);
+      await checkManifest();
+
+      const li = (r) => {
+        const el = document.createElement('li');
+        el.className = r.ok ? 'ok' : 'err';
+        el.innerHTML = '<span class="mark">' + (r.ok ? '\u2713' : '\u2717') + '</span><span>' +
+          r.name + (r.ok ? '' : '<div class="err-msg">' + r.error + '</div>') + '</span>';
+        return el;
+      };
+      const list = document.getElementById('results');
+      results.forEach((r) => list.appendChild(li(r)));
+
+      const failed = results.filter((r) => !r.ok).length;
+      const summary = document.getElementById('summary');
+      summary.textContent = (results.length - failed) + ' / ' + results.length + ' ok' + (failed ? ' - ' + failed + ' GEFAALD' : ' - alles goed');
+      summary.className = failed ? 'fail' : 'pass';
+      document.title = (failed ? 'FAIL ' : 'PASS ') + (results.length - failed) + '/' + results.length + ' - Subtitle Corrector check';
+    })();
+  </script>
+</body>
+</html>

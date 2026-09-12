@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.venv-1/
+venv/
+
+# Node (alleen voor de optionele tests in tools/)
+node_modules/
+
+# Build / editor
+dist/
+build/
+.vscode/
+.idea/
+.DS_Store
+*.log
+
+# Bridge-model cache (Whisper-modellen horen NIET in de repo)
+bridge/models/
+tools/fixtures/*.wav
+!tools/fixtures/.gitkeep

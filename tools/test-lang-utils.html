@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <title>Subtitle Corrector - tests</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; padding: 24px; font: 14px/1.5 "Segoe UI", system-ui, sans-serif; background: #14161c; color: #e8eef7; }
+    h1 { font-size: 18px; margin: 0 0 6px; }
+    .sub { color: #93a1b5; margin-bottom: 18px; }
+    #summary { font-size: 15px; font-weight: 600; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; display: inline-block; }
+    .pass { background: #12331f; color: #56e39f; border: 1px solid #1e5a37; }
+    .fail { background: #3a1414; color: #ff9a9a; border: 1px solid #6a2020; }
+    ul { list-style: none; padding: 0; margin: 0; max-width: 900px; }
+    li { padding: 7px 10px; border-bottom: 1px solid #232936; display: flex; gap: 10px; }
+    li .mark { width: 18px; flex: 0 0 18px; font-weight: 700; }
+    li.ok .mark { color: #56e39f; }
+    li.err .mark { color: #ff7a7a; }
+    li .err-msg { color: #ff9a9a; font-size: 12.5px; margin-top: 3px; }
+    code { font-family: Consolas, monospace; background: #232936; padding: 1px 5px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Subtitle Corrector - tests van de gedeelde logica</h1>
+  <div class="sub">
+    Test <code>extension/src/shared/lang-utils.js</code> met echte YouTube-probe-payloads.
+    Zelfde tests als <code>node tools/test-lang-utils.mjs</code>.
+  </div>
+  <div id="summary">bezig...</div>
+  <ul id="results"></ul>
+
+  <script src="../extension/src/shared/lang-utils.js"></script>
+  <script src="lang-utils-tests.js"></script>
+  <script>
+    (function () {
+      var results = SCTests.run();
+      var passed = results.filter(function (r) { return r.ok; }).length;
+      var failed = results.length - passed;
+
+      var summary = document.getElementById('summary');
+      summary.textContent = passed + ' / ' + results.length + ' geslaagd' + (failed ? ' - ' + failed + ' GEFAALD' : ' - alles goed');
+      summary.className = failed ? 'fail' : 'pass';
+      document.title = (failed ? 'FAIL ' : 'PASS ') + passed + '/' + results.length + ' - Subtitle Corrector tests';
+
+      var list = document.getElementById('results');
+      results.forEach(function (r) {
+        var li = document.createElement('li');
+        li.className = r.ok ? 'ok' : 'err';
+        var html = '<span class="mark">' + (r.ok ? '\u2713' : '\u2717') + '</span><span>' + r.name;
+        if (!r.ok) html += '<div class="err-msg">' + r.error + '</div>';
+        html += '</span>';
+        li.innerHTML = html;
+        list.appendChild(li);
+      });
+    })();
+  </script>
+</body>
+</html>

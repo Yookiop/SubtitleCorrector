@@ -1,0 +1,10 @@
+# Subtitle Corrector bridge - afhankelijkheden
+#
+# Aanbevolen (snel op CPU):
+faster-whisper>=1.0.0
+numpy>=1.24
+#
+# Alternatief in plaats van faster-whisper (zwaarder, ~2 GB met torch):
+# openai-whisper>=20231117
+#
+# Installeren:  bridge/setup.ps1   (maakt .venv en installeert dit bestand)
