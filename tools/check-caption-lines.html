@@ -86,6 +86,14 @@
     <div><label>YouTube fontSizeIncrement</label><input type="number" id="increment" value="0" min="-3" max="4" step="1"></div>
     <div><label>Ondertitelregels</label><input type="number" id="maxLines" value="2" min="1" max="2" step="1"></div>
     <div><label>Y-offset (%; + = omlaag)</label><input type="number" id="yOffset" value="0" min="-40" max="30" step="1"></div>
+    <div><label>Lettertype</label><select id="fontKey"></select></div>
+    <div><label>Letterdikte</label><select id="fontWeight">
+      <option value="400">400 normaal</option>
+      <option value="500">500 medium</option>
+      <option value="600" selected>600 halfvet (standaard)</option>
+      <option value="700">700 vet</option>
+    </select></div>
+    <div><label>Balkbreedte (%)</label><input type="number" id="barWidth" value="80" min="30" max="100" step="1"></div>
     <div><label>Snelheid</label><select id="speed">
       <option value="1">1x</option>
       <option value="4" selected>4x</option>
@@ -173,9 +181,10 @@
     <code>L.captionSpeakerBreaks()</code> / <code>L.isSpeakerChange()</code>: het scenario
     <b>Sprekerswissel</b> laat zien dat een nieuwe spreker in alle drie de stages op een nieuwe
     regel begint (de cue-stage toont de <code>\n</code>, de woord-stage zet een <code>&lt;br&gt;</code>
-    vóór elke <code>&gt;&gt;</code>). De <b>Y-offset</b> gebruikt dezelfde
-    <code>L.captionBottomPct()</code> als de app (positief = omlaag, geclamped op 0-80%) en geldt
-    voor alle drie de stages.
+    vóór elke <code>&gt;&gt;</code>). De <b>Y-offset</b>, het <b>lettertype</b>, de <b>letterdikte</b> en de
+    <b>balkbreedte</b> gebruiken dezelfde helpers als de app (<code>L.captionBottomPct()</code>,
+    <code>L.captionFontStack()</code>, <code>L.captionFontWeight()</code>, <code>L.captionBarWidthPct()</code>,
+    geclamped) en gelden voor alle drie de stages.
   </div>
 
   <script src="../extension/src/shared/lang-utils.js"></script>
@@ -506,17 +515,29 @@
         return Number(document.getElementById('maxLines').value) === 1 ? 1 : 2;
       }
 
-      function setupStages(hostW, hostH, pct, inc, yOff) {
+      /**
+       * Alle stages dezelfde stijl geven als de app: spelerformaat, lettergrootte,
+       * lettertype, dikte, y-offset, balkbreedte en de padding (uit dezelfde
+       * constanten als L.captionBoxHeightEm()).
+       */
+      function setupStages(cfg) {
         [cueStage, newStage, wordStage].forEach(function (stage) {
-          stage.style.width = hostW + 'px';
-          stage.style.height = hostH + 'px';
+          stage.style.width = cfg.w + 'px';
+          stage.style.height = cfg.h + 'px';
           var overlay = stage.querySelector('#sc-caption-overlay');
-          overlay.style.fontSize = L.captionFontPx(hostH, inc, pct) + 'px';
+          overlay.style.fontSize = L.captionFontPx(cfg.h, cfg.inc, cfg.pct) + 'px';
+          overlay.style.fontFamily = L.captionFontStack(cfg.font);
+          overlay.style.fontWeight = String(L.captionFontWeight(cfg.weight));
           // Als in de app: dezelfde y-offset-berekening (positief = omlaag).
-          overlay.style.bottom = L.captionBottomPct(yOff) + '%';
-          // En exact dezelfde padding als de app (uit dezelfde constanten), zodat
-          // de gemeten vensterhoogte niet kan afwijken van L.captionBoxHeightEm().
+          overlay.style.bottom = L.captionBottomPct(cfg.yOff) + '%';
+          // Balkbreedte: balk gecentreerd (left/right) en de box even breed.
+          var barW = L.captionBarWidthPct(cfg.barW);
+          var side = ((100 - barW) / 2).toFixed(2) + '%';
+          var bar = stage.querySelector('.sc-caption-bar');
+          bar.style.left = side;
+          bar.style.right = side;
           var box = stage.querySelector('.sc-caption-box');
+          box.style.width = barW + '%';
           box.style.padding = L.CAPTION_PAD_TOP_EM + 'em ' + L.CAPTION_PAD_X_EM + 'em ' + L.CAPTION_PAD_BOTTOM_EM + 'em';
         });
       }
@@ -612,10 +633,13 @@
         var pctSize = Math.max(50, Math.min(250, Number(document.getElementById('sizePct').value) || 175));
         var inc = Number(document.getElementById('increment').value) || 0;
         var yOff = Number(document.getElementById('yOffset').value) || 0;
+        var font = document.getElementById('fontKey').value || 'youtube';
+        var weight = Number(document.getElementById('fontWeight').value) || 600;
+        var barW = Number(document.getElementById('barWidth').value) || 80;
         var lines = curLines();
         var key = document.getElementById('scenario').value;
 
-        setupStages(hostW, hostH, pctSize, inc, yOff);
+        setupStages({ w: hostW, h: hostH, pct: pctSize, inc: inc, yOff: yOff, font: font, weight: weight, barW: barW });
         state.events = L.parseCaptionJson({ events: SCENARIOS[key].events });
         state.blocks = L.buildCaptionBlocks(state.events, OPTS);
         state.runs = L.buildCaptionRuns(L.buildCaptionWords(state.events), OPTS.silenceGap);
@@ -697,6 +721,8 @@
         var v = document.getElementById('verdict');
         v.textContent = SCENARIOS[key].label + ' @ ' + lines + ' regels / ' + pctSize + '% op ' + hostW + 'x' + hostH +
           ' | y-offset: ' + (yOff > 0 ? '+' : '') + yOff + '% (onderrand op ' + L.captionBottomPct(yOff) + '%)' +
+          ' | font: ' + font + ' / dikte ' + L.captionFontWeight(weight) +
+          ' / balk ' + L.captionBarWidthPct(barW) + '% (video links+rechts ' + ((100 - L.captionBarWidthPct(barW)) / 2).toFixed(2) + '%)' +
           ' - blokken: ' + state.blocks.length +
           ' | met 2 volle zinnen: ' + withTwo +
           ' | grens midden in een zin: ' + midCut +
@@ -713,7 +739,20 @@
         applyTime();
       }
 
-      ['hostW', 'hostH', 'sizePct', 'increment', 'maxLines', 'yOffset', 'scenario'].forEach(function (id) {
+      /* De lettertypelijst komt uit de gedeelde logica, net als in de opties. */
+      (function fillFontOptions() {
+        var sel = document.getElementById('fontKey');
+        if (!sel || !L || !L.CAPTION_FONTS) return;
+        sel.textContent = '';
+        L.CAPTION_FONTS.forEach(function (f) {
+          var o = document.createElement('option');
+          o.value = f.key;
+          o.textContent = f.label;
+          sel.appendChild(o);
+        });
+      })();
+
+      ['hostW', 'hostH', 'sizePct', 'increment', 'maxLines', 'yOffset', 'fontKey', 'fontWeight', 'barWidth', 'scenario'].forEach(function (id) {
         document.getElementById(id).addEventListener('input', run);
         document.getElementById(id).addEventListener('change', run);
       });

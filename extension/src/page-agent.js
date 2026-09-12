@@ -639,9 +639,11 @@
   var BOOST_SIZE_PCT = 175;    // default ondertitelgrootte (%; optie 50-250)
   var BOOST_LINES = 2;         // max. regels in de eigen weergave (1 of 2; optie, default 2)
   var BOOST_OFFSET_PCT = 0;    // y-offset van de balk in %-punten (optie; + = omlaag, - = omhoog)
-  var BOOST_BAR_WIDTH = 0.8;   // de ondertitelbalk is 80% van de spelerbreedte en staat
-                               // gecentreerd: links en rechts blijft video zichtbaar
-                               // (geen balk van rand tot rand)
+  var BOOST_FONT = 'youtube';  // lettertype (optie; sleutel uit L.CAPTION_FONTS)
+  var BOOST_WEIGHT = 600;      // letterdikte (optie; 400/500/600/700)
+  var BOOST_BAR_WIDTH_PCT = 80; // breedte van de ondertitelbalk in % van de spelerbreedte
+                                // (optie 30-100; de balk staat gecentreerd, dus links en
+                                // rechts blijft video zichtbaar)
   var SUBTITLES_OFF = false;   // per-tab kill switch (knop in de controlbar)
   var boostStyle = { at: 0, textColor: 'rgba(255,255,255,1)', bgColor: 'rgba(0,0,0,1)', increment: 0, applied: '' };
 
@@ -665,13 +667,28 @@
     if (!el) return;
     var p = player();
     var px = L.captionFontPx(p ? p.clientHeight : 400, boostStyle.increment, BOOST_SIZE_PCT);
+    // Lettertype en letterdikte (opties): meteen zetten, ook als de rest van de
+    // stijl al toegepast is — een andere keuze of een nieuw overlay-element moet
+    // direct goed staan.
+    el.style.fontFamily = L.captionFontStack(BOOST_FONT);
+    el.style.fontWeight = String(L.captionFontWeight(BOOST_WEIGHT));
     // Verticale positie (optie *Y-offset*): de balk hangt standaard 10,5% boven
     // de onderrand van de speler; de offset verschuift hem in %-punten van de
-    // spelerhoogte (positief = omlaag). Altijd zetten — ook als de rest van de
-    // stijl al toegepast is — want een nieuwe overlay of offset moet meteen goed
-    // staan.
+    // spelerhoogte (positief = omlaag).
     var bottom = L.captionBottomPct(BOOST_OFFSET_PCT) + '%';
     if (el.style.bottom !== bottom) el.style.bottom = bottom;
+    // Breedte van de balk (optie *Ondertitelbreedte*): de balk staat gecentreerd
+    // en de box is precies zo breed als de balk.
+    var wPct = L.captionBarWidthPct(BOOST_BAR_WIDTH_PCT);
+    var sidePct = ((100 - wPct) / 2).toFixed(2) + '%';
+    if (boost.bar) {
+      if (boost.bar.style.left !== sidePct) boost.bar.style.left = sidePct;
+      if (boost.bar.style.right !== sidePct) boost.bar.style.right = sidePct;
+    }
+    if (boost.box) {
+      var widthCss = wPct + '%';
+      if (boost.box.style.width !== widthCss) boost.box.style.width = widthCss;
+    }
     var key = Math.round(px * 10) + '|' + boostStyle.textColor + '|' + boostStyle.bgColor;
     if (key === boostStyle.applied) return;
     boostStyle.applied = key;
@@ -700,9 +717,10 @@
           '#sc-caption-overlay{position:absolute;left:0;right:0;bottom:10.5%;text-align:center;pointer-events:none;z-index:45;display:none;' +
           'font-weight:600;line-height:1.4;font-family:"YouTube Sans","Roboto",Arial,sans-serif}' +
           '#sc-caption-overlay.sc-on{display:block}' +
-          // De balk is BOOST_BAR_WIDTH breed en wordt gecentreerd (left/right
-          // zet ensureBoostDom inline): links en rechts blijft video zichtbaar.
-          // De box is precies zo breed als de balk (border-box) en heeft een
+          // De breedte van de balk is een optie (BOOST_BAR_WIDTH_PCT, 30-100%);
+          // de inline left/right op de balk en de inline width op de box komen
+          // uit applyBoostStyle(). De waarden hier zijn de terugval (80%). De
+          // box is precies zo breed als de balk (border-box) en heeft een
           // VASTE hoogte van BOOST_LINES regels (inline, in em); de tekst
           // begint linksboven, links uitgelijnd. In de blokweergave staat het
           // hele blok er in één keer in (wat niet past wordt afgekapt); in de
@@ -724,10 +742,9 @@
           // het klipt ook eventueel gecompositeerde lagen op de rand van het
           // venster af, zodat er nooit tekst buiten het zwarte blok valt als
           // de tekst omhoog schuift (zie setWordShift()).
-          '#sc-caption-overlay .sc-caption-bar{position:absolute;top:0;bottom:0}' +
+          '#sc-caption-overlay .sc-caption-bar{position:absolute;top:0;bottom:0;left:10%;right:10%}' +
           '#sc-caption-overlay .sc-caption-box{position:relative;display:block;margin:0 auto;overflow:hidden;clip-path:inset(0);' +
-          'box-sizing:border-box;width:' +
-          (Math.round(BOOST_BAR_WIDTH * 1000) / 10) + '%;text-align:left;white-space:pre-wrap;' +
+          'box-sizing:border-box;width:80%;text-align:left;white-space:pre-wrap;' +
           'padding:' + L.CAPTION_PAD_TOP_EM + 'em ' + L.CAPTION_PAD_X_EM + 'em ' + L.CAPTION_PAD_BOTTOM_EM + 'em;' +
           'text-shadow:0 0 2px rgba(0,0,0,.8)}' +
           // De tekst schuift met een korte overgang op `top` (en niet met
@@ -751,9 +768,6 @@
       bar.className = 'sc-caption-bar';
       el.insertBefore(bar, el.firstChild);
     }
-    var sidePct = ((1 - BOOST_BAR_WIDTH) / 2 * 100).toFixed(2) + '%'; // 10.00% bij 80%
-    if (bar.style.left !== sidePct) bar.style.left = sidePct;
-    if (bar.style.right !== sidePct) bar.style.right = sidePct;
     var box = el.querySelector('.sc-caption-box');
     if (!box) {
       box = document.createElement('div');
@@ -1234,6 +1248,21 @@
       applyBoostStyle(); // zet de nieuwe bottom op de overlay (en herrekent niets onnodig)
       dbg('captionOffset', BOOST_OFFSET_PCT);
     }
+    if (opts && Object.prototype.hasOwnProperty.call(opts, 'captionWidth')) {
+      BOOST_BAR_WIDTH_PCT = L.captionBarWidthPct(Number(opts.captionWidth));
+      applyBoostStyle(); // balk en box krijgen meteen de nieuwe breedte
+      dbg('captionWidth', BOOST_BAR_WIDTH_PCT);
+    }
+    if (opts && Object.prototype.hasOwnProperty.call(opts, 'captionFont')) {
+      BOOST_FONT = L.captionFontKey(opts.captionFont);
+      applyBoostStyle();
+      dbg('captionFont', BOOST_FONT);
+    }
+    if (opts && Object.prototype.hasOwnProperty.call(opts, 'captionWeight')) {
+      BOOST_WEIGHT = L.captionFontWeight(Number(opts.captionWeight));
+      applyBoostStyle();
+      dbg('captionWeight', BOOST_WEIGHT);
+    }
     if (opts && Object.prototype.hasOwnProperty.call(opts, 'captionWordByWord')) {
       var wbw = !!opts.captionWordByWord;
       if (wbw !== BOOST_WORD_BY_WORD) {
@@ -1247,6 +1276,9 @@
       captionSize: BOOST_SIZE_PCT,
       captionLines: BOOST_LINES,
       captionOffset: BOOST_OFFSET_PCT,
+      captionWidth: BOOST_BAR_WIDTH_PCT,
+      captionFont: BOOST_FONT,
+      captionWeight: BOOST_WEIGHT,
       captionWordByWord: BOOST_WORD_BY_WORD,
       subtitlesOff: SUBTITLES_OFF
     };

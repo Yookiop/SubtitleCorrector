@@ -19,6 +19,9 @@ const DEFAULTS = {
   captionSize: 175,
   captionLines: 2,
   captionOffset: 0,
+  captionWidth: 80,
+  captionFont: 'youtube',
+  captionWeight: 600,
   captionWordByWord: false,
   bridgeUrl: 'http://127.0.0.1:8791',
   audioSeconds: 5,
@@ -34,8 +37,11 @@ const BOOL_FIELDS = [
   'fixTranslation', 'audioFallback', 'captionPriority', 'audioFallbackInPlaylists', 'captionBoost',
   'captionWordByWord', 'keepAudioDuringCapture', 'showToast', 'debug'
 ];
-const TEXT_FIELDS = ['hotkey', 'bridgeUrl'];
-const NUM_FIELDS = ['audioSeconds', 'minConfidence', 'captionSize', 'captionLines', 'captionOffset'];
+const TEXT_FIELDS = ['hotkey', 'bridgeUrl', 'captionFont'];
+const NUM_FIELDS = ['audioSeconds', 'minConfidence', 'captionSize', 'captionLines', 'captionOffset', 'captionWidth', 'captionWeight'];
+
+// Gedeelde logica (lang-utils.js) voor de lettertypestacks en de clamping.
+const L = window.SCLang || null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -65,8 +71,32 @@ function collect() {
   out.captionSize = Math.max(50, Math.min(250, Math.round(out.captionSize || 175)));
   out.captionLines = Number(out.captionLines) === 1 ? 1 : 2;
   out.captionOffset = Math.max(-40, Math.min(30, Math.round(isFinite(out.captionOffset) ? out.captionOffset : 0)));
+  if (L) {
+    out.captionWidth = L.captionBarWidthPct(out.captionWidth);
+    out.captionFont = L.captionFontKey(out.captionFont);
+    out.captionWeight = L.captionFontWeight(out.captionWeight);
+  }
   return out;
 }
+
+/*
+ * De lettertypelijst komt uit de gedeelde logica (lang-utils.js), zodat de
+ * sleutels en de CSS-stacks op één plek staan. Zonder dat script blijft de
+ * fallback uit de HTML staan (alleen YouTube's eigen font).
+ */
+function fillFontOptions() {
+  const sel = $('captionFont');
+  const fonts = (L && L.CAPTION_FONTS) || [];
+  if (!sel || fonts.length < 2) return;
+  sel.textContent = '';
+  fonts.forEach((f) => {
+    const o = document.createElement('option');
+    o.value = f.key;
+    o.textContent = f.label;
+    sel.appendChild(o);
+  });
+}
+fillFontOptions();
 
 chrome.storage.sync.get(DEFAULTS, (items) => fill(items));
 

@@ -828,6 +828,75 @@
     return Math.round(Math.max(0, Math.min(80, b - o)) * 100) / 100;
   }
 
+  /* ------------------------------------------------------------------ *
+   * Lettertype, dikte en balkbreedte van de eigen overlay (opties)
+   * ------------------------------------------------------------------ */
+
+  /**
+   * Beschikbare lettertypes voor de eigen ondertitelweergave.
+   *
+   * `youtube` is YouTube's eigen "proportionele sans-serif" (het font waarin de
+   * speler zijn auto-ondertitels tekent, en de standaard van de extensie). De
+   * rest zijn fonts die juist bij leesteksten veel gebruikt worden: eerst de
+   * sans-serif-achtigen (Arial, Verdana, Segoe UI, Tahoma) en daarna de
+   * serif-leesfonts (Cambria, Georgia, Times New Roman, Palatino). Elke stack
+   * eindigt op een generieke familie, zodat er ook zonder het font iets
+   * leesbaars staat.
+   */
+  var CAPTION_FONTS = [
+    { key: 'youtube', label: "Proportionele sans-serif (YouTube's eigen)", stack: '"YouTube Sans","Roboto",Arial,sans-serif' },
+    { key: 'arial', label: 'Arial', stack: 'Arial,Helvetica,sans-serif' },
+    { key: 'verdana', label: 'Verdana', stack: 'Verdana,Geneva,sans-serif' },
+    { key: 'segoe', label: 'Segoe UI', stack: '"Segoe UI",Tahoma,sans-serif' },
+    { key: 'tahoma', label: 'Tahoma', stack: 'Tahoma,Verdana,sans-serif' },
+    { key: 'cambria', label: 'Cambria', stack: 'Cambria,Georgia,serif' },
+    { key: 'georgia', label: 'Georgia', stack: 'Georgia,"Times New Roman",serif' },
+    { key: 'times', label: 'Times New Roman', stack: '"Times New Roman",Times,serif' },
+    { key: 'palatino', label: 'Palatino', stack: '"Palatino Linotype","Book Antiqua",Palatino,serif' },
+    { key: 'mono', label: 'Monospaced (Consolas / Roboto Mono)', stack: '"Roboto Mono",Consolas,"Courier New",monospace' },
+    { key: 'casual', label: 'Casual (Comic Sans MS)', stack: '"Comic Sans MS","Comic Sans",cursive' }
+  ];
+
+  /** Geldige lettertype-sleutel; onbekend of leeg wordt YouTube's eigen font. */
+  function captionFontKey(value) {
+    var k = String(value == null ? '' : value).trim();
+    for (var i = 0; i < CAPTION_FONTS.length; i++) {
+      if (CAPTION_FONTS[i].key === k) return k;
+    }
+    return CAPTION_FONTS[0].key;
+  }
+
+  /** CSS font-family-stack voor een lettertype-sleutel. */
+  function captionFontStack(value) {
+    var key = captionFontKey(value);
+    for (var i = 0; i < CAPTION_FONTS.length; i++) {
+      if (CAPTION_FONTS[i].key === key) return CAPTION_FONTS[i].stack;
+    }
+    return CAPTION_FONTS[0].stack;
+  }
+
+  /** Toegestane letterdiktes (400 = normaal, 600 = de oude standaard, 700 = vet). */
+  var CAPTION_WEIGHTS = [400, 500, 600, 700];
+
+  /** Geldige letterdikte; onbekend wordt 600 (zoals de extensie altijd tekende). */
+  function captionFontWeight(value) {
+    var v = Number(value);
+    for (var i = 0; i < CAPTION_WEIGHTS.length; i++) {
+      if (CAPTION_WEIGHTS[i] === v) return v;
+    }
+    return 600;
+  }
+
+  /**
+   * Breedte van de ondertitelbalk in % van de spelerbreedte. De balk staat
+   * gecentreerd (links en rechts evenveel video zichtbaar), dus hoe kleiner
+   * deze waarde, hoe smaller de balk. Geclamped op 30-100%; ontbrekend = 80.
+   */
+  function captionBarWidthPct(pct) {
+    var p = typeof pct === 'number' && isFinite(pct) ? pct : 80;
+    return Math.round(Math.max(30, Math.min(100, p)) * 10) / 10;
+  }
+
   /**
    * Aantal regels dat de browser (greedy, per woord) nodig heeft om
    * `wordWidths` — met `spacePx` ertussen — in een box van `widthPx` te zetten.
@@ -1011,6 +1080,12 @@
     captionFontPx: captionFontPx,
     captionBottomPct: captionBottomPct,
     CAPTION_BOTTOM_BASE: CAPTION_BOTTOM_BASE,
+    CAPTION_FONTS: CAPTION_FONTS,
+    captionFontKey: captionFontKey,
+    captionFontStack: captionFontStack,
+    CAPTION_WEIGHTS: CAPTION_WEIGHTS,
+    captionFontWeight: captionFontWeight,
+    captionBarWidthPct: captionBarWidthPct,
     captionLineCount: captionLineCount,
     captionFitWidth: captionFitWidth,
     captionBoxWidth: captionBoxWidth,

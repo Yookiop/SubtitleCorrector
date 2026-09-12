@@ -12,6 +12,7 @@ Zet YouTube-ondertitels automatisch in de **taal van de audio** (Engels of Neder
 * **Word-for-Word (optie)**: liever woord voor woord, zoals YouTube's auto-gegenereerde ondertitels? Zet de optie aan: elk woord verschijnt op zijn eigen tijd en het venster van 2 regels rolt per regel omhoog (regel 1 verdwijnt, regel 2 wordt regel 1, verder op de nieuwe regel 2). Ook als een cue geen per-woordtijden heeft (één tijd voor een hele zin) verschijnen de woorden één voor één — de tijd wordt dan over de cue verdeeld, zodat er nooit ineens een halve zin in beeld plopt.
 * **Sprekerswissel (`>>`)**: geeft YouTube een nieuwe spreker aan met `>>`, dan begint die op een **nieuwe regel** (in beide weergaven). De markering zelf blijft staan, zoals bij YouTube.
 * **Positie**: met **Y-offset** schuif je de ondertitelbalk in de opties omhoog of omlaag (−40 tot +30 procentpunten van de spelerhoogte).
+* **Lettertype & breedte**: kies in de opties het font (YouTube's eigen proportionele sans-serif, of leesfonts als Arial, Verdana, Segoe UI, Cambria, Georgia, Times New Roman en Palatino), de **letterdikte** (400-700) en de **breedte van de balk** (30-100%, standaard 80%). Voor precies YouTube's caption-look: font *Proportionele sans-serif*, dikte *400* en grootte *100%*.
 * Volledige spec: [`SUBTITLE_CORRECTOR_PROMPT.md`](SUBTITLE_CORRECTOR_PROMPT.md)
 
 ---
@@ -48,7 +49,10 @@ Rechtermuisknop op het icoon → **Options** (of via de popup → Instellingen).
 | Bridge gebruiken als metadata onduidelijk is | aan | Zie §4 |
 | Eigen ondertitelweergave (Caption Boost) | aan | Toont de ondertitel in blokken van 2 volle zinnen, in één keer, en verbergt YouTube's eigen caption-venster zolang dat lukt |
 | Word-for-Word | uit | Woord voor woord, zoals YouTube's auto-gegenereerde ondertitels: elk woord op zijn eigen tijd in het vaste venster; zodra de onderste regel vol is schuift het venster één regel omhoog (regel 1 eruit, verder op de nieuwe regel 2). Een stilte begint met een leeg venster. Ook een cue zonder per-woordtijden (één tijd voor de hele zin) wordt woord voor woord getoond: de woorden worden dan gelijkmatig over de cue verdeeld |
-| Ondertitelgrootte (Caption Boost) | 175% | 50 - 250% van de standaardgrootte; stijl (kleur/achtergrond en de grove "Font size"-stand) volgt automatisch je YouTube-ondertitelinstellingen |
+| Ondertitelgrootte (Caption Boost) | 175% | 50 - 250%. **100% = precies zo groot als YouTube's eigen ondertitels**; 175% is onze standaard. Stijl (kleur/achtergrond en de grove "Font size"-stand) volgt automatisch je YouTube-ondertitelinstellingen |
+| Lettertype (Caption Boost) | Proportionele sans-serif (YouTube's eigen) | Het font van de eigen weergave: YouTube's eigen caption-font, daaronder Arial, Verdana, Segoe UI, Tahoma (sans) en Cambria, Georgia, Times New Roman, Palatino (serif-leesfonts), plus Monospaced en Casual. Elke stack heeft een generieke fallback |
+| Letterdikte (Caption Boost) | 600 (halfvet) | 400 normaal (zoals YouTube's eigen ondertitels), 500 medium, 600 halfvet (onze standaard) of 700 vet. Zet hem op 400 bij een serif-leesfont; dat leest prettiger |
+| Ondertitelbreedte (Caption Boost) | 80% | Breedte van de ondertitelbalk als percentage van de spelerbreedte (30 - 100%). De balk staat gecentreerd, dus je houdt links en rechts altijd video zichtbaar. Lager = smaller |
 | Ondertitelregels (Caption Boost) | 2 regels | Hoogte van het vaste captionblok in regels (1 of 2). Het blok is altijd precies zo hoog — ook met maar één zin: regel 1 linksboven, regel 2 leeg. Past een blok van 2 zinnen niet helemaal, dan wordt de tekst onderaan afgekapt. Het font krimpt nooit |
 | Y-offset (Caption Boost) | 0% | Verticale positie van de ondertitelbalk in procentpunten van de spelerhoogte: positief = omlaag, negatief = omhoog (bereik −40 tot +30). De balk blijft altijd binnen de speler |
 | Caption-prioriteit | aan | Playlists soepel houden: langere wachttijd bij videostart, geen zware audio-analyse zonder hotkey, rustiger pollen op de achtergrond |
@@ -128,7 +132,9 @@ Daarnaast tekent **Caption Boost** (default aan) de ondertitels zelf:
 * het blok staat in een **vast venster van 1 of 2 regels** (*Ondertitelregels*, standaard 2), **linksboven uitgelijnd**: de tekst begint links in de balk en gebruikt de volle balkbreedte. De balk is 80% van de spelerbreedte en staat gecentreerd (links en rechts blijft de video zichtbaar — geen balk van rand tot rand) en sluit **strak om het tekstvak**: de box is een block (geen inline-block) en de onderpadding is kleiner dan de bovenpadding (`L.captionBoxHeightEm()` = `regels × 1,4 + 0,06 + 0,03` em), zodat er onderaan geen strook zwart overblijft die er boven niet is. Het venster is altijd precies zo hoog, ook als een blok maar één zin heeft (regel 2 blijft dan leeg); past een blok van 2 zinnen niet helemaal, dan wordt het onderaan afgekapt. Het font krimpt **nooit** en er schuift niets op; YouTube's eigen regelovergangen worden als spatie behandeld;
 * een **sprekerswissel** (`>>`) begint op een **nieuwe regel** (`L.isSpeakerChange()` / `L.captionSpeakerBreaks()`): in de blokweergave via een `\n` (de overlay gebruikt `white-space:pre-wrap`), in de woord-voor-woord-weergave via een `<br>` vóór het `>>`-woord. De hangende spatie van het vorige woord wordt weggehaald, zodat de nieuwe regel niet inspringt; staat het venster nog leeg, dan komt er geen lege regel boven;
 * de **positie** stel je in met *Y-offset* (standaard 0, bereik −40 tot +30): `L.captionBottomPct()` rekent dat om naar de afstand tot de onderrand (basis 10,5% van de spelerhoogte; positief = omlaag) en clamped op 0-80%, zodat de balk in de speler blijft;
-* de **grootte** stel je zelf in met *Ondertitelgrootte* (50 - 250%; standaard **175%**, 100% ≈ YouTube's eigen standaardgrootte);
+* de **grootte** stel je zelf in met *Ondertitelgrootte* (50 - 250%; standaard **175%**). **100% is precies zo groot als YouTube's eigen ondertitels** — wil je die look, zet hem dan op 100 (de optielijst stelt 75/100/125/150/175/200 voor);
+* het **lettertype** kies je met *Lettertype*: YouTube's eigen "proportionele sans-serif" (het font waarin de speler zijn auto-ondertitels tekent, en onze standaard) plus veelgebruikte leesfonts — Arial, Verdana, Segoe UI, Tahoma, Cambria, Georgia, Times New Roman en Palatino, met daarnaast Monospaced en Casual. De lijst en de CSS-stacks staan in één bron (`L.CAPTION_FONTS` / `L.captionFontStack()`), dus de optiepagina en het testgereedschap gebruiken automatisch dezelfde lijst. Met *Letterdikte* kies je 400 (normaal, zoals YouTube), 500, 600 (onze standaard) of 700;
+* de **breedte** van de balk stel je in met *Ondertitelbreedte* (standaard **80%**, bereik 30 - 100%): `L.captionBarWidthPct()` rekent dat om, de balk wordt met `left`/`right` gecentreerd en de box krijgt dezelfde breedte — zo houd je links en rechts altijd video zichtbaar. Lager = smaller;
 * zolang dat lukt blijft YouTube's eigen caption-venster verborgen; bij advertenties, een actieve vertaling, een ontbrekende track of een videowissel gaat alles direct terug naar YouTube's eigen weergave.
 
 Meer automatiek nodig voor video's zonder metadata? Zet in de opties **"Audio-analyse ook automatisch in playlists"** aan (kost meer CPU/GPU).
@@ -136,7 +142,7 @@ Meer automatiek nodig voor video's zonder metadata? Zet in de opties **"Audio-an
 ## 6. Testen
 
 ```text
-dubbelklik tools\test-lang-utils.html     # 51 tests van de pure logica, geen Node nodig
+dubbelklik tools\test-lang-utils.html     # 54 tests van de pure logica, geen Node nodig
 node tools\test-lang-utils.mjs            # zelfde tests (als Node geïnstalleerd is)
 dubbelklik tools\check-caption-lines.html # blokken van 2 zinnen, het rollende woord-voor-woord-venster (ook zonder per-woordtijden en met sprekerswissels) en de Y-offset, met regels en vulling per blok/run
 python tools\bridge-smoke-test.py         # bridge end-to-end

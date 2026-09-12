@@ -486,6 +486,53 @@
     eq(L.captionBottomPct(5, 20), 15);    // eigen basispositie
   });
 
+  /* ------------------------------------------------------------------ *
+   * Lettertype, dikte en balkbreedte (opties)
+   * ------------------------------------------------------------------ */
+
+  test('captionFontKey en captionFontStack: alle lettertypes, onbekend = YouTube', function (L) {
+    ok(L.CAPTION_FONTS.length >= 8, 'er moeten meerdere lettertypes zijn');
+    var seen = {};
+    L.CAPTION_FONTS.forEach(function (f) {
+      ok(!seen[f.key], 'dubbele lettertype-sleutel: ' + f.key);
+      seen[f.key] = true;
+      ok(!!f.label, 'elk lettertype heeft een label');
+      eq(L.captionFontKey(f.key), f.key);
+      eq(L.captionFontStack(f.key), f.stack);
+      ok(/serif|sans-serif|monospace|cursive/.test(f.stack),
+        'de stack moet een generieke fallback hebben: ' + f.stack);
+    });
+    eq(L.CAPTION_FONTS[0].key, 'youtube');  // standaard = YouTube's eigen font
+    eq(L.captionFontKey('bestaat-niet'), 'youtube');
+    eq(L.captionFontKey(''), 'youtube');
+    eq(L.captionFontKey(null), 'youtube');
+    eq(L.captionFontStack('cambria'), 'Cambria,Georgia,serif');
+    eq(L.captionFontStack('arial'), 'Arial,Helvetica,sans-serif');
+    eq(L.captionFontStack('onbekend'), L.CAPTION_FONTS[0].stack);
+  });
+
+  test('captionFontWeight: alleen 400/500/600/700, anders 600', function (L) {
+    eq(L.CAPTION_WEIGHTS.length, 4);
+    eq(L.captionFontWeight(400), 400);   // normaal, zoals YouTube
+    eq(L.captionFontWeight(700), 700);
+    eq(L.captionFontWeight('400'), 400); // uit een <select> komt een string
+    eq(L.captionFontWeight(300), 600);
+    eq(L.captionFontWeight(undefined), 600);
+    eq(L.captionFontWeight('vet'), 600);
+  });
+
+  test('captionBarWidthPct: balkbreedte 30-100%, standaard 80', function (L) {
+    eq(L.captionBarWidthPct(80), 80);
+    eq(L.captionBarWidthPct(70), 70);
+    eq(L.captionBarWidthPct(100), 100);
+    eq(L.captionBarWidthPct(30), 30);
+    eq(L.captionBarWidthPct(10), 30);      // geclamped onder
+    eq(L.captionBarWidthPct(200), 100);    // geclamped boven
+    eq(L.captionBarWidthPct(72.5), 72.5);
+    eq(L.captionBarWidthPct(undefined), 80);
+    eq(L.captionBarWidthPct('x'), 80);
+  });
+
   test('rgbaFromHex maakt rgba met opacity', function (L) {
     eq(L.rgbaFromHex('#080808', 0.75), 'rgba(8,8,8,0.75)');
     eq(L.rgbaFromHex('#fff', 1), 'rgba(255,255,255,1)');

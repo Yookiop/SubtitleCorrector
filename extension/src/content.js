@@ -29,6 +29,9 @@
     captionSize: 175,
     captionLines: 2,
     captionOffset: 0,
+    captionWidth: 80,
+    captionFont: 'youtube',
+    captionWeight: 600,
     captionWordByWord: false,
     audioSeconds: 5,
     minConfidence: 0.5,
@@ -234,6 +237,9 @@
       captionSize: Number(settings.captionSize) || 175,
       captionLines: Number(settings.captionLines) === 1 ? 1 : 2,
       captionOffset: Number(settings.captionOffset) || 0,
+      captionWidth: Number(settings.captionWidth) || 80,
+      captionFont: settings.captionFont || 'youtube',
+      captionWeight: Number(settings.captionWeight) || 600,
       captionWordByWord: !!settings.captionWordByWord
     }).catch(function () {});
   }
