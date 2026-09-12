@@ -498,7 +498,12 @@
     rafActive: false,
     rafHandle: null,
     overlay: null,
+    bar: null,
     box: null,
+    scrollEl: null,
+    lines: null,          // regelmeting van de huidige cue (venster met max. BOOST_LINES regels)
+    windowOffset: -1,     // huidige verschuiving (px) van het tekstvenster
+    pendingLines: false,  // nog meten zodra de overlay zichtbaar is
     cueSpans: null,
     cueKey: null,
     cueShown: -1,
@@ -613,6 +618,9 @@
      percentage bovenop YouTube's size-stand. */
   var BOOST_SIZE_PCT = 100;
   var BOOST_LINES = 2;         // max. regels in de eigen weergave (1 of 2; optie, default 2)
+  var BOOST_BAR_WIDTH = 0.8;   // de ondertitelbalk is 80% van de spelerbreedte en staat
+                               // gecentreerd: links en rechts blijft video zichtbaar
+                               // (geen balk van rand tot rand)
   var SUBTITLES_OFF = false;   // per-tab kill switch (knop in de controlbar)
   var boostStyle = { at: 0, textColor: 'rgba(255,255,255,1)', bgColor: 'rgba(0,0,0,1)', increment: 0, applied: '' };
 
@@ -641,9 +649,10 @@
     boostStyle.applied = key;
     boost.cueKey = null; // stijl/grootte gewijzigd -> cue opnieuw opbouwen (en meten)
     el.style.fontSize = (Math.round(px * 10) / 10) + 'px';
+    if (boost.bar) boost.bar.style.background = boostStyle.bgColor;
     if (boost.box) {
       boost.box.style.color = boostStyle.textColor;
-      boost.box.style.background = boostStyle.bgColor;
+      boost.box.style.background = ''; // achtergrond zit op de balk (ook na een extensie-herlaadbeurt op een open pagina)
     }
   }
 
@@ -652,6 +661,10 @@
     if (!p) return null;
     if (!boost.styleReady) {
       try {
+        // Een oud style-element van een eerdere versie (extensie herladen
+        // zonder pagina-refresh) zou oude regels kunnen laten gelden -> weg.
+        var oldStyle = document.getElementById('sc-caption-style');
+        if (oldStyle && oldStyle.parentNode) oldStyle.parentNode.removeChild(oldStyle);
         var st = document.createElement('style');
         st.id = 'sc-caption-style';
         st.textContent =
@@ -659,8 +672,19 @@
           '#sc-caption-overlay{position:absolute;left:0;right:0;bottom:10.5%;text-align:center;pointer-events:none;z-index:45;display:none;' +
           'font-weight:600;line-height:1.4;font-family:"YouTube Sans","Roboto",Arial,sans-serif}' +
           '#sc-caption-overlay.sc-on{display:block}' +
-          '#sc-caption-overlay .sc-caption-box{display:inline-block;text-align:left;max-width:92%;white-space:pre-wrap;' +
-          'padding:.06em .32em;border-radius:3px;text-shadow:0 0 2px rgba(0,0,0,.8)}';
+          // De balk is BOOST_BAR_WIDTH breed en wordt gecentreerd (left/right
+          // zet ensureBoostDom inline): links en rechts blijft video zichtbaar.
+          // De box is precies zo breed als de balk (border-box, dus de padding
+          // valt binnen die breedte); de tekst begint linksboven, links
+          // uitgelijnd. De box is het VENSTER: hij toont max. BOOST_LINES
+          // regels (overflow:hidden) en de tekst erin schuift regel voor regel
+          // omhoog zodra een nieuwe regel begint — zoals YouTube's eigen
+          // ondertitels; het font krimpt nooit.
+          '#sc-caption-overlay .sc-caption-bar{position:absolute;top:0;bottom:0}' +
+          '#sc-caption-overlay .sc-caption-box{position:relative;display:inline-block;overflow:hidden;box-sizing:border-box;width:' +
+          (Math.round(BOOST_BAR_WIDTH * 1000) / 10) + '%;text-align:left;white-space:pre-wrap;' +
+          'padding:.06em .32em;text-shadow:0 0 2px rgba(0,0,0,.8)}' +
+          '#sc-caption-overlay .sc-caption-scroll{position:relative}';
         (document.head || document.documentElement).appendChild(st);
         boost.styleReady = true;
       } catch (e) { /* ignore */ }
@@ -671,15 +695,35 @@
       el = document.createElement('div');
       el.id = 'sc-caption-overlay';
     }
+    var bar = el.querySelector('.sc-caption-bar');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.className = 'sc-caption-bar';
+      el.insertBefore(bar, el.firstChild);
+    }
+    var sidePct = ((1 - BOOST_BAR_WIDTH) / 2 * 100).toFixed(2) + '%'; // 10.00% bij 80%
+    if (bar.style.left !== sidePct) bar.style.left = sidePct;
+    if (bar.style.right !== sidePct) bar.style.right = sidePct;
     var box = el.querySelector('.sc-caption-box');
     if (!box) {
       box = document.createElement('div');
       box.className = 'sc-caption-box';
       el.appendChild(box);
     }
+    var scrollEl = box.querySelector('.sc-caption-scroll');
+    if (!scrollEl) {
+      // Eerste keer (of een oudere versie zette de spans direct in de box):
+      // de box helemaal leegmaken en de scroll-wrapper aanmaken.
+      while (box.firstChild) box.removeChild(box.firstChild);
+      scrollEl = document.createElement('div');
+      scrollEl.className = 'sc-caption-scroll';
+      box.appendChild(scrollEl);
+    }
     if (el.parentNode !== p) p.appendChild(el);
     boost.overlay = el;
+    boost.bar = bar;
     boost.box = box;
+    boost.scrollEl = scrollEl;
     applyBoostStyle();
     return el;
   }
@@ -694,8 +738,18 @@
       if (on) boost.overlay.classList.add('sc-on');
       else {
         boost.overlay.classList.remove('sc-on');
-        if (boost.box) boost.box.textContent = '';
+        if (boost.scrollEl) {
+          boost.scrollEl.textContent = '';
+          boost.scrollEl.style.transform = '';
+        }
+        if (boost.box) {
+          boost.box.style.height = '';
+          boost.box.style.fontSize = ''; // het font krimpt nooit
+        }
         boost.cueSpans = null;
+        boost.lines = null;
+        boost.windowOffset = -1;
+        boost.pendingLines = false;
         boost.cueKey = null;
         boost.cueShown = -1;
       }
@@ -713,66 +767,74 @@
   }
 
   /* ------------------------------------------------ *
-   * Regelafbreking (optie "Ondertitelregels": 1 of 2)
+   * Venster met max. BOOST_LINES regels (optie
+   * "Ondertitelregels"): de tekst schuift regel voor
+   * regel omhoog zoals YouTube's eigen ondertitels —
+   * het font krimpt nooit
    * ------------------------------------------------ */
-  var measureCanvas = null;
-  var measureCtx = null;
 
-  function textWidthPx(str, font) {
-    try {
-      if (!measureCtx) {
-        measureCanvas = document.createElement('canvas');
-        measureCtx = measureCanvas.getContext('2d');
+  /**
+   * Meet de regelindeling van de volledige cue (alle woorden staan al
+   * verborgen in de DOM; `visibility:hidden` heeft gewoon layout) en stel het
+   * venster in: de box toont maximaal BOOST_LINES regels (overflow:hidden).
+   * Langere cues schuiven tijdens het uitspreken regel voor regel omhoog
+   * i.p.v. dat het font krimpt (user-feedback 2026-09-12: "als een zin te
+   * lang is, wordt gewoon een nieuwe regel eronder gezet en verder gegaan
+   * woord voor woord" — zoals YouTube's auto-generated ondertitels).
+   */
+  function measureBoostWindow() {
+    var box = boost.box;
+    var wrap = boost.scrollEl;
+    if (!box || !wrap || !boost.cueSpans || !boost.cueSpans.length) return;
+    wrap.style.transform = '';
+    var wrapTop = wrap.getBoundingClientRect().top;
+    var lineTops = [];
+    var spanLine = [];
+    for (var i = 0; i < boost.cueSpans.length; i++) {
+      var rects = boost.cueSpans[i].el.getClientRects();
+      var last = spanLine.length ? spanLine[spanLine.length - 1] : 0;
+      for (var r = 0; r < rects.length; r++) {
+        if (rects[r].width <= 0) continue; // lege fragmenten (spaties) overslaan
+        var top = Math.round(rects[r].top - wrapTop);
+        var idx = lineTops.indexOf(top);
+        if (idx === -1) { lineTops.push(top); idx = lineTops.length - 1; }
+        last = idx;
       }
-      if (measureCtx.font !== font) measureCtx.font = font;
-      return measureCtx.measureText(String(str)).width;
-    } catch (e) {
-      return 0;
+      spanLine.push(last);
     }
+    var total = lineTops.length;
+    if (!total) return;
+    var offsets = [0];
+    for (var k = 1; k < total; k++) offsets.push(lineTops[k] - lineTops[0]);
+    var lineH = total > 1 ? offsets[1] : 0;
+    var natH = wrap.offsetHeight;
+    var height = natH;
+    if (total > BOOST_LINES && lineH > 0) {
+      height = natH - (total - BOOST_LINES) * lineH; // precies de laatste N regels
+    }
+    box.style.height = Math.max(1, Math.round(height)) + 'px';
+    boost.lines = { total: total, offsets: offsets, spanLine: spanLine };
+    boost.windowOffset = -1;
   }
 
   /**
-   * Meet de volledige cue en zet de boxbreedte op het gekozen aantal regels
-   * (`L.captionBoxWidth`). Alle woorden staan al (verborgen) in de DOM, dus de
-   * regelafbreking wordt hier één keer bepaald en blijft daarna staan: woord 1
-   * verspringt nooit en de tekst wikkelt in maximaal 1 of 2 regels.
-   *
-   * Bij een grote tekstgrootte wordt de box breder dan de normale 92% — tot
-   * bijna de volle spelerbreedte (`hardMax`) — zodat de cue in twee regels
-   * blijft passen i.p.v. naar 3+ regels te wikkelen (bug 2026-09-12: bij 175%
-   * gaf de oude halve-breedte-logica 3 tot 5 regels). Is zelfs hardMax niet
-   * genoeg (heel lange cue bij een extreme grootte), dan verkleint
-   * `L.captionBoxWidth` het font voor deze cue met `fontScale` (ondergrens
-   * 0,4); alle breedtes schalen mee, dus de 2-regelige layout blijft staan.
+   * Schuif het venster naar de regel van de laatste zichtbare span. Bij
+   * BOOST_LINES = 2 begint dat zodra het eerste woord van regel 3 in beeld
+   * komt: regel 1 verdwijnt dan boven uit het venster en de nieuwe regel
+   * komt eronder ("de 1e regel schuift 1 naar boven").
    */
-  function applyCueWidth(ev) {
-    var box = boost.box;
-    if (!box || typeof L.captionBoxWidth !== 'function') return;
-    var p = player();
-    var hostW = (p && p.clientWidth) || box.offsetWidth || 400;
-    box.style.fontSize = ''; // meten op de ingestelde grootte (niet op een eerdere krimp)
-    var cs = window.getComputedStyle(box);
-    var font = cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
-    var fontPx = parseFloat(cs.fontSize) || 0;
-    var text = String((ev && (ev.raw || ev.text)) || '').replace(/\s+/g, ' ').trim();
-    var words = text ? text.split(' ') : [];
-    var widths = [];
-    for (var i = 0; i < words.length; i++) widths.push(textWidthPx(words[i], font));
-    var spacePx = textWidthPx(' ', font);
-    if (!(spacePx > 0)) spacePx = fontPx * 0.28;
-    var padSide = Math.ceil(Math.max(0, fontPx * 0.32)); // .32em padding per kant (CSS)
-    var softMax = Math.max(160, Math.round(hostW * 0.92));
-    var hardMax = Math.max(softMax, Math.round(hostW - 2 * padSide - 8));
-    var res = L.captionBoxWidth(BOOST_LINES, widths, spacePx, softMax, hardMax, 4) || { width: 0, fontScale: 1 };
-    if (!res.width) {
-      box.style.maxWidth = '';
-      box.style.fontSize = '';
-      return;
-    }
-    box.style.maxWidth = Math.round(res.width) + 'px';
-    if (res.fontScale && res.fontScale < 1 && fontPx) {
-      box.style.fontSize = (Math.round(fontPx * res.fontScale * 10) / 10) + 'px';
-    }
+  function applyBoostWindow(count) {
+    var info = boost.lines;
+    if (!info || !boost.scrollEl || count <= 0) return;
+    var n = Math.min(count, info.spanLine.length);
+    var line = info.spanLine[n - 1];
+    if (typeof line !== 'number' || line < 0) return;
+    var k = line - (BOOST_LINES - 1);
+    if (k < 0) k = 0;
+    var off = info.offsets[k] || 0;
+    if (off === boost.windowOffset) return;
+    boost.windowOffset = off;
+    boost.scrollEl.style.transform = off ? 'translateY(' + (-off) + 'px)' : '';
   }
 
   /**
@@ -792,15 +854,23 @@
    * Bouw de caption voor één cue. Alle woorden staan er in één keer in (met
    * hun vaste plek), maar zijn verborgen tot hun tijd; per frame toggelen we
    * alleen de visibility. Daardoor verspringt de tekst nooit: woord 1 blijft
-   * links staan en de rest schuift niet op, en de regelafbreking (max. 1 of 2
-   * regels, bepaald door `applyCueWidth`) wordt één keer door de browser
-   * berekend en blijft staan.
+   * links staan en de rest schuift niet op. De regelafbreking (door de
+   * browser, op de volle balkbreedte) wordt één keer berekend;
+   * `measureBoostWindow()` meet daarna hoeveel regels het zijn en hoe ver het
+   * venster (max. BOOST_LINES regels) moet meeschuiven.
    */
   function buildCue(ev) {
     var box = boost.box;
-    if (!box) return;
-    box.textContent = '';
+    var wrap = boost.scrollEl;
+    if (!box || !wrap) return;
+    wrap.textContent = '';
+    wrap.style.transform = '';
+    box.style.height = '';
+    box.style.fontSize = ''; // nooit krimpen: altijd de ingestelde grootte
     boost.cueSpans = [];
+    boost.lines = null;
+    boost.windowOffset = -1;
+    boost.pendingLines = true;
     var parts = [];
     var prev = 0;
     if (ev.bounds && ev.bounds.length) {
@@ -825,11 +895,16 @@
       el.className = 'sc-word';
       el.textContent = parts[s].text;
       el.style.visibility = 'hidden';
-      box.appendChild(el);
+      wrap.appendChild(el);
       boost.cueSpans.push({ el: el, t: parts[s].t });
     }
     boost.cueShown = 0;
-    applyCueWidth(ev);
+    // Is de overlay al zichtbaar (opeenvolgende cue), meet dan direct — anders
+    // gebeurt dat zodra het eerste woord in beeld komt (zie renderBoost).
+    if (boost.overlay && boost.overlay.classList.contains('sc-on')) {
+      measureBoostWindow();
+      boost.pendingLines = false;
+    }
   }
 
   function renderBoost() {
@@ -883,6 +958,16 @@
       boost.shownOnce = true;
       hideBoost(true);
     }
+    // Venster meten zodra de overlay zichtbaar is (daarvóór is er geen
+    // layout) en de tekst daarna met de uitgesproken regel mee laten
+    // schuiven: max. BOOST_LINES regels zichtbaar (zoals YouTube's eigen
+    // ondertitels), het font krimpt nooit.
+    if (boost.pendingLines && count > 0 && boost.overlay &&
+        boost.overlay.classList.contains('sc-on')) {
+      measureBoostWindow();
+      boost.pendingLines = false;
+    }
+    if (boost.lines) applyBoostWindow(count);
     boost.rafHandle = requestAnimationFrame(renderBoost);
   }
 

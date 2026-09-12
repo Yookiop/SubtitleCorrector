@@ -23,6 +23,7 @@
     .verdict { font-size: 15px; font-weight: 600; padding: 10px 14px; border-radius: 8px; margin: 6px 0 16px; display: inline-block; }
     .pass { background: #12331f; color: #56e39f; border: 1px solid #1e5a37; }
     .fail { background: #3a1414; color: #ff9a9a; border: 1px solid #6a2020; }
+    .warn { background: #3a3214; color: #ffd166; border: 1px solid #6a5a20; }
     .stageRow { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 16px; }
     .stageCol { flex: 0 0 auto; }
     .stageCol h3 { font-size: 13px; margin: 0 0 6px; color: #93a1b5; }
@@ -31,8 +32,10 @@
     .sc-player { position: relative; background: #000; overflow: hidden; }
     #sc-caption-overlay { position: absolute; left: 0; right: 0; bottom: 10.5%; text-align: center; pointer-events: none; z-index: 45; display: block;
       font-weight: 600; line-height: 1.4; font-family: "YouTube Sans", "Roboto", Arial, sans-serif; }
-    #sc-caption-overlay .sc-caption-box { display: inline-block; text-align: left; max-width: 92%; white-space: pre-wrap;
-      padding: .06em .32em; border-radius: 3px; text-shadow: 0 0 2px rgba(0,0,0,.8); color: rgba(255,255,255,1); background: rgba(0,0,0,.75); }
+    #sc-caption-overlay .sc-caption-bar { position: absolute; left: 10%; right: 10%; top: 0; bottom: 0; background: rgba(0,0,0,.75); }
+    #sc-caption-overlay .sc-caption-box { position: relative; display: inline-block; overflow: hidden; box-sizing: border-box; width: 80%; text-align: left; white-space: pre-wrap;
+      padding: .06em .32em; text-shadow: 0 0 2px rgba(0,0,0,.8); color: rgba(255,255,255,1); }
+    #sc-caption-overlay .sc-caption-scroll { position: relative; }
     .note { color: #93a1b5; font-size: 12.5px; max-width: 980px; margin-top: 12px; }
     code { font-family: Consolas, monospace; background: #232936; padding: 1px 5px; border-radius: 4px; }
   </style>
@@ -41,7 +44,9 @@
   <h1>Caption Boost - regelafbreking controleren</h1>
   <div class="sub">
     Vergelijkt de <b>oude</b> boxbreedte-logica (halve breedte, max 92%) met de <b>nieuwe</b> logica
-    (breedte groeit mee tot bijna de volle spelerbreedte) op de echte CSS van de overlay.
+    (de tekst vult de balk vanaf linksboven; <b>geen fontkrimp</b> — is de cue langer dan het venster,
+    dan schuift de tekst regel voor regel omhoog, zoals YouTube's eigen ondertitels) op de echte CSS van
+    de overlay — inclusief de gecentreerde balk (80% breed, dus video blijft links en rechts zichtbaar).
     Het aantal regels wordt empirisch geteld met <code>Range.getClientRects()</code>.
   </div>
 
@@ -63,26 +68,28 @@
     <div class="stageCol">
       <h3>Oud (halve breedte, max 92%)</h3>
       <div class="stageWrap"><div class="sc-player" id="stageOld">
-        <div id="sc-caption-overlay"><div class="sc-caption-box"></div></div>
+        <div id="sc-caption-overlay"><div class="sc-caption-bar"></div><div class="sc-caption-box"><div class="sc-caption-scroll"></div></div></div>
       </div></div>
     </div>
     <div class="stageCol">
-      <h3>Nieuw (breedte groeit mee)</h3>
+      <h3>Nieuw (venster schuift, geen krimp)</h3>
       <div class="stageWrap"><div class="sc-player" id="stageNew">
-        <div id="sc-caption-overlay"><div class="sc-caption-box"></div></div>
+        <div id="sc-caption-overlay"><div class="sc-caption-bar"></div><div class="sc-caption-box"><div class="sc-caption-scroll"></div></div></div>
       </div></div>
     </div>
   </div>
 
   <table>
-    <thead><tr><th style="width:38%">cue</th><th>oud: regels (boxbreedte)</th><th>nieuw: regels (boxbreedte)</th><th>nieuw: details</th></tr></thead>
+    <thead><tr><th style="width:38%">cue</th><th>oud: regels (boxbreedte)</th><th>nieuw: totaal regels (zichtbaar)</th><th>nieuw: details</th></tr></thead>
     <tbody id="rows"></tbody>
   </table>
 
   <div class="note">
-    Details: <code>softMax</code> = 0,92 x spelerbreedte (de normale grens), <code>hardMax</code> = tot bijna de volle
-    spelerbreedte (0,64em padding + 8px marge eraf). <code>schaal</code> &lt; 1 betekent dat zelfs hardMax niet genoeg was
-    en het font voor die cue gekrompen is zodat hij alsnog in max. 2 regels past.
+    Nieuw: de tekst gebruikt de volle balkbreedte (box <code>box-sizing:border-box; width:80%</code>), begint
+    linksboven en het <b>font krimpt nooit</b>. De box is een venster van max. <code>Ondertitelregels</code> regels
+    (<code>overflow:hidden</code>); is de cue langer, dan schuift de tekst tijdens het uitspreken regel voor regel
+    omhoog — de bovenste regel verdwijnt, de nieuwe komt eronder (zoals YouTube's auto-generated ondertitels).
+    De oude kolom toont de oude halve-breedte-logica op dezelfde balk.
   </div>
 
   <script src="../extension/src/shared/lang-utils.js"></script>
@@ -129,6 +136,22 @@
         return count;
       }
 
+      /* Regeltops (unieke y-posities, gesorteerd) voor de vensterhoogte:
+         de afstand tussen twee tops = de regelhoogte. */
+      function rangeTops(el) {
+        var r = document.createRange();
+        r.selectNodeContents(el);
+        var rects = r.getClientRects();
+        var tops = [];
+        for (var i = 0; i < rects.length; i++) {
+          if (rects[i].width <= 0) continue;
+          var t = Math.round(rects[i].top);
+          if (tops.indexOf(t) === -1) tops.push(t);
+        }
+        tops.sort(function (a, b) { return a - b; });
+        return tops;
+      }
+
       function setupStage(stage, hostW, hostH, inc, pct) {
         stage.style.width = hostW + 'px';
         stage.style.height = hostH + 'px';
@@ -143,42 +166,46 @@
        */
       function renderCue(stage, lines, text, mode) {
         var box = stage.querySelector('.sc-caption-box');
+        var wrap = stage.querySelector('.sc-caption-scroll');
         box.style.maxWidth = '';
         box.style.fontSize = '';
-        var hostW = stage.clientWidth;
+        box.style.height = '';
+        wrap.style.transform = '';
+        var hostW = Math.round(stage.clientWidth * 0.8); // de balk is 80% van de speler (BOOST_BAR_WIDTH)
         var cs = window.getComputedStyle(box);
         var font = cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
         var fontPx = parseFloat(cs.fontSize) || 0;
         var flat = String(text).replace(/\s+/g, ' ').trim();
-        var words = flat ? flat.split(' ') : [];
-        var widths = [];
-        var longest = 0;
-        for (var i = 0; i < words.length; i++) {
-          var w = textWidth(words[i], font);
-          widths.push(w);
-          if (w > longest) longest = w;
-        }
-        var total = textWidth(flat, font);
-        var spacePx = textWidth(' ', font);
-        if (!(spacePx > 0)) spacePx = fontPx * 0.28;
-        var padSide = Math.ceil(Math.max(0, fontPx * 0.32));
-        var softMax = Math.max(160, Math.round(hostW * 0.92));
-        var hardMax = Math.max(softMax, Math.round(hostW - 2 * padSide - 8));
         var width = 0;
-        var scale = 1;
+        var totalLines = 0;
         if (mode === 'old') {
-          width = oldCaptionBoxWidth(lines, total, longest, softMax, 4);
-          box.textContent = String(text);
+          // Oude logica (strawman): halve breedte + marge, nooit breder dan 92%.
+          var words = flat ? flat.split(' ') : [];
+          var longest = 0;
+          for (var i = 0; i < words.length; i++) {
+            var w = textWidth(words[i], font);
+            if (w > longest) longest = w;
+          }
+          var totalPx = textWidth(flat, font);
+          var softMax = Math.max(160, Math.round(hostW * 0.92));
+          width = oldCaptionBoxWidth(lines, totalPx, longest, softMax, 4);
+          wrap.textContent = String(text);
           box.style.maxWidth = width > 0 ? Math.round(width) + 'px' : '';
+          totalLines = measureLines(wrap);
         } else {
-          var res = L.captionBoxWidth(lines, widths, spacePx, softMax, hardMax, 4) || { width: 0, fontScale: 1 };
-          width = res.width;
-          scale = res.fontScale;
-          box.textContent = flat;
-          box.style.maxWidth = width > 0 ? Math.round(width) + 'px' : '';
-          if (scale < 1 && fontPx) box.style.fontSize = (Math.round(fontPx * scale * 10) / 10) + 'px';
+          // Nieuw: volle balkbreedte, geen fontkrimp; het venster toont max.
+          // `lines` regels en schuift omhoog als de cue langer is (YouTube).
+          wrap.textContent = flat;
+          var tops = rangeTops(wrap);
+          totalLines = tops.length;
+          var lineH = totalLines > 1 ? tops[1] - tops[0] : 0;
+          var natH = wrap.offsetHeight;
+          if (totalLines > lines && lineH > 0) {
+            box.style.height = Math.round(natH - (totalLines - lines) * lineH) + 'px'; // precies de laatste N regels
+          }
+          width = Math.round(box.getBoundingClientRect().width);
         }
-        return { lines: measureLines(box), width: width, scale: scale, fontPx: fontPx, softMax: softMax, hardMax: hardMax };
+        return { lines: measureLines(wrap), width: width, fontPx: fontPx, barW: hostW, total: totalLines };
       }
 
       var SAMPLES = [
@@ -194,6 +221,8 @@
         return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '\\n');
       }
 
+      function regels(n) { return n + (n === 1 ? ' regel' : ' regels'); }
+
       function run() {
         var hostW = Math.max(200, Number(document.getElementById('hostW').value) || 1280);
         var hostH = Math.max(150, Number(document.getElementById('hostH').value) || 720);
@@ -208,20 +237,20 @@
         var samples = (custom ? [custom] : []).concat(SAMPLES);
         var rows = document.getElementById('rows');
         rows.innerHTML = '';
-        var oldBad = 0, newBad = 0;
+        var oldBad = 0, newClipped = 0;
 
         samples.forEach(function (text, idx) {
           var oldRes = renderCue(document.getElementById('stageOld'), lines, text, 'old');
           var newRes = renderCue(document.getElementById('stageNew'), lines, text, 'new');
           if (oldRes.lines > lines) oldBad++;
-          if (newRes.lines > lines) newBad++;
+          if (newRes.total > lines) newClipped++;
 
           var tr = document.createElement('tr');
           var cell = '<td>' + esc(text.length > 96 ? text.slice(0, 93) + '...' : text) + '</td>' +
             '<td class="num ' + (oldRes.lines > lines ? 'bad' : 'good') + '">' + oldRes.lines + ' regels (' + Math.round(oldRes.width) + 'px)</td>' +
-            '<td class="num ' + (newRes.lines > lines ? 'bad' : 'good') + '">' + newRes.lines + ' regels (' + Math.round(newRes.width) + 'px)</td>' +
-            '<td class="num">softMax ' + newRes.softMax + ', hardMax ' + newRes.hardMax + ', font ' + (Math.round(newRes.fontPx * 10) / 10) +
-            'px' + (newRes.scale < 1 ? ', <span class="warn">schaal ' + (Math.round(newRes.scale * 100) / 100) + '</span>' : '') + '</td>';
+            '<td class="num ' + (newRes.total > lines ? 'warn' : 'good') + '">' + regels(newRes.total) + ' (' + Math.min(newRes.total, lines) + ' zichtbaar)</td>' +
+            '<td class="num">balk ' + newRes.barW + 'px, font ' + (Math.round(newRes.fontPx * 10) / 10) + 'px' +
+            (newRes.total > lines ? ', <span class="warn">venster schuift omhoog</span>' : '') + '</td>';
           tr.innerHTML = cell;
           rows.appendChild(tr);
 
@@ -233,16 +262,20 @@
               var r = st.closest('.stageCol');
               var p = document.createElement('div');
               p.className = 'cueNote note';
-              p.textContent = (id === 'stageOld' ? oldRes : newRes).lines + ' regels getekend';
+              var res = (id === 'stageOld' ? oldRes : newRes);
+              p.textContent = id === 'stageOld'
+                ? regels(res.lines) + ' getekend'
+                : regels(res.total) + ' (venster: ' + Math.min(res.total, lines) + ' zichtbaar)';
               r.appendChild(p);
             });
           }
         });
 
         var v = document.getElementById('verdict');
-        v.textContent = lines + ' regels @ ' + pct + '% op ' + hostW + 'x' + hostH + ' (increment ' + inc + '): ' +
-          'oud ' + oldBad + ' van ' + samples.length + ' cues te veel regels, nieuw ' + newBad + ' van ' + samples.length;
-        v.className = 'verdict ' + (newBad ? 'fail' : 'pass');
+        v.textContent = 'venster ' + lines + ' regels @ ' + pct + '% op ' + hostW + 'x' + hostH + ' (increment ' + inc + '): ' +
+          'oud ' + oldBad + ' van ' + samples.length + ' cues te veel regels; nieuw ' + newClipped + ' van ' + samples.length +
+          ' cues langer dan het venster (die schuiven regel voor regel omhoog)';
+        v.className = 'verdict ' + (newClipped ? 'warn' : 'pass');
       }
 
       ['hostW', 'hostH', 'sizePct', 'increment', 'maxLines'].forEach(function (id) {
