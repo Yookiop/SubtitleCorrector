@@ -28,6 +28,7 @@
     captionBoost: true,
     captionSize: 175,
     captionLines: 2,
+    captionOffset: 0,
     captionWordByWord: false,
     audioSeconds: 5,
     minConfidence: 0.5,
@@ -232,6 +233,7 @@
       captionBoost: !!settings.captionBoost,
       captionSize: Number(settings.captionSize) || 175,
       captionLines: Number(settings.captionLines) === 1 ? 1 : 2,
+      captionOffset: Number(settings.captionOffset) || 0,
       captionWordByWord: !!settings.captionWordByWord
     }).catch(function () {});
   }

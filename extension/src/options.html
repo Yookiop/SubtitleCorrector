@@ -111,7 +111,7 @@
       <h2>Prestaties (caption-prioriteit)</h2>
       <div class="field">
         <label>Eigen ondertitelweergave (Caption Boost)
-          <span class="hint">Toont de ondertitel in blokken van 2 volle zinnen, in één keer: het hele blok staat direct in beeld en blijft staan tot het volgende blok begint. Zo blijven zinnen bij elkaar en komt er geen halfgevuld blok meer waarin de rest van de zin pas later verschijnt. Zet <b>Word-for-Word</b> aan voor woord-voor-woord, zoals YouTube's auto-gegenereerde ondertitels. Verbergt YouTube's eigen caption-venster zolang dat lukt; lost het "loopt 1-2 seconden achter en plopt dan in blokken"-probleem op — ook als dat zonder deze extensie gebeurt.</span>
+          <span class="hint">Toont de ondertitel in blokken van 2 volle zinnen, in één keer: het hele blok staat direct in beeld en blijft staan tot het volgende blok begint. Zo blijven zinnen bij elkaar en komt er geen halfgevuld blok meer waarin de rest van de zin pas later verschijnt. Zet <b>Word-for-Word</b> aan voor woord-voor-woord, zoals YouTube's auto-gegenereerde ondertitels. Een sprekerswissel (<b>&gt;&gt;</b>) begint altijd op een nieuwe regel. Verbergt YouTube's eigen caption-venster zolang dat lukt; lost het "loopt 1-2 seconden achter en plopt dan in blokken"-probleem op — ook als dat zonder deze extensie gebeurt.</span>
         </label>
         <input type="checkbox" id="captionBoost">
       </div>
@@ -131,8 +131,14 @@
         </select>
       </div>
       <div class="field">
+        <label>Y-offset (%)
+          <span class="hint">Verticale positie van de ondertitelbalk, in procentpunten van de spelerhoogte. <b>Positief = omlaag</b> (dichter bij de onderrand), <b>negatief = omhoog</b>. 0 = de standaardpositie; bereik −40 tot +30. De balk blijft altijd binnen de speler.</span>
+        </label>
+        <input type="number" id="captionOffset" min="-40" max="30" step="1">
+      </div>
+      <div class="field">
         <label>Word-for-Word
-          <span class="hint">Toont de ondertiteling woord voor woord, zoals YouTube's auto-gegenereerde ondertitels: elk woord verschijnt op zijn eigen tijd en zodra de onderste regel vol is schuift het venster één regel omhoog (regel 1 verdwijnt, regel 2 wordt regel 1 en de nieuwe woorden gaan verder op regel 2). Een stilte begint weer met een leeg venster. Uit (standaard) = de hele blokken van 2 volle zinnen in één keer.</span>
+          <span class="hint">Toont de ondertiteling woord voor woord, zoals YouTube's auto-gegenereerde ondertitels: elk woord verschijnt op zijn eigen tijd en zodra de onderste regel vol is schuift het venster één regel omhoog (regel 1 verdwijnt, regel 2 wordt regel 1 en de nieuwe woorden gaan verder op regel 2). Heeft een cue geen per-woordtijden (één tijd voor de hele zin), dan worden de woorden over de cue verdeeld — er plopt dus nooit ineens een hele zin in beeld. Een stilte begint weer met een leeg venster. Uit (standaard) = de hele blokken van 2 volle zinnen in één keer.</span>
         </label>
         <input type="checkbox" id="captionWordByWord">
       </div>

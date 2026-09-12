@@ -638,6 +638,7 @@
      percentage bovenop YouTube's size-stand. */
   var BOOST_SIZE_PCT = 175;    // default ondertitelgrootte (%; optie 50-250)
   var BOOST_LINES = 2;         // max. regels in de eigen weergave (1 of 2; optie, default 2)
+  var BOOST_OFFSET_PCT = 0;    // y-offset van de balk in %-punten (optie; + = omlaag, - = omhoog)
   var BOOST_BAR_WIDTH = 0.8;   // de ondertitelbalk is 80% van de spelerbreedte en staat
                                // gecentreerd: links en rechts blijft video zichtbaar
                                // (geen balk van rand tot rand)
@@ -664,6 +665,13 @@
     if (!el) return;
     var p = player();
     var px = L.captionFontPx(p ? p.clientHeight : 400, boostStyle.increment, BOOST_SIZE_PCT);
+    // Verticale positie (optie *Y-offset*): de balk hangt standaard 10,5% boven
+    // de onderrand van de speler; de offset verschuift hem in %-punten van de
+    // spelerhoogte (positief = omlaag). Altijd zetten — ook als de rest van de
+    // stijl al toegepast is — want een nieuwe overlay of offset moet meteen goed
+    // staan.
+    var bottom = L.captionBottomPct(BOOST_OFFSET_PCT) + '%';
+    if (el.style.bottom !== bottom) el.style.bottom = bottom;
     var key = Math.round(px * 10) + '|' + boostStyle.textColor + '|' + boostStyle.bgColor;
     if (key === boostStyle.applied) return;
     boostStyle.applied = key;
@@ -830,7 +838,9 @@
     var box = boost.box;
     var wrap = boost.scrollEl;
     if (!box || !wrap) return;
-    wrap.textContent = blk.text;
+    // Elke sprekerswissel (">>") begint op een nieuwe regel; de markering zelf
+    // blijft staan (die toont YouTube ook).
+    wrap.textContent = L.captionSpeakerBreaks(blk.text);
     wrap.style.transform = '';
     box.style.fontSize = '';
     box.style.maxWidth = '';
@@ -894,6 +904,22 @@
   }
 
   /**
+   * Een nieuwe regel beginnen in het rollende venster (sprekerswissel ">>"):
+   * eerst de losse spatie van het vorige woord weghalen — anders blijft die
+   * als hangende witruimte aan het regeleinde staan — en dan een echte
+   * regelovergang (`<br>`) zetten. In een leeg venster gebeurt er niets, zodat
+   * er geen lege eerste regel ontstaat.
+   */
+  function startCaptionLine(wrap) {
+    if (!wrap) return;
+    var last = wrap.lastChild;
+    if (!last) return;
+    if (last.nodeType === 1 && last.tagName === 'BR') return; // al een nieuwe regel
+    if (last.nodeType === 3) last.data = last.data.replace(/\s+$/, '');
+    wrap.appendChild(document.createElement('br'));
+  }
+
+  /**
    * Eén frame van de woord-voor-woord-weergave: de woorden van de actieve run
    * komen één voor één in de DOM (op hun eigen tijd) en het venster rolt per
    * regel mee. Een stilte begint een nieuwe run (venster leeg); een sprong in
@@ -916,9 +942,13 @@
     box.style.height = L.captionBoxHeightEm(BOOST_LINES) + 'em';
     var grew = false;
     while (boost.wordCount < n && boost.wordCount < run.words.length) {
+      var word = run.words[boost.wordCount];
+      // Sprekerswissel (">>") begint op een nieuwe regel, net als bij YouTube's
+      // auto-ondertitels.
+      if (L.isSpeakerChange(word.text)) startCaptionLine(wrap);
       // Elk woord is een eigen tekstknoop: hij komt er op zijn tijd bij, de
       // rest van de regelafbreking blijft daardoor staan (greedy wrap).
-      wrap.appendChild(document.createTextNode(run.words[boost.wordCount].text + ' '));
+      wrap.appendChild(document.createTextNode(word.text + ' '));
       boost.wordCount++;
       grew = true;
     }
@@ -1141,6 +1171,12 @@
       if (lines !== BOOST_LINES) { BOOST_LINES = lines; invalidateBoostText(); }
       dbg('captionLines', BOOST_LINES);
     }
+    if (opts && Object.prototype.hasOwnProperty.call(opts, 'captionOffset')) {
+      var off = Number(opts.captionOffset);
+      BOOST_OFFSET_PCT = isFinite(off) ? Math.max(-40, Math.min(30, off)) : 0;
+      applyBoostStyle(); // zet de nieuwe bottom op de overlay (en herrekent niets onnodig)
+      dbg('captionOffset', BOOST_OFFSET_PCT);
+    }
     if (opts && Object.prototype.hasOwnProperty.call(opts, 'captionWordByWord')) {
       var wbw = !!opts.captionWordByWord;
       if (wbw !== BOOST_WORD_BY_WORD) {
@@ -1153,6 +1189,7 @@
       captionBoost: CAPTION_BOOST_ENABLED,
       captionSize: BOOST_SIZE_PCT,
       captionLines: BOOST_LINES,
+      captionOffset: BOOST_OFFSET_PCT,
       captionWordByWord: BOOST_WORD_BY_WORD,
       subtitlesOff: SUBTITLES_OFF
     };

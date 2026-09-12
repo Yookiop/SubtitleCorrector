@@ -332,15 +332,49 @@
     eq(words[3].t, 2.6);   // 2,0 s + 600 ms
     eq(words[words.length - 1].text, 'day.');
 
-    // Handmatige track zonder per-woordtijden: alles op de tijd van het segment.
+    // Segment zonder per-woordtijden: de woorden worden over de segmentduur
+    // verdeeld zodat ze één voor één verschijnen (niet de hele zin in één keer).
     var zonder = L.buildCaptionWords(L.parseCaptionJson({ events: [
       { tStartMs: 1000, dDurationMs: 2000, segs: [{ utf8: 'een twee  drie' }] }
     ] }));
     eq(zonder.length, 3);
     eq(zonder[0].t, 1);
-    eq(zonder[2].t, 1);
     eq(zonder[2].text, 'drie');
+    ok(Math.abs(zonder[1].t - (1 + 2 / 3)) < 1e-9, 'tweede woord op 1/3 van het segment');
+    ok(Math.abs(zonder[2].t - (1 + 4 / 3)) < 1e-9, 'derde woord op 2/3 van het segment');
+    ok(zonder[0].t < zonder[1].t && zonder[1].t < zonder[2].t, 'tijden strikt oplopend');
+    ok(Math.abs(zonder[0].end - zonder[1].t) < 1e-9, 'einde = tijd van het volgende woord');
     eq(zonder[2].end, 3);
+  });
+
+  test('buildCaptionWords: nooit twee woorden op dezelfde tijd (geen hele zinnen)', function (L) {
+    // Precies het scenario uit de klacht: ASR levert per cue één tijd, terwijl
+    // de cue een hele zin is. Elk woord moet toch zijn eigen tijd krijgen.
+    var words = L.buildCaptionWords(L.parseCaptionJson({ events: [
+      { tStartMs: 2000, dDurationMs: 2600, segs: [{ utf8: 'I am doing really well thank you' }] },
+      { tStartMs: 5400, dDurationMs: 1800, segs: [{ utf8: 'Are you there? Yes I am here now.' }] }
+    ] }));
+    eq(words.length, 15); // 7 + 8 woorden
+    eq(words[0].text, 'I');
+    ok(words[words.length - 1].t < 5.4 + 1.8 + 1e-9, 'laatste woord valt binnen de laatste cue');
+    for (var i = 1; i < words.length; i++) {
+      ok(words[i].t > words[i - 1].t, 'woord ' + i + ' (' + words[i].text + ') moet later zijn dan woord ' + (i - 1));
+    }
+    // De woorden van de 2e cue komen pas ná de stilte van 0,8 s in beeld.
+    ok(words[7].t >= 5.4, 'eerste woord van de 2e cue start niet vóór de cue');
+    eq(words[7].text, 'Are');
+  });
+
+  test('buildCaptionWords: één woord per segment houdt de gemeten tijd exact', function (L) {
+    var words = L.buildCaptionWords(L.parseCaptionJson({ events: [
+      { tStartMs: 1000, dDurationMs: 1200, segs: [
+        { utf8: 'a', tOffsetMs: 0 }, { utf8: ' b', tOffsetMs: 400 }, { utf8: ' c', tOffsetMs: 800 }
+      ] }
+    ] }));
+    eq(words.length, 3);
+    eq(words[0].t, 1);
+    eq(words[1].t, 1.4);
+    eq(words[2].t, 1.8);
   });
 
   test('buildCaptionRuns: stilte splitst runs, korte pauze niet', function (L) {
@@ -404,6 +438,39 @@
     eq(L.captionWindowShift(102, 34, 1), 68);     // 1-regelig venster
     eq(L.captionWindowShift(102.4, 34.13, 2), 34.13);
     eq(L.captionWindowShift(102, 0, 2), 0);       // geen line-height bekend
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Sprekerswissel (">>") en de y-offset van de ondertitelbalk
+   * ------------------------------------------------------------------ */
+
+  test('isSpeakerChange herkent de sprekersmarkering ">>"', function (L) {
+    eq(L.isSpeakerChange('>> I\u2019m here'), true);
+    eq(L.isSpeakerChange('>>I\u2019m here'), true);
+    eq(L.isSpeakerChange(' >> I\u2019m here'), true);
+    eq(L.isSpeakerChange('I\u2019m here'), false);
+    eq(L.isSpeakerChange('a >> b'), false);   // niet aan het begin
+    eq(L.isSpeakerChange(''), false);
+    eq(L.isSpeakerChange(null), false);
+  });
+
+  test('captionSpeakerBreaks: nieuwe spreker begint op een nieuwe regel', function (L) {
+    eq(L.captionSpeakerBreaks('Yes. >> No.'), 'Yes.\n>> No.');
+    eq(L.captionSpeakerBreaks('Good.>>Fine.'), 'Good.\n>> Fine.');
+    eq(L.captionSpeakerBreaks('>> I\u2019m doing. >> You too.'), '>> I\u2019m doing.\n>> You too.');
+    eq(L.captionSpeakerBreaks('Alleen ik.'), 'Alleen ik.');
+    eq(L.captionSpeakerBreaks('  '), '');
+    eq(L.captionSpeakerBreaks(null), '');
+  });
+
+  test('captionBottomPct: y-offset schuift de balk omlaag/omhoog', function (L) {
+    eq(L.captionBottomPct(0), 10.5);      // standaard
+    eq(L.captionBottomPct(10), 0.5);      // positief = omlaag (dichter bij de rand)
+    eq(L.captionBottomPct(-10), 20.5);    // negatief = omhoog
+    eq(L.captionBottomPct(100), 0);       // geclamped: niet voorbij de onderrand
+    eq(L.captionBottomPct(-100), 80);     // geclamped: niet voorbij de bovenkant
+    eq(L.captionBottomPct('x'), 10.5);    // onbruikbare waarde = standaard
+    eq(L.captionBottomPct(5, 20), 15);    // eigen basispositie
   });
 
   test('rgbaFromHex maakt rgba met opacity', function (L) {

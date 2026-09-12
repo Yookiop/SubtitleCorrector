@@ -63,6 +63,9 @@
     lege regel 2. Links staat wat YouTube zelf per cue zou tonen — de oude klacht: regel 2 maar een
     kwart gevuld en de rest van de zin in een volgend blok. De regels worden empirisch geteld met
     <code>Range.getClientRects()</code>; druk op <b>▶ Speel af</b> om ze naast elkaar te zien lopen.
+    Het scenario <b>Cue zonder per-woordtijden</b> laat het geval uit de klacht zien: een cue met
+    maar één seg (geen <code>tOffsetMs</code>) verschijnt nu evengoed woord voor woord, doordat
+    <code>L.buildCaptionWords()</code> de woorden over de cue verdeelt.
   </div>
 
   <div class="controls">
@@ -70,6 +73,8 @@
       <option value="podcast">Podcast: 5 zinnen op rij (cue's met meerdere zinnen)</option>
       <option value="stilte">Stiltes: korte zin, stilte, korte zin</option>
       <option value="punctuatie">Zonder punctuatie (noodrem op tekens)</option>
+      <option value="geenoffset">Cue zonder per-woordtijden (hele zin in één seg)</option>
+      <option value="sprekers">Sprekerswissel (&gt;&gt;): nieuwe spreker op een nieuwe regel</option>
       <option value="kort">Korte zinnen: losse blokken van 1 zin</option>
     </select></div>
     <div><label>Spelerbreedte (px)</label><input type="number" id="hostW" value="1280" min="320" step="10"></div>
@@ -77,6 +82,7 @@
     <div><label>Ondertitelgrootte (%)</label><input type="number" id="sizePct" value="175" min="50" max="250" step="5"></div>
     <div><label>YouTube fontSizeIncrement</label><input type="number" id="increment" value="0" min="-3" max="4" step="1"></div>
     <div><label>Ondertitelregels</label><input type="number" id="maxLines" value="2" min="1" max="2" step="1"></div>
+    <div><label>Y-offset (%; + = omlaag)</label><input type="number" id="yOffset" value="0" min="-40" max="30" step="1"></div>
     <div><label>Snelheid</label><select id="speed">
       <option value="1">1x</option>
       <option value="4" selected>4x</option>
@@ -157,7 +163,13 @@
     blijft die vaak steken (25%), bij de blokken loopt de tekst door tot een zinseinde. Voor het
     rollende venster wordt elk woord apart doorgerekend en gecontroleerd: de verschuiving valt op
     hele regels, toont precies de laatste 1 of 2 regels, het nieuwste woord staat altijd in beeld
-    en er verdwijnt geen tekst.
+    en er verdwijnt geen tekst. Voor de <b>sprekerswissel</b> geldt dezelfde pijplijn plus
+    <code>L.captionSpeakerBreaks()</code> / <code>L.isSpeakerChange()</code>: het scenario
+    <b>Sprekerswissel</b> laat zien dat een nieuwe spreker in alle drie de stages op een nieuwe
+    regel begint (de cue-stage toont de <code>\n</code>, de woord-stage zet een <code>&lt;br&gt;</code>
+    vóór elke <code>&gt;&gt;</code>). De <b>Y-offset</b> gebruikt dezelfde
+    <code>L.captionBottomPct()</code> als de app (positief = omlaag, geclamped op 0-80%) en geldt
+    voor alle drie de stages.
   </div>
 
   <script src="../extension/src/shared/lang-utils.js"></script>
@@ -182,6 +194,27 @@
           segs.push({ utf8: (i ? ' ' : '') + words[i], tOffsetMs: i * step });
         }
         return { tStartMs: tStartMs, dDurationMs: words.length * step + 420, segs: segs };
+      }
+
+      /**
+       * Eén cue als json3-event ZONDER per-woordtijden: één seg met de hele
+       * zin. Dit is het geval waarin de oude weergave de hele zin in één keer
+       * liet ploppen; `L.buildCaptionWords()` verdeelt de woorden nu over de
+       * cue, zodat ze één voor één verschijnen.
+       */
+      function makeCoarseEvent(tStartMs, text, durMs) {
+        return { tStartMs: tStartMs, dDurationMs: durMs, segs: [{ utf8: text }] };
+      }
+
+      /** Cue's zonder per-woordtijden na elkaar plannen. */
+      function scheduleCoarse(cues) {
+        var events = [];
+        var tMs = 1000;
+        cues.forEach(function (c) {
+          events.push(makeCoarseEvent(tMs, c.text, c.durMs));
+          tMs += c.durMs + Math.round((c.gap || 0) * 1000);
+        });
+        return events;
       }
 
       /** Cue's na elkaar plannen; `gap` = stilte (s) ná die cue. */
@@ -226,6 +259,22 @@
             { text: 'Hi there.', gap: 0.8 },
             { text: 'Good to see you.', gap: 0.5 }
           ])
+        },
+        geenoffset: {
+          label: 'Cue zonder per-woordtijden (hele zin in één seg)',
+          events: scheduleCoarse([
+            { text: 'I am doing really well thank you very much', durMs: 2600, gap: 0.3 },
+            { text: 'Are you still there my friend', durMs: 2100, gap: 0.3 },
+            { text: 'Yes I am here and ready to go', durMs: 2000, gap: 0.5 }
+          ])
+        },
+        sprekers: {
+          label: 'Sprekerswissel',
+          events: schedule([
+            { text: '>> I was thinking about that. So what do you say?', gap: 0.2 },
+            { text: '>> Sounds good to me, let us do it.', gap: 0.2 },
+            { text: 'Alright then. >> But are you sure about it?', gap: 0.5 }
+          ])
         }
       };
 
@@ -268,7 +317,8 @@
         var box = stage.querySelector('.sc-caption-box');
         var wrap = stage.querySelector('.sc-caption-scroll');
         overlay.style.display = 'block'; // meten kan niet als de overlay verborgen is
-        wrap.textContent = text || '';
+        // Net als de app: elke sprekerswissel (">>") begint op een nieuwe regel.
+        wrap.textContent = L.captionSpeakerBreaks(text || '');
         box.style.height = 'auto';
         var info = measureLineInfo(box, wrap);
         box.style.height = L.captionBoxHeightEm(lines) + 'em';
@@ -283,7 +333,8 @@
         var wrap = stage.querySelector('.sc-caption-scroll');
         if (text == null) { overlay.style.display = 'none'; return; }
         overlay.style.display = 'block';
-        if (wrap.textContent !== text) wrap.textContent = text;
+        var display = L.captionSpeakerBreaks(text);
+        if (wrap.textContent !== display) wrap.textContent = display;
         box.style.height = L.captionBoxHeightEm(lines) + 'em';
       }
 
@@ -302,14 +353,29 @@
         return isFinite(lh) && lh > 0 ? lh : 0;
       }
 
+      /**
+       * Eén woord als tekstknoop toevoegen, net als de page agent: bij een
+       * sprekerswissel (">>") eerst de hangende spatie weghalen en een echte
+       * regelovergang (`<br>`) zetten, zodat de nieuwe spreker op een nieuwe
+       * regel begint. In een leeg venster gebeurt er niets.
+       */
+      function appendWord(els, word) {
+        if (L.isSpeakerChange(word)) {
+          var last = els.wrap.lastChild;
+          if (last && last.nodeType === 3) last.data = last.data.replace(/\s+$/, '');
+          if (els.wrap.lastChild) els.wrap.appendChild(document.createElement('br'));
+        }
+        els.wrap.appendChild(document.createTextNode(word + ' '));
+      }
+
       /** De eerste `n` woorden van een run als tekstknopen in de DOM zetten. */
       function setWordText(els, run, n) {
         els.wrap.textContent = '';
         var txt = '';
         for (var i = 0; i < n; i++) {
-          var w = run.words[i].text + ' ';
-          txt += w;
-          els.wrap.appendChild(document.createTextNode(w));
+          var w = run.words[i].text;
+          txt += w + ' ';
+          appendWord(els, w);
         }
         return txt;
       }
@@ -351,7 +417,7 @@
         }
         if (n > state.word.count) {
           for (var i = state.word.count; i < n; i++) {
-            els.wrap.appendChild(document.createTextNode(run.words[i].text + ' '));
+            appendWord(els, run.words[i].text);
           }
           state.word.count = n;
           applyWordWindow(els, lines);
@@ -408,12 +474,14 @@
         return Number(document.getElementById('maxLines').value) === 1 ? 1 : 2;
       }
 
-      function setupStages(hostW, hostH, pct, inc) {
+      function setupStages(hostW, hostH, pct, inc, yOff) {
         [cueStage, newStage, wordStage].forEach(function (stage) {
           stage.style.width = hostW + 'px';
           stage.style.height = hostH + 'px';
           var overlay = stage.querySelector('#sc-caption-overlay');
           overlay.style.fontSize = L.captionFontPx(hostH, inc, pct) + 'px';
+          // Als in de app: dezelfde y-offset-berekening (positief = omlaag).
+          overlay.style.bottom = L.captionBottomPct(yOff) + '%';
         });
       }
 
@@ -507,10 +575,11 @@
         var hostH = Math.max(120, Number(document.getElementById('hostH').value) || 720);
         var pctSize = Math.max(50, Math.min(250, Number(document.getElementById('sizePct').value) || 175));
         var inc = Number(document.getElementById('increment').value) || 0;
+        var yOff = Number(document.getElementById('yOffset').value) || 0;
         var lines = curLines();
         var key = document.getElementById('scenario').value;
 
-        setupStages(hostW, hostH, pctSize, inc);
+        setupStages(hostW, hostH, pctSize, inc, yOff);
         state.events = L.parseCaptionJson({ events: SCENARIOS[key].events });
         state.blocks = L.buildCaptionBlocks(state.events, OPTS);
         state.runs = L.buildCaptionRuns(L.buildCaptionWords(state.events), OPTS.silenceGap);
@@ -591,6 +660,7 @@
 
         var v = document.getElementById('verdict');
         v.textContent = SCENARIOS[key].label + ' @ ' + lines + ' regels / ' + pctSize + '% op ' + hostW + 'x' + hostH +
+          ' | y-offset: ' + (yOff > 0 ? '+' : '') + yOff + '% (onderrand op ' + L.captionBottomPct(yOff) + '%)' +
           ' - blokken: ' + state.blocks.length +
           ' | met 2 volle zinnen: ' + withTwo +
           ' | grens midden in een zin: ' + midCut +
@@ -607,7 +677,7 @@
         applyTime();
       }
 
-      ['hostW', 'hostH', 'sizePct', 'increment', 'maxLines', 'scenario'].forEach(function (id) {
+      ['hostW', 'hostH', 'sizePct', 'increment', 'maxLines', 'yOffset', 'scenario'].forEach(function (id) {
         document.getElementById(id).addEventListener('input', run);
         document.getElementById(id).addEventListener('change', run);
       });

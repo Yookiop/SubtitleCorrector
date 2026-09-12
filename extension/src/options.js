@@ -18,6 +18,7 @@ const DEFAULTS = {
   captionBoost: true,
   captionSize: 175,
   captionLines: 2,
+  captionOffset: 0,
   captionWordByWord: false,
   bridgeUrl: 'http://127.0.0.1:8791',
   audioSeconds: 5,
@@ -34,7 +35,7 @@ const BOOL_FIELDS = [
   'captionWordByWord', 'keepAudioDuringCapture', 'showToast', 'debug'
 ];
 const TEXT_FIELDS = ['hotkey', 'bridgeUrl'];
-const NUM_FIELDS = ['audioSeconds', 'minConfidence', 'captionSize', 'captionLines'];
+const NUM_FIELDS = ['audioSeconds', 'minConfidence', 'captionSize', 'captionLines', 'captionOffset'];
 
 const $ = (id) => document.getElementById(id);
 
@@ -63,6 +64,7 @@ function collect() {
   out.minConfidence = Math.max(0, Math.min(1, isFinite(out.minConfidence) ? out.minConfidence : 0.5));
   out.captionSize = Math.max(50, Math.min(250, Math.round(out.captionSize || 175)));
   out.captionLines = Number(out.captionLines) === 1 ? 1 : 2;
+  out.captionOffset = Math.max(-40, Math.min(30, Math.round(isFinite(out.captionOffset) ? out.captionOffset : 0)));
   return out;
 }
 

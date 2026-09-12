@@ -589,30 +589,97 @@
   /** Woorden komen heel even vóór hun gemeten starttijd in beeld (seconden). */
   var WORD_LEAD = 0.05;
 
+  /** Vast woordtempo (s/woord) als een segment totaal geen timing heeft. */
+  var WORD_FALLBACK_STEP = 0.3;
+
+  /* ------------------------------------------------------------------ *
+   * Sprekerswissel (">>") in auto-ondertitels
+   *
+   * YouTube's auto-ondertitels zetten een ">>" vóór de woorden van een nieuwe
+   * spreker. Zo'n wissel hoort op een nieuwe regel te beginnen; de markering
+   * zelf blijft staan (die toont YouTube ook).
+   * ------------------------------------------------------------------ */
+
+  /** Begint deze tekst (of dit woord) met een sprekerswissel (">>")? */
+  function isSpeakerChange(text) {
+    return /^\s*>>/.test(String(text == null ? '' : text));
+  }
+
   /**
-   * Alle events omzetten naar losse woorden met een tijd.
+   * Bloktekst met een regelovergang vóór elke sprekerswissel. De markering aan
+   * het begin van de tekst blijft gewoon vooraan staan. De overlay gebruikt
+   * `white-space:pre-wrap`, dus de `\n` is een echte regelovergang.
+   */
+  function captionSpeakerBreaks(text) {
+    var s = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+    if (!s) return '';
+    return s.replace(/\s*>>\s*/g, function (m, off) {
+      return off === 0 ? '>> ' : '\n>> ';
+    });
+  }
+
+  /**
+   * Alle events omzetten naar losse woorden met een EIGEN tijd.
    *
-   * ASR-tracks leveren per segment één woord (met `tOffsetMs`), dus dan is elk
-   * woord apart getimed. Een segment met meerdere woorden (handmatige track
-   * zonder per-woordtijden) heeft geen woordtiming: die woorden komen in één
-   * keer op de tijd van hun segment in beeld — precies zoals YouTube het bij
-   * zo'n track doet.
+   * YouTube's auto-ondertitels tonen elk woord op het moment dat het gezegd
+   * wordt. Dat kan alleen als elk woord een eigen tijd heeft. De speler levert
+   * die tijden niet altijd: een ASR-segment heeft vaak één `tOffsetMs` per
+   * segment, en een segment bevat soms meerdere woorden (of het hele segment
+   * heeft om het even welke reden dezelfde tijd). Zonder extra werk zou zo'n
+   * segment dan in één keer in beeld ploppen — "ineens een halve zin".
    *
-   * -> [{t, end, text}] op tijdsorde; `end` = einde van het segment (de tijd
-   *    waarop het woord "klaar" is, gebruikt voor de stiltedetectie).
+   * Daarom krijgt elk woord hier een eigen, strikt oplopende tijd:
+   *   - heeft een stukje één woord, dan houden we de gemeten tijd exact;
+   *   - bevat een stukje meerdere woorden, dan verdelen we ze gelijkmatig over
+   *     de duur van dat stukje (start van het stukje t/m het einde), zodat ze
+   *     één voor één verschijnen — precies zoals YouTube's auto-ondertitels;
+   *   - heeft een stukje geen bruikbare duur, dan nemen we de afstand tot het
+   *     volgende stukje, of anders een vast woordtempo.
+   *
+   * -> [{t, end, text}] op tijdsorde, met strikt oplopende `t`. `end` = tijd
+   *    van het volgende woord binnen hetzelfde stukje (of het stukje-einde),
+   *    gebruikt voor de stiltedetectie tussen runs.
    */
   function buildCaptionWords(events) {
     var chunks = captionChunks(events || []);
     var out = [];
+    var prevT = -Infinity;
     for (var i = 0; i < chunks.length; i++) {
       var ch = chunks[i];
       var txt = String(ch.raw == null ? '' : ch.raw).replace(/\s+/g, ' ').trim();
       if (!txt) continue;
-      var parts = txt.split(' ');
-      for (var p = 0; p < parts.length; p++) {
-        if (!parts[p]) continue;
-        out.push({ t: ch.t, end: ch.end, text: parts[p] });
+      var parts = [];
+      var rawParts = txt.split(' ');
+      for (var r = 0; r < rawParts.length; r++) {
+        if (rawParts[r]) parts.push(rawParts[r]);
       }
+      var k = parts.length;
+      if (!k) continue;
+
+      var start = typeof ch.t === 'number' && isFinite(ch.t) ? ch.t : 0;
+      var end = typeof ch.end === 'number' && isFinite(ch.end) ? ch.end : start;
+      if (!(end > start)) {
+        // Geen bruikbare duur. Neem de afstand tot het volgende stukje (dat is
+        // het moment waarop de volgende klank begint), anders een vast tempo.
+        var next = chunks[i + 1];
+        var nextT = next && typeof next.t === 'number' && isFinite(next.t) ? next.t : Infinity;
+        end = nextT > start ? nextT : start + k * WORD_FALLBACK_STEP;
+      }
+      var span = end - start;
+      var base = out.length;
+      for (var p = 0; p < k; p++) {
+        var wt = k === 1 ? start : start + span * (p / k);
+        if (!(wt > prevT)) wt = prevT + 0.001; // nooit terug in de tijd
+        out.push({ t: wt, end: 0, text: parts[p] });
+      }
+      // Einde per woord: binnen het stukje de tijd van het volgende woord,
+      // voor het laatste woord het einde van het stukje.
+      for (var q = 0; q < k; q++) {
+        var w = out[base + q];
+        w.end = q + 1 < k ? out[base + q + 1].t : Math.max(end, w.t);
+        if (!(w.end > w.t)) w.end = w.t;
+      }
+      prevT = out[out.length - 1].t;
     }
     return out;
   }
@@ -732,6 +799,21 @@
     var pct = typeof sizePercent === 'number' && isFinite(sizePercent) ? Math.max(50, Math.min(250, sizePercent)) : 175;
     var px = h * 0.032 * captionSizeScale(increment) * (pct / 100);
     return Math.max(10, Math.min(160, px));
+  }
+
+  /** Standaardafstand van de captionbalk tot de onderrand (% van de spelerhoogte). */
+  var CAPTION_BOTTOM_BASE = 10.5;
+
+  /**
+   * Effectieve afstand van de captionbalk tot de onderrand (% van de
+   * spelerhoogte) na de y-offset uit de opties. `offset` is in %-punten:
+   * positief schuift de ondertitels **omlaag** (dichter bij de onderrand),
+   * negatief **omhoog**. Geclamped op 0-80%, zodat de balk in de speler blijft.
+   */
+  function captionBottomPct(offset, base) {
+    var b = typeof base === 'number' && isFinite(base) ? base : CAPTION_BOTTOM_BASE;
+    var o = typeof offset === 'number' && isFinite(offset) ? Math.max(-80, Math.min(80, offset)) : 0;
+    return Math.round(Math.max(0, Math.min(80, b - o)) * 100) / 100;
   }
 
   /**
@@ -906,9 +988,13 @@
     captionRunAt: captionRunAt,
     captionWordIndex: captionWordIndex,
     captionWindowShift: captionWindowShift,
+    isSpeakerChange: isSpeakerChange,
+    captionSpeakerBreaks: captionSpeakerBreaks,
     rgbaFromHex: rgbaFromHex,
     captionSizeScale: captionSizeScale,
     captionFontPx: captionFontPx,
+    captionBottomPct: captionBottomPct,
+    CAPTION_BOTTOM_BASE: CAPTION_BOTTOM_BASE,
     captionLineCount: captionLineCount,
     captionFitWidth: captionFitWidth,
     captionBoxWidth: captionBoxWidth,
