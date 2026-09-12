@@ -319,6 +319,93 @@
     eq(L.captionBoxHeightEm(7), 2.92);       // geclamped op 2 regels
   });
 
+  /* ------------------------------------------------------------------ *
+   * Woord-voor-woord (optie): woorden, runs en het rollende venster
+   * ------------------------------------------------------------------ */
+  test('buildCaptionWords: per-woord offsets en segmenten zonder offsets', function (L) {
+    var words = L.buildCaptionWords(L.parseCaptionJson(PODCAST_JSON));
+    eq(words[0].text, '>>');
+    eq(words[0].t, 2);
+    eq(words[1].text, "I'm");
+    eq(words[1].t, 2.2);   // 2,0 s + 200 ms
+    eq(words[3].text, 'really');
+    eq(words[3].t, 2.6);   // 2,0 s + 600 ms
+    eq(words[words.length - 1].text, 'day.');
+
+    // Handmatige track zonder per-woordtijden: alles op de tijd van het segment.
+    var zonder = L.buildCaptionWords(L.parseCaptionJson({ events: [
+      { tStartMs: 1000, dDurationMs: 2000, segs: [{ utf8: 'een twee  drie' }] }
+    ] }));
+    eq(zonder.length, 3);
+    eq(zonder[0].t, 1);
+    eq(zonder[2].t, 1);
+    eq(zonder[2].text, 'drie');
+    eq(zonder[2].end, 3);
+  });
+
+  test('buildCaptionRuns: stilte splitst runs, korte pauze niet', function (L) {
+    var stil = L.parseCaptionJson({ events: [
+      { tStartMs: 1000, dDurationMs: 900, segs: [{ utf8: 'Yes.' }] },
+      { tStartMs: 4000, dDurationMs: 900, segs: [{ utf8: 'Exactly.' }] }
+    ] });
+    var runs = L.buildCaptionRuns(L.buildCaptionWords(stil));
+    eq(runs.length, 2);
+    eq(runs[0].start, 1);
+    eq(runs[0].end, 1.9);
+    eq(runs[0].words.length, 1);
+    eq(runs[1].start, 4);
+
+    var kort = L.parseCaptionJson({ events: [
+      { tStartMs: 1000, dDurationMs: 900, segs: [{ utf8: 'Yes.' }] },
+      { tStartMs: 2500, dDurationMs: 900, segs: [{ utf8: 'No.' }] }
+    ] });
+    var runs2 = L.buildCaptionRuns(L.buildCaptionWords(kort));
+    eq(runs2.length, 1);            // 0,6 s pauze: het venster rolt door
+    eq(runs2[0].words.length, 2);
+    eq(runs2[0].end, 3.4);
+  });
+
+  test('captionRunAt: actieve run, stilte en linger', function (L) {
+    var runs = L.buildCaptionRuns(L.buildCaptionWords(L.parseCaptionJson({ events: [
+      { tStartMs: 1000, dDurationMs: 900, segs: [{ utf8: 'Yes.' }] },
+      { tStartMs: 4000, dDurationMs: 900, segs: [{ utf8: 'Exactly.' }] }
+    ] })));
+    eq(L.captionRunAt(runs, 0.5), -1);  // nog niets gezegd
+    eq(L.captionRunAt(runs, 1.2), 0);   // midden in de run
+    eq(L.captionRunAt(runs, 2.2), 0);   // linger na het laatste woord
+    eq(L.captionRunAt(runs, 2.6), -1);  // stilte: venster leeg
+    eq(L.captionRunAt(runs, 4.2), 1);
+    eq(L.captionRunAt(runs, 9), -1);
+    eq(L.captionRunAt([], 1), -1);
+  });
+
+  test('captionWordIndex: woord voor woord, met en zonder lead', function (L) {
+    var words = L.buildCaptionWords(L.parseCaptionJson({ events: [
+      { tStartMs: 1000, dDurationMs: 1200, segs: [
+        { utf8: 'a', tOffsetMs: 0 }, { utf8: ' b', tOffsetMs: 400 }, { utf8: ' c', tOffsetMs: 800 }
+      ] }
+    ] }));
+    eq(words.length, 3);
+    eq(L.captionWordIndex(words, 0.9), 0);
+    eq(L.captionWordIndex(words, 1.0), 1);
+    eq(L.captionWordIndex(words, 1.3), 1);
+    eq(L.captionWordIndex(words, 1.36), 2);     // lead van 0,05 s
+    eq(L.captionWordIndex(words, 1.36, 0), 1);  // zonder lead nog niet
+    eq(L.captionWordIndex(words, 5), 3);
+    eq(L.captionWordIndex([], 5), 0);
+  });
+
+  test('captionWindowShift: stapjes van hele regels', function (L) {
+    eq(L.captionWindowShift(0, 34, 2), 0);
+    eq(L.captionWindowShift(34, 34, 2), 0);       // 1 regel past
+    eq(L.captionWindowShift(68, 34, 2), 0);       // 2 regels passen precies
+    eq(L.captionWindowShift(102, 34, 2), 34);     // 3 regels: 1 eruit
+    eq(L.captionWindowShift(170, 34, 2), 102);    // 5 regels: 3 eruit
+    eq(L.captionWindowShift(102, 34, 1), 68);     // 1-regelig venster
+    eq(L.captionWindowShift(102.4, 34.13, 2), 34.13);
+    eq(L.captionWindowShift(102, 0, 2), 0);       // geen line-height bekend
+  });
+
   test('rgbaFromHex maakt rgba met opacity', function (L) {
     eq(L.rgbaFromHex('#080808', 0.75), 'rgba(8,8,8,0.75)');
     eq(L.rgbaFromHex('#fff', 1), 'rgba(255,255,255,1)');

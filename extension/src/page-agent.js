@@ -477,28 +477,35 @@
   }
 
   /* ------------------------------------------------------------------ *
-   * Caption Boost: eigen ondertitelweergave in blokken van 2 volle zinnen
+   * Caption Boost: eigen ondertitelweergave
    *
    * YouTube's eigen caption-venster loopt in playlists soms 1-2 s achter en
    * toont dan losse zinsdelen in blokken. De speler haalt de track zelf op
    * via XHR (json3, met `tOffsetMs` per woord bij ASR); die respons vangen
-   * we passief op en we groeperen de cue's vooraf in blokken van 2 VOLLEDIGE
-   * zinnen (L.buildCaptionBlocks). Een blok komt in één keer in beeld — geen
-   * woord-voor-woord en geen halfgevulde regels — en blijft staan tot het
-   * volgende blok begint. YouTube's caption-venster verbergen we zolang dat
-   * lukt; lukt het niet, dan blijft YouTube's eigen weergave gewoon staan.
+   * we passief op. Twee weergaven (optie "Word-for-Word"):
+   *   - blokken (default): de cue's worden vooraf gegroepeerd in blokken van
+   *     2 VOLLEDIGE zinnen (L.buildCaptionBlocks); een blok komt in één keer
+   *     in beeld en blijft staan tot het volgende blok begint;
+   *   - woord-voor-woord: elk woord komt op zijn eigen tijd in hetzelfde
+   *     venster en het venster rolt per regel omhoog, zoals YouTube's
+   *     auto-gegenereerde ondertitels.
+   * YouTube's caption-venster verbergen we zolang dat lukt; lukt het niet,
+   * dan blijft YouTube's eigen weergave gewoon staan.
    * ------------------------------------------------------------------ */
   var CAPTION_BOOST_ENABLED = true;
+  var BOOST_WORD_BY_WORD = false;   // optie "Word-for-Word" (default uit = hele blokken)
   var BOOST_MAX_TRACKS = 2;
   var BOOST_BLOCK_SENTENCES = 2;    // zinnen per blok (user-keuze: 2 volle zinnen)
-  var BOOST_SILENCE_GAP = 1.6;      // s stilte die een blok afsluit
+  var BOOST_SILENCE_GAP = 1.6;      // s stilte die een blok/run afsluit
   var BOOST_MAX_BLOCK_CHARS = 150;  // noodrem voor tracks zonder punctuatie
-  var BOOST_LINGER = 0.45;          // s dat een blok na zijn laatste woord blijft staan
+  var BOOST_LINGER = 0.45;          // s dat een blok/run na zijn laatste woord blijft staan
+  var BOOST_WORD_LEAD = 0.05;       // s dat een woord vóór zijn gemeten tijd al in beeld komt
 
   var boost = {
     videoId: null,
     trackKey: null,
-    blocks: null,
+    blocks: null,         // blokken van 2 volle zinnen (blokweergave)
+    runs: null,           // runs van doorlopende spraak (woord-voor-woord)
     shownOnce: false,
     frame: 0,
     rafActive: false,
@@ -508,6 +515,9 @@
     box: null,
     scrollEl: null,
     blockKey: null,       // starttijd van het blok dat nu in de DOM staat
+    runKey: null,         // starttijd van de run die nu in de DOM staat
+    wordCount: 0,         // aantal woorden van die run dat al in de DOM staat
+    windowShift: -1,      // laatst gezette venster-verschuiving in px (-1 = opnieuw meten)
     styleReady: false
   };
 
@@ -544,14 +554,17 @@
         maxChars: BOOST_MAX_BLOCK_CHARS
       });
       if (!blocks.length) return;
+      // Woord-voor-woord (optie): dezelfde events, maar als losse woorden en
+      // in runs van doorlopende spraak — een stilte begint een nieuw venster.
+      var runs = L.buildCaptionRuns(L.buildCaptionWords(events), BOOST_SILENCE_GAP);
       var key = boostKey(v, L.baseLang(lang), urlParam(url, 'kind') || '');
       if (!boostTracks[key]) boostTrackOrder.push(key);
-      boostTracks[key] = { at: Date.now(), events: events, blocks: blocks };
+      boostTracks[key] = { at: Date.now(), events: events, blocks: blocks, runs: runs };
       while (boostTrackOrder.length > BOOST_MAX_TRACKS) {
         var old = boostTrackOrder.shift();
         if (old !== key) delete boostTracks[old];
       }
-      dbg('timedtext opgevangen', key, events.length + ' events / ' + blocks.length + ' blokken');
+      dbg('timedtext opgevangen', key, events.length + ' events / ' + blocks.length + ' blokken / ' + runs.length + ' runs');
     } catch (e) { /* ignore */ }
   }
 
@@ -654,7 +667,7 @@
     var key = Math.round(px * 10) + '|' + boostStyle.textColor + '|' + boostStyle.bgColor;
     if (key === boostStyle.applied) return;
     boostStyle.applied = key;
-    boost.blockKey = null; // stijl/grootte gewijzigd -> blok opnieuw opbouwen
+    invalidateBoostText(); // stijl/grootte gewijzigd -> tekst opnieuw opbouwen
     el.style.fontSize = (Math.round(px * 10) / 10) + 'px';
     if (boost.bar) boost.bar.style.background = boostStyle.bgColor;
     if (boost.box) {
@@ -683,14 +696,16 @@
           // zet ensureBoostDom inline): links en rechts blijft video zichtbaar.
           // De box is precies zo breed als de balk (border-box) en heeft een
           // VASTE hoogte van BOOST_LINES regels (inline, in em); de tekst
-          // begint linksboven, links uitgelijnd en het hele blok staat er in
-          // één keer in. Wat niet past wordt afgekapt (overflow:hidden): het
-          // font krimpt nooit en er wordt niet geschoven.
+          // begint linksboven, links uitgelijnd. In de blokweergave staat het
+          // hele blok er in één keer in (wat niet past wordt afgekapt); in de
+          // woord-voor-woord-weergave wordt elk woord op zijn tijd toegevoegd
+          // en schuift `.sc-caption-scroll` per regel omhoog (transition) zodat
+          // altijd de laatste regels zichtbaar zijn.
           '#sc-caption-overlay .sc-caption-bar{position:absolute;top:0;bottom:0}' +
           '#sc-caption-overlay .sc-caption-box{position:relative;display:inline-block;overflow:hidden;box-sizing:border-box;width:' +
           (Math.round(BOOST_BAR_WIDTH * 1000) / 10) + '%;text-align:left;white-space:pre-wrap;' +
           'padding:.06em .32em;text-shadow:0 0 2px rgba(0,0,0,.8)}' +
-          '#sc-caption-overlay .sc-caption-scroll{position:relative}';
+          '#sc-caption-overlay .sc-caption-scroll{position:relative;transition:transform .16s ease-out}';
         (document.head || document.documentElement).appendChild(st);
         boost.styleReady = true;
       } catch (e) { /* ignore */ }
@@ -747,17 +762,36 @@
       if (on) boost.overlay.classList.add('sc-on');
       else {
         boost.overlay.classList.remove('sc-on');
-        if (boost.scrollEl) {
-          boost.scrollEl.textContent = '';
-          boost.scrollEl.style.transform = '';
-        }
         if (boost.box) {
           boost.box.style.height = '';
           boost.box.style.fontSize = ''; // het font krimpt nooit
         }
-        boost.blockKey = null;
+        invalidateBoostText();
       }
     }
+  }
+
+  /**
+   * Alles wat in de DOM staat ongeldig maken (stijl-, grootte- of moduswissel,
+   * video-/trackwissel, overlay uit): de volgende frame bouwt de tekst opnieuw
+   * op. In de woord-voor-woord-weergave begint het venster dan weer bovenaan.
+   */
+  function invalidateBoostText() {
+    boost.blockKey = null;
+    boost.runKey = null;
+    boost.wordCount = 0;
+    boost.windowShift = -1;
+    if (boost.scrollEl) {
+      boost.scrollEl.textContent = '';
+      boost.scrollEl.style.transform = '';
+    }
+  }
+
+  /** Overlay uit als er iets in stond (stilte, video-einde, wissel). */
+  function hideOnce() {
+    if (!boost.shownOnce) return;
+    boost.shownOnce = false;
+    hideBoost(false);
   }
 
   function stopBoost() {
@@ -771,14 +805,18 @@
   }
 
   /* ------------------------------------------------ *
-   * Blokken van 2 volle zinnen (user-keuze 2026-09-12)
+   * Twee weergaven, één venster (optie "Word-for-Word")
    *
-   * Elk blok staat in één keer in de box (geen
-   * woord-voor-woord) en blijft staan tot het volgende
-   * blok begint. De box heeft een VASTE hoogte van
-   * BOOST_LINES regels; een blok dat niet past wordt
-   * onderaan afgekapt. Het font krimpt nooit en er
-   * schuift niets.
+   * A. Blokken (default): een blok van 2 volle zinnen staat er in één keer
+   *    in en blijft staan tot het volgende blok begint; wat niet past wordt
+   *    onderaan afgekapt. Het font krimpt nooit en er schuift niets.
+   * B. Woord-voor-woord (optie, zoals YouTube's auto-ondertitels): elk woord
+   *    komt op zijn eigen tijd in hetzelfde vaste venster; zodra de onderste
+   *    regel vol is schuift het venster één regel omhoog (regel 1 verdwijnt,
+   *    regel 2 wordt regel 1, de nieuwe woorden gaan verder op regel 2).
+   *
+   * Allebei gebruiken ze dezelfde box met een VASTE hoogte van BOOST_LINES
+   * regels; het font krimpt nooit.
    * ------------------------------------------------ */
 
   /**
@@ -800,10 +838,100 @@
   }
 
   /**
-   * Eén frame: welk blok hoort bij `getCurrentTime()`? Het hele blok staat in
-   * één keer in beeld (geen woord-voor-woord). Tijdens een stilte — of na het
-   * laatste blok + BOOST_LINGER — gaat de overlay uit en komt YouTube's eigen
-   * venster terug.
+   * Eén frame van de blokweergave: welk blok hoort bij `t`? Het hele blok
+   * staat in één keer in beeld (geen woord-voor-woord). Tijdens een stilte —
+   * of na het laatste blok + BOOST_LINGER — gaat de overlay uit en komt
+   * YouTube's eigen venster terug.
+   */
+  function renderBlockFrame(t) {
+    var idx = L.captionBlockAt(boost.blocks, t, BOOST_LINGER);
+    if (idx < 0) {
+      hideOnce();
+      return;
+    }
+    var blk = boost.blocks[idx];
+    if (boost.blockKey !== blk.start) {
+      buildBlock(blk);
+      boost.blockKey = blk.start;
+    }
+    if (!boost.shownOnce) {
+      boost.shownOnce = true;
+      hideBoost(true);
+    }
+  }
+
+  /**
+   * Hoogte van één regel (px) in het captionvenster. De CSS zet
+   * `line-height:1.4`; `getComputedStyle` geeft die (via de overlay
+   * overgeërfd) als px terug. Komt er geen bruikbare waarde uit, dan rekenen
+   * we met dezelfde verhouding als de CSS.
+   */
+  function boostLineHeightPx() {
+    var px = 0;
+    try { px = parseFloat(getComputedStyle(boost.scrollEl).lineHeight); } catch (e) { px = 0; }
+    if (!isFinite(px) || px <= 0) {
+      var fs = parseFloat((boost.overlay && boost.overlay.style.fontSize) || '') || 0;
+      px = fs * 1.4;
+    }
+    return isFinite(px) && px > 0 ? px : 0;
+  }
+
+  /**
+   * Het rollende venster bijwerken: zolang de gezette tekst binnen BOOST_LINES
+   * regels past gebeurt er niets; daarboven schuift de tekst per HELE regel
+   * omhoog zodat altijd de laatste regels zichtbaar zijn. De box zelf blijft
+   * even hoog (het font krimpt nooit).
+   */
+  function updateWordWindow() {
+    var wrap = boost.scrollEl;
+    if (!wrap) return;
+    var h = 0;
+    try { h = wrap.getBoundingClientRect().height; } catch (e) { h = 0; }
+    var shift = L.captionWindowShift(h, boostLineHeightPx(), BOOST_LINES);
+    if (shift === boost.windowShift) return;
+    boost.windowShift = shift;
+    wrap.style.transform = shift ? 'translateY(' + (-shift) + 'px)' : '';
+  }
+
+  /**
+   * Eén frame van de woord-voor-woord-weergave: de woorden van de actieve run
+   * komen één voor één in de DOM (op hun eigen tijd) en het venster rolt per
+   * regel mee. Een stilte begint een nieuwe run (venster leeg); een sprong in
+   * de video (terugspoelen) bouwt het venster opnieuw op.
+   */
+  function renderWordFrame(t) {
+    if (!boost.runs) { renderBlockFrame(t); return; }
+    var idx = L.captionRunAt(boost.runs, t, BOOST_LINGER);
+    if (idx < 0) {
+      hideOnce();
+      return;
+    }
+    var run = boost.runs[idx];
+    var wrap = boost.scrollEl;
+    var box = boost.box;
+    if (!wrap || !box) return;
+    var n = L.captionWordIndex(run.words, t, BOOST_WORD_LEAD);
+    if (boost.runKey !== run.start || n < boost.wordCount) invalidateBoostText();
+    boost.runKey = run.start;
+    box.style.height = L.captionBoxHeightEm(BOOST_LINES) + 'em';
+    var grew = false;
+    while (boost.wordCount < n && boost.wordCount < run.words.length) {
+      // Elk woord is een eigen tekstknoop: hij komt er op zijn tijd bij, de
+      // rest van de regelafbreking blijft daardoor staan (greedy wrap).
+      wrap.appendChild(document.createTextNode(run.words[boost.wordCount].text + ' '));
+      boost.wordCount++;
+      grew = true;
+    }
+    if (grew || boost.windowShift < 0) updateWordWindow();
+    if (!boost.shownOnce) {
+      boost.shownOnce = true;
+      hideBoost(true);
+    }
+  }
+
+  /**
+   * Eén frame: kies de weergave (blokken of woord voor woord) en teken de
+   * tekst die bij de huidige speeltijd hoort.
    */
   function renderBoost() {
     if (!boost.rafActive) return;
@@ -818,6 +946,7 @@
       var idNow = currentVideoId();
       if (idNow && boost.videoId && idNow !== boost.videoId) {
         boost.blocks = null;
+        boost.runs = null;
         stopBoost();
         return;
       }
@@ -825,24 +954,8 @@
     }
 
     var t = safe(function () { return p.getCurrentTime(); }, 0);
-    var idx = L.captionBlockAt(boost.blocks, t, BOOST_LINGER);
-    if (idx < 0) {
-      if (boost.shownOnce) {
-        boost.shownOnce = false;
-        hideBoost(false);
-      }
-      boost.rafHandle = requestAnimationFrame(renderBoost);
-      return;
-    }
-    var blk = boost.blocks[idx];
-    if (boost.blockKey !== blk.start) {
-      buildBlock(blk);
-      boost.blockKey = blk.start;
-    }
-    if (!boost.shownOnce) {
-      boost.shownOnce = true;
-      hideBoost(true);
-    }
+    if (BOOST_WORD_BY_WORD) renderWordFrame(t);
+    else renderBlockFrame(t);
     boost.rafHandle = requestAnimationFrame(renderBoost);
   }
 
@@ -855,13 +968,18 @@
     var key = boostKey(id, L.baseLang(cur.languageCode), cur.kind === 'asr' ? 'asr' : '');
     if (boost.videoId !== id || boost.trackKey !== key) {
       boost.blocks = null;
+      boost.runs = null;
       stopBoost();
       boost.videoId = id;
       boost.trackKey = key;
     }
     if (!boost.blocks) {
       var rec = boostTracks[key];
-      if (rec) boost.blocks = rec.blocks;
+      if (rec) {
+        boost.blocks = rec.blocks;
+        // Woord-voor-woord: de runs komen uit dezelfde opgevangen track.
+        boost.runs = rec.runs || L.buildCaptionRuns(L.buildCaptionWords(rec.events || []), BOOST_SILENCE_GAP);
+      }
     }
     if (boost.blocks) {
       refreshBoostStyle(false);
@@ -1020,10 +1138,24 @@
     }
     if (opts && Object.prototype.hasOwnProperty.call(opts, 'captionLines')) {
       var lines = Number(opts.captionLines) === 1 ? 1 : 2;
-      if (lines !== BOOST_LINES) { BOOST_LINES = lines; boost.blockKey = null; }
+      if (lines !== BOOST_LINES) { BOOST_LINES = lines; invalidateBoostText(); }
       dbg('captionLines', BOOST_LINES);
     }
-    return { captionBoost: CAPTION_BOOST_ENABLED, captionSize: BOOST_SIZE_PCT, captionLines: BOOST_LINES, subtitlesOff: SUBTITLES_OFF };
+    if (opts && Object.prototype.hasOwnProperty.call(opts, 'captionWordByWord')) {
+      var wbw = !!opts.captionWordByWord;
+      if (wbw !== BOOST_WORD_BY_WORD) {
+        BOOST_WORD_BY_WORD = wbw;
+        invalidateBoostText(); // andere weergave -> tekst opnieuw opbouwen
+      }
+      dbg('captionWordByWord', BOOST_WORD_BY_WORD);
+    }
+    return {
+      captionBoost: CAPTION_BOOST_ENABLED,
+      captionSize: BOOST_SIZE_PCT,
+      captionLines: BOOST_LINES,
+      captionWordByWord: BOOST_WORD_BY_WORD,
+      subtitlesOff: SUBTITLES_OFF
+    };
   }
 
   installTimedtextHooks();

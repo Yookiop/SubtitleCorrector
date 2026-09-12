@@ -575,6 +575,133 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * Woord-voor-woord (optie sinds 2026-09-12)
+   *
+   * Dezelfde opgevangen json3-track, maar nu woord voor woord getoond zoals
+   * YouTube's auto-gegenereerde ondertitels: elk woord verschijnt op zijn
+   * eigen tijd in het vaste venster van 1 of 2 regels en zodra de onderste
+   * regel vol is schuift het venster één regel omhoog (regel 1 verdwijnt,
+   * regel 2 wordt regel 1 en de nieuwe woorden gaan verder op de lege regel
+   * 2). Een stilte zet alles terug: die begint een nieuwe "run" met een
+   * leeg venster.
+   * ------------------------------------------------------------------ */
+
+  /** Woorden komen heel even vóór hun gemeten starttijd in beeld (seconden). */
+  var WORD_LEAD = 0.05;
+
+  /**
+   * Alle events omzetten naar losse woorden met een tijd.
+   *
+   * ASR-tracks leveren per segment één woord (met `tOffsetMs`), dus dan is elk
+   * woord apart getimed. Een segment met meerdere woorden (handmatige track
+   * zonder per-woordtijden) heeft geen woordtiming: die woorden komen in één
+   * keer op de tijd van hun segment in beeld — precies zoals YouTube het bij
+   * zo'n track doet.
+   *
+   * -> [{t, end, text}] op tijdsorde; `end` = einde van het segment (de tijd
+   *    waarop het woord "klaar" is, gebruikt voor de stiltedetectie).
+   */
+  function buildCaptionWords(events) {
+    var chunks = captionChunks(events || []);
+    var out = [];
+    for (var i = 0; i < chunks.length; i++) {
+      var ch = chunks[i];
+      var txt = String(ch.raw == null ? '' : ch.raw).replace(/\s+/g, ' ').trim();
+      if (!txt) continue;
+      var parts = txt.split(' ');
+      for (var p = 0; p < parts.length; p++) {
+        if (!parts[p]) continue;
+        out.push({ t: ch.t, end: ch.end, text: parts[p] });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Woorden groeperen in "runs": een run is doorlopende spraak. Een stilte
+   * groter dan `silenceGap` (default 1,6 s — dezelfde grens als bij de
+   * blokken) sluit de run af; binnen een run blijft het venster staan en rolt
+   * het door, na een stilte begint het venster weer leeg.
+   *
+   * -> [{start, end, words:[{t,end,text}]}]
+   */
+  function buildCaptionRuns(words, silenceGap) {
+    var gap = typeof silenceGap === 'number' && isFinite(silenceGap) && silenceGap >= 0 ? silenceGap : 1.6;
+    var runs = [];
+    var cur = null;
+    var list = words || [];
+    for (var i = 0; i < list.length; i++) {
+      var w = list[i];
+      if (!w || !w.text) continue;
+      var t = typeof w.t === 'number' && isFinite(w.t) ? w.t : 0;
+      var end = typeof w.end === 'number' && isFinite(w.end) && w.end > t ? w.end : t;
+      if (cur && t - cur.end > gap) cur = null;
+      if (!cur) {
+        cur = { start: t, end: end, words: [] };
+        runs.push(cur);
+      } else if (end > cur.end) {
+        cur.end = end;
+      }
+      cur.words.push(w);
+    }
+    return runs;
+  }
+
+  /**
+   * Actieve run op tijd `t`: de laatste run die begonnen is, zolang `t` binnen
+   * de run + `linger` valt (-1 = niets tonen: stilte of nog niets gezegd).
+   */
+  function captionRunAt(runs, t, linger) {
+    if (!runs || !runs.length) return -1;
+    var lo = 0;
+    var hi = runs.length - 1;
+    var ans = -1;
+    while (lo <= hi) {
+      var mid = (lo + hi) >> 1;
+      if (runs[mid].start <= t) { ans = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    if (ans < 0) return -1;
+    var lg = typeof linger === 'number' && isFinite(linger) && linger >= 0 ? linger : 0.45;
+    return t <= runs[ans].end + lg ? ans : -1;
+  }
+
+  /**
+   * Hoeveel woorden van deze run zijn op tijd `t` (seconden) gezegd? Woorden
+   * met dezelfde tijd (segment zonder per-woordoffsets) komen samen in beeld.
+   * `lead` (default 0,05 s) laat een woord heel even vóór zijn starttijd
+   * verschijnen, zodat het niet ná de klank komt.
+   */
+  function captionWordIndex(words, t, lead) {
+    if (!words || !words.length) return 0;
+    var ld = typeof lead === 'number' && isFinite(lead) ? lead : WORD_LEAD;
+    var tt = (typeof t === 'number' && isFinite(t) ? t : 0) + ld;
+    var n = 0;
+    for (var i = 0; i < words.length; i++) {
+      if (words[i].t <= tt) n++;
+      else break;
+    }
+    return n;
+  }
+
+  /**
+   * Verschuiving (px) van het rollende venster: alles boven de laatste
+   * `visibleLines` regels schuift omhoog, in stapjes van hele regels (nooit
+   * een halve regel). `totalPx` = hoogte van alle gezette tekst,
+   * `lineHeightPx` = één regel (uit de CSS). Past alles binnen het venster,
+   * dan 0.
+   */
+  function captionWindowShift(totalPx, lineHeightPx, visibleLines) {
+    var total = typeof totalPx === 'number' && isFinite(totalPx) && totalPx > 0 ? totalPx : 0;
+    var lh = typeof lineHeightPx === 'number' && isFinite(lineHeightPx) && lineHeightPx > 0 ? lineHeightPx : 0;
+    var vis = typeof visibleLines === 'number' && isFinite(visibleLines) ? Math.round(visibleLines) : 2;
+    if (vis < 1) vis = 1;
+    if (!total || !lh) return 0;
+    var lines = Math.round(total / lh);
+    if (lines <= vis) return 0;
+    return Math.round((lines - vis) * lh * 100) / 100;
+  }
+
+  /* ------------------------------------------------------------------ *
    * Captionstijl: kleur/opacity en grootte van de eigen overlay
    * ------------------------------------------------------------------ */
 
@@ -774,6 +901,11 @@
     buildCaptionBlocks: buildCaptionBlocks,
     captionBlockIndex: captionBlockIndex,
     captionBlockAt: captionBlockAt,
+    buildCaptionWords: buildCaptionWords,
+    buildCaptionRuns: buildCaptionRuns,
+    captionRunAt: captionRunAt,
+    captionWordIndex: captionWordIndex,
+    captionWindowShift: captionWindowShift,
     rgbaFromHex: rgbaFromHex,
     captionSizeScale: captionSizeScale,
     captionFontPx: captionFontPx,

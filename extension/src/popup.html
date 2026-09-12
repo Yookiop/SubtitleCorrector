@@ -41,6 +41,8 @@
     .title { font-weight: 600; }
     code { font-family: Consolas, monospace; background: #232936; padding: 1px 5px; border-radius: 4px; }
     .foot { margin-top: 6px; color: #77839a; font-size: 11px; text-align: center; }
+    .hint-sm { color: #93a1b5; font-size: 11px; margin-top: 4px; }
+    .card input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: #35c8e6; cursor: pointer; }
   </style>
 </head>
 <body>
@@ -58,6 +60,14 @@
   <div class="card">
     <div class="row"><span class="k">Bridge</span><span class="v" id="bridge">-</span></div>
     <div class="row"><span class="k">Model</span><span class="v muted" id="model">-</span></div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <span class="k">Word-for-Word</span>
+      <span class="v"><input type="checkbox" id="wordByWord"></span>
+    </div>
+    <div class="hint-sm">Toont de ondertitels woord voor woord, zoals YouTube's auto-gegenereerde ondertitels: de nieuwe regel komt onder en het venster rolt per regel omhoog.</div>
   </div>
 
   <button id="apply">Nu toepassen</button>

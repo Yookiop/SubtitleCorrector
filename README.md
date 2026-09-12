@@ -8,7 +8,8 @@ Zet YouTube-ondertitels automatisch in de **taal van de audio** (Engels of Neder
 * **Automatisch** bij elke nieuwe video, plus handmatig met de hotkey <kbd>]</kbd>.
 * **Alleen EN/NL** — andere talen worden met rust gelaten.
 * **Spaarzaam met CPU/GPU (caption-prioriteit)**: in playlists draait de zware audio-analyse alleen via de hotkey, er wordt nooit opgenomen als de bridge niet klaar is, en de extensie pollt langzamer op de achtergrond. Zo houdt YouTube ruimte over voor het tekenen van de ondertitels (zie §5.1).
-* **Caption Boost (hele blokken ondertitel)**: toont de ondertitel in blokken van **2 volle zinnen**, in één keer (geen woord-voor-woord). De blokgrens ligt exact op het 2e zinseinde — ook als dat midden in een YouTube-cue valt, want de rest van die cue gaat naar het volgende blok. Zo blijft elke zin bij elkaar en komt er geen halfgevuld blok meer waarin de rest van de zin pas later in een nieuw blok verschijnt. Dit lost het "loopt 1-2 s achter en plopt dan in blokken"-probleem op, ook als dat zonder de extensie gebeurt (zie §5.1).
+* **Caption Boost (hele blokken ondertitel)**: toont de ondertitel in blokken van **2 volle zinnen**, in één keer. De blokgrens ligt exact op het 2e zinseinde — ook als dat midden in een YouTube-cue valt, want de rest van die cue gaat naar het volgende blok. Zo blijft elke zin bij elkaar en komt er geen halfgevuld blok meer waarin de rest van de zin pas later in een nieuw blok verschijnt. Dit lost het "loopt 1-2 s achter en plopt dan in blokken"-probleem op, ook als dat zonder de extensie gebeurt (zie §5.1).
+* **Word-for-Word (optie)**: liever woord voor woord, zoals YouTube's auto-gegenereerde ondertitels? Zet de optie aan: elk woord verschijnt op zijn eigen tijd en het venster van 2 regels rolt per regel omhoog (regel 1 verdwijnt, regel 2 wordt regel 1, verder op de nieuwe regel 2).
 * Volledige spec: [`SUBTITLE_CORRECTOR_PROMPT.md`](SUBTITLE_CORRECTOR_PROMPT.md)
 
 ---
@@ -43,7 +44,8 @@ Rechtermuisknop op het icoon → **Options** (of via de popup → Instellingen).
 | Als ik ze zelf uitzet, niet opnieuw aanzetten | aan | Per video onthouden |
 | Vertaling herstellen als YouTube hem opnieuw aanzet | aan | Met cooldown |
 | Bridge gebruiken als metadata onduidelijk is | aan | Zie §4 |
-| Eigen ondertitelweergave (Caption Boost) | aan | Toont de ondertitel in blokken van 2 volle zinnen, in één keer (geen woord-voor-woord), en verbergt YouTube's eigen caption-venster zolang dat lukt |
+| Eigen ondertitelweergave (Caption Boost) | aan | Toont de ondertitel in blokken van 2 volle zinnen, in één keer, en verbergt YouTube's eigen caption-venster zolang dat lukt |
+| Word-for-Word | uit | Woord voor woord, zoals YouTube's auto-gegenereerde ondertitels: elk woord op zijn eigen tijd in het vaste venster; zodra de onderste regel vol is schuift het venster één regel omhoog (regel 1 eruit, verder op de nieuwe regel 2). Een stilte begint met een leeg venster |
 | Ondertitelgrootte (Caption Boost) | 175% | 50 - 250% van de standaardgrootte; stijl (kleur/achtergrond en de grove "Font size"-stand) volgt automatisch je YouTube-ondertitelinstellingen |
 | Ondertitelregels (Caption Boost) | 2 regels | Hoogte van het vaste captionblok in regels (1 of 2). Het blok is altijd precies zo hoog — ook met maar één zin: regel 1 linksboven, regel 2 leeg. Past een blok van 2 zinnen niet helemaal, dan wordt de tekst onderaan afgekapt. Het font krimpt nooit |
 | Caption-prioriteit | aan | Playlists soepel houden: langere wachttijd bij videostart, geen zware audio-analyse zonder hotkey, rustiger pollen op de achtergrond |
@@ -117,8 +119,9 @@ Daarnaast tekent **Caption Boost** (default aan) de ondertitels zelf:
 
 * de timedtext-track die de speler zelf ophaalt (json3, met per-woord `tOffsetMs` bij auto-gegenereerde tracks) wordt passief uit de XHR gelezen — een eigen fetch kan niet, want YouTube's timedtext vereist een `pot`-token (zonder token: HTTP 200 met een lege body);
 * de tekst wordt in **blokken van 2 volle zinnen** getoond (`L.buildCaptionBlocks`): de cue's worden vooraf gegroepeerd, de grens ligt exact op het 2e zinseinde — ook midden in een cue; de rest van die cue gaat naar het volgende blok. Vijf zinnen op rij geven dus blokken van 2 + 2 + 1. Een stilte (meer dan ±1,6 s) sluit een blok af, ook met maar één zin erin; tracks zonder punctuatie vallen terug op een tekenlimiet;
-* een blok komt in **één keer** in beeld, van het eerste tot het laatste woord, en blijft staan tot het volgende blok begint — geen woord-voor-woord en geen losse zinsdelen meer;
+* een blok komt in **één keer** in beeld, van het eerste tot het laatste woord, en blijft staan tot het volgende blok begint — geen halfgevulde blokken en geen losse zinsdelen meer. (Liever woord voor woord zoals YouTube's auto-ondertitels? Zet de optie **Word-for-Word** aan, zie hieronder.);
 * de **stijl** komt uit YouTube's eigen captioninstellingen (`getSubtitlesUserSettings`: tekstkleur, achtergrondkleur + opacity, `fontSizeIncrement`), dus wit-op-zwart of welke stijl je daar ook hebt gekozen wordt automatisch nagebouwd;
+* met de optie **Word-for-Word** (standaard uit) komt elk woord apart in beeld, net als bij YouTube's auto-ondertitels: dezelfde vaste box, maar het venster rolt door — zodra de onderste regel vol is schuift de tekst één regel omhoog (`L.captionWindowShift()`, altijd hele regels), regel 1 verdwijnt en de nieuwe woorden gaan verder op de lege regel 2. Een stilte (> ±1,6 s, `L.buildCaptionRuns()`) begint met een leeg venster; binnen doorlopende spraak blijft het venster staan. Bij een handmatige track zonder per-woordtijden komt een zin in één keer in beeld (dat heeft YouTube ook);
 * het blok staat in een **vast venster van 1 of 2 regels** (*Ondertitelregels*, standaard 2), **linksboven uitgelijnd**: de tekst begint links in de balk en gebruikt de volle balkbreedte. De balk is 80% van de spelerbreedte en staat gecentreerd (links en rechts blijft de video zichtbaar — geen balk van rand tot rand). Het venster is altijd precies zo hoog, ook als een blok maar één zin heeft (regel 2 blijft dan leeg); past een blok van 2 zinnen niet helemaal, dan wordt het onderaan afgekapt. Het font krimpt **nooit** en er schuift niets op; YouTube's eigen regelovergangen worden als spatie behandeld;
 * de **grootte** stel je zelf in met *Ondertitelgrootte* (50 - 250%; standaard **175%**, 100% ≈ YouTube's eigen standaardgrootte);
 * zolang dat lukt blijft YouTube's eigen caption-venster verborgen; bij advertenties, een actieve vertaling, een ontbrekende track of een videowissel gaat alles direct terug naar YouTube's eigen weergave.
@@ -128,9 +131,9 @@ Meer automatiek nodig voor video's zonder metadata? Zet in de opties **"Audio-an
 ## 6. Testen
 
 ```text
-dubbelklik tools\test-lang-utils.html     # 40 tests van de pure logica, geen Node nodig
+dubbelklik tools\test-lang-utils.html     # 45 tests van de pure logica, geen Node nodig
 node tools\test-lang-utils.mjs            # zelfde tests (als Node geïnstalleerd is)
-dubbelklik tools\check-caption-lines.html # blokken van 2 zinnen: cue-weergave vs blokken, met regels en vulling per blok
+dubbelklik tools\check-caption-lines.html # blokken van 2 zinnen én het rollende woord-voor-woord-venster, met regels en vulling per blok/run
 python tools\bridge-smoke-test.py         # bridge end-to-end
 powershell -ExecutionPolicy Bypass -File tools\make_tts_fixtures.ps1   # EN/NL spraak-WAV's maken
 ```
@@ -155,7 +158,8 @@ python -m http.server 8099     ->  http://localhost:8099/tools/check-syntax.html
 | Echo/dubbel geluid tijdens detectie | Zet "Geluid hoorbaar houden tijdens opname" **uit**. |
 | Melding "model laden..." duurt lang | De eerste keer downloadt Whisper het model (~75 MB voor `tiny`, ~145 MB voor `base`). |
 | Playlists haperen / ondertitels lopen achter | Dit zit deels in YouTube zelf (playlists decoderen en prefetchen zwaarder). Zet **Caption-prioriteit** aan (default); in playlists draait de audio-analyse dan alleen via de hotkey. Meer automatiek nodig? Zet "Audio-analyse ook automatisch in playlists" aan. |
-| Auto-ondertitels lopen achter of ploppen in blokken (ook zónder extensie) | Dit is YouTube's eigen caption-venster. Laat **Caption Boost** aan (default): de extensie tekent de ondertitel dan zelf in blokken van 2 volle zinnen (in één keer, geen woord-voor-woord). Werkt het niet (geen track kunnen onderscheppen, advertentie, vertaling), dan blijft YouTube's eigen weergave staan en kun je niets forceren. |
+| Auto-ondertitels lopen achter of ploppen in blokken (ook zónder extensie) | Dit is YouTube's eigen caption-venster. Laat **Caption Boost** aan (default): de extensie tekent de ondertitel dan zelf in blokken van 2 volle zinnen (in één keer). Werkt het niet (geen track kunnen onderscheppen, advertentie, vertaling), dan blijft YouTube's eigen weergave staan en kun je niets forceren. |
+| Ik wil liever woord voor woord (zoals YouTube's auto-ondertitels) | Zet de optie **Word-for-Word** aan — in de popup (één klik) of in de opties. De blokken blijven dan uit en het venster rolt per regel omhoog. |
 
 ## 8. Repo-structuur
 

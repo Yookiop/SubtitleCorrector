@@ -2,7 +2,7 @@
 <html lang="nl">
 <head>
   <meta charset="utf-8">
-  <title>Caption Boost - blokken van 2 volle zinnen controleren</title>
+  <title>Caption Boost - blokken van 2 volle zinnen en woord-voor-woord controleren</title>
   <style>
     :root { color-scheme: dark; }
     body { margin: 0; padding: 24px; font: 14px/1.5 "Segoe UI", system-ui, sans-serif; background: #14161c; color: #e8eef7; }
@@ -47,18 +47,22 @@
   </style>
 </head>
 <body>
-  <h1>Caption Boost - blokken van 2 volle zinnen controleren</h1>
+  <h1>Caption Boost - blokken van 2 volle zinnen en woord-voor-woord controleren</h1>
   <div class="sub">
     Simuleert de echte page-agent-logica: <code>L.buildCaptionBlocks()</code> groepeert de cue's
     vooraf in blokken van 2 volle zinnen — de grens ligt exact op het 2e zinseinde, ook als dat
     midden in een cue valt (de rest van die cue gaat naar het volgende blok) — en
     <code>L.captionBlockAt()</code> kiest per tijdstip het actieve blok. Rechts staat de
-    <b>nieuwe weergave</b>: het hele blok komt in één keer in beeld (geen woord-voor-woord) in een
-    vast venster van 2 regels, linksboven uitgelijnd; het font krimpt nooit en wat niet past wordt
-    onderaan afgekapt. Links staat wat YouTube zelf per cue zou tonen — de oude klacht: regel 2
-    maar een kwart gevuld en de rest van de zin in een volgend blok. De regels worden empirisch
-    geteld met <code>Range.getClientRects()</code>; druk op <b>▶ Speel af</b> om beide naast elkaar
-    te zien lopen.
+    <b>blokweergave</b> (default): het hele blok komt in één keer in beeld (geen woord-voor-woord)
+    in een vast venster van 2 regels, linksboven uitgelijnd; het font krimpt nooit en wat niet past
+    wordt onderaan afgekapt. Helemaal rechts staat de optie <b>Word-for-Word</b>: elk woord komt op
+    zijn eigen tijd in hetzelfde venster (<code>L.buildCaptionWords</code> /
+    <code>L.buildCaptionRuns</code> / <code>L.captionRunAt</code> /
+    <code>L.captionWindowShift</code>) en zodra de onderste regel vol is schuift het venster één
+    regel omhoog — regel 1 verdwijnt, regel 2 wordt regel 1 en de nieuwe woorden gaan verder op de
+    lege regel 2. Links staat wat YouTube zelf per cue zou tonen — de oude klacht: regel 2 maar een
+    kwart gevuld en de rest van de zin in een volgend blok. De regels worden empirisch geteld met
+    <code>Range.getClientRects()</code>; druk op <b>▶ Speel af</b> om ze naast elkaar te zien lopen.
   </div>
 
   <div class="controls">
@@ -101,6 +105,12 @@
         <div id="sc-caption-overlay"><div class="sc-caption-bar"></div><div class="sc-caption-box"><div class="sc-caption-scroll"></div></div></div>
       </div></div>
     </div>
+    <div class="stageCol">
+      <h3>Word-for-Word: rollend venster van 2 regels (optie)</h3>
+      <div class="stageWrap"><div class="sc-player" id="stageWord">
+        <div id="sc-caption-overlay"><div class="sc-caption-bar"></div><div class="sc-caption-box"><div class="sc-caption-scroll"></div></div></div>
+      </div></div>
+    </div>
   </div>
 
   <h2>Blokken van 2 volle zinnen (nieuwe weergave)</h2>
@@ -122,16 +132,32 @@
     <tbody id="rowsCues"></tbody>
   </table>
 
+  <h2>Woord-voor-woord: runs van doorlopende spraak (optie)</h2>
+  <table>
+    <thead><tr>
+      <th style="width:34px">#</th><th style="width:130px">tijd</th><th style="width:90px">woorden</th>
+      <th>tekst (elk woord op zijn eigen tijd)</th><th style="width:130px">stilte erna</th>
+      <th style="width:140px">max. regels</th><th style="width:150px">venster-stappen (1 regel per stap)</th>
+    </tr></thead>
+    <tbody id="rowsRuns"></tbody>
+  </table>
+
   <div class="note">
     Zo werkt de validatie: de scenario's bouwen json3-cue's met per-woord <code>tOffsetMs</code>
     (net als de ASR-track van de speler). Daarna draaien exact dezelfde functies als in de app:
     <code>L.parseCaptionJson()</code> → <code>L.buildCaptionBlocks()</code> (2 zinnen per blok,
     stilte &gt; 1,6 s sluit een blok af, tracks zonder punctuatie vallen terug op de tekenlimiet)
-    → <code>L.captionBlockAt(blocks, t, 0,45)</code> per frame. De boxhoogte komt uit
+    → <code>L.captionBlockAt(blocks, t, 0,45)</code> per frame, plus voor de optie
+    <b>Word-for-Word</b>: <code>L.buildCaptionWords()</code> → <code>L.buildCaptionRuns()</code> →
+    <code>L.captionRunAt(runs, t, 0,45)</code> → <code>L.captionWordIndex()</code> →
+    <code>L.captionWindowShift()</code>. De boxhoogte komt uit
     <code>L.captionBoxHeightEm(regels)</code> — dezelfde maat als de CSS in
     <code>page-agent.js</code> (line-height 1,4 + padding 0,12em). De kolom
     <b>laatste regel gevuld</b> laat precies het probleem uit de klacht zien: bij de cue-weergave
-    blijft die vaak steken (25%), bij de blokken loopt de tekst door tot een zinseinde.
+    blijft die vaak steken (25%), bij de blokken loopt de tekst door tot een zinseinde. Voor het
+    rollende venster wordt elk woord apart doorgerekend en gecontroleerd: de verschuiving valt op
+    hele regels, toont precies de laatste 1 of 2 regels, het nieuwste woord staat altijd in beeld
+    en er verdwijnt geen tekst.
   </div>
 
   <script src="../extension/src/shared/lang-utils.js"></script>
@@ -140,9 +166,10 @@
       var L = window.SCLang;
       var OPTS = { sentences: 2, silenceGap: 1.6, maxChars: 150 };
       var LINGER = 0.45;
-      var state = { events: [], blocks: [], t: 0, playing: false, raf: null, last: 0, duration: 1 };
+      var state = { events: [], blocks: [], runs: [], word: { run: -1, count: 0 }, t: 0, playing: false, raf: null, last: 0, duration: 1 };
       var cueStage = document.getElementById('stageCue');
       var newStage = document.getElementById('stageNew');
+      var wordStage = document.getElementById('stageWord');
 
       /* --- Scenario's: cue's zoals de speler ze levert (json3) ---------- */
 
@@ -260,6 +287,121 @@
         box.style.height = L.captionBoxHeightEm(lines) + 'em';
       }
 
+      /* --- Woord-voor-woord: rollend venster (optie) -------------------- */
+
+      function wordEls() {
+        return {
+          overlay: wordStage.querySelector('#sc-caption-overlay'),
+          box: wordStage.querySelector('.sc-caption-box'),
+          wrap: wordStage.querySelector('.sc-caption-scroll')
+        };
+      }
+
+      function wordLineHeight(els) {
+        var lh = parseFloat(window.getComputedStyle(els.wrap).lineHeight);
+        return isFinite(lh) && lh > 0 ? lh : 0;
+      }
+
+      /** De eerste `n` woorden van een run als tekstknopen in de DOM zetten. */
+      function setWordText(els, run, n) {
+        els.wrap.textContent = '';
+        var txt = '';
+        for (var i = 0; i < n; i++) {
+          var w = run.words[i].text + ' ';
+          txt += w;
+          els.wrap.appendChild(document.createTextNode(w));
+        }
+        return txt;
+      }
+
+      /**
+       * Het venster zetten zoals de page agent dat doet: de verschuiving komt
+       * uit `L.captionWindowShift()` (hele regels) en wordt op de wrapper
+       * gezet; de box zelf blijft even hoog.
+       */
+      function applyWordWindow(els, lines) {
+        var lh = wordLineHeight(els);
+        var h = els.wrap.getBoundingClientRect().height;
+        var shift = L.captionWindowShift(h, lh, lines);
+        els.wrap.style.transform = shift ? 'translateY(' + (-shift) + 'px)' : '';
+        return { lineHeight: lh, height: h, shift: shift };
+      }
+
+      /**
+       * Teken de woord-voor-woord-weergave op tijd `t`, net als
+       * renderWordFrame() in de page agent: nieuwe run = leeg venster,
+       * terugspoelen = opnieuw opbouwen, verder spoelen = woorden toevoegen.
+       */
+      function renderWordStage(t, lines) {
+        var els = wordEls();
+        var idx = L.captionRunAt(state.runs, t, LINGER);
+        if (idx < 0) {
+          els.overlay.style.display = 'none';
+          state.word = { run: -1, count: 0 };
+          return;
+        }
+        var run = state.runs[idx];
+        var n = L.captionWordIndex(run.words, t, 0.05);
+        els.overlay.style.display = 'block';
+        els.box.style.height = L.captionBoxHeightEm(lines) + 'em';
+        if (state.word.run !== idx || n < state.word.count) {
+          state.word = { run: idx, count: 0 };
+          els.wrap.textContent = '';
+          els.wrap.style.transform = '';
+        }
+        if (n > state.word.count) {
+          for (var i = state.word.count; i < n; i++) {
+            els.wrap.appendChild(document.createTextNode(run.words[i].text + ' '));
+          }
+          state.word.count = n;
+          applyWordWindow(els, lines);
+        }
+      }
+
+      /**
+       * Validatie van het rollende venster: loop per run ALLE woorden af en
+       * meet na elk woord (met de echte CSS) of het venster doet wat de
+       * gebruiker wil:
+       *   (a) de gemeten hoogte hoort bij het aantal regels,
+       *   (b) de verschuiving valt op hele regels en toont precies de laatste
+       *       BOOST_LINES regels (regel 1 eruit zodra regel 3 vol is),
+       *   (c) het nieuwste woord staat altijd in het venster,
+       *   (d) er verdwijnt geen tekst.
+       */
+      function validateWordWindow(lines) {
+        var els = wordEls();
+        els.overlay.style.display = 'block';
+        els.box.style.height = L.captionBoxHeightEm(lines) + 'em';
+        var out = { runs: [], stepOk: true, windowOk: true, heightOk: true, newestOk: true, textOk: true, maxLines: 0 };
+        for (var r = 0; r < state.runs.length; r++) {
+          var run = state.runs[r];
+          var info = { start: run.start, end: run.end, count: run.words.length, maxLines: 0, steps: 0, text: '' };
+          var lastShift = 0;
+          for (var n = 1; n <= run.words.length; n++) {
+            var txt = setWordText(els, run, n);
+            var win = applyWordWindow(els, lines);
+            var total = measureLineInfo(els.box, els.wrap).lines;
+            if (total > info.maxLines) info.maxLines = total;
+            if (total > out.maxLines) out.maxLines = total;
+            if (win.lineHeight && Math.abs(win.height - total * win.lineHeight) > 1.5) out.heightOk = false;
+            var rem = win.lineHeight ? win.shift % win.lineHeight : 0;
+            if (win.lineHeight && rem > 0.75 && win.lineHeight - rem > 0.75) out.stepOk = false;
+            var want = Math.max(0, total - lines) * win.lineHeight;
+            if (Math.abs(win.shift - want) > 1.5) out.windowOk = false;
+            if (win.shift > 0 && win.shift !== lastShift) info.steps++;
+            lastShift = win.shift;
+            var lastLineTop = (total - 1) * win.lineHeight - win.shift;
+            if (lastLineTop + win.lineHeight > lines * win.lineHeight + 1.5) out.newestOk = false;
+            var joined = '';
+            for (var i = 0; i < n; i++) joined += (i ? ' ' : '') + run.words[i].text;
+            if (txt.replace(/\s+/g, ' ').trim() !== joined) out.textOk = false;
+            info.text = txt.replace(/\s+/g, ' ').trim();
+          }
+          out.runs.push(info);
+        }
+        return out;
+      }
+
       /* --- Besturing ----------------------------------------------------- */
 
       function curLines() {
@@ -267,7 +409,7 @@
       }
 
       function setupStages(hostW, hostH, pct, inc) {
-        [cueStage, newStage].forEach(function (stage) {
+        [cueStage, newStage, wordStage].forEach(function (stage) {
           stage.style.width = hostW + 'px';
           stage.style.height = hostH + 'px';
           var overlay = stage.querySelector('#sc-caption-overlay');
@@ -298,6 +440,7 @@
         var lines = curLines();
         renderStage(cueStage, cue ? cue.text : '', lines);
         renderStage(newStage, blk ? blk.text : '', lines);
+        renderWordStage(t, lines);
 
         var txt = 't = ' + (Math.round(t * 10) / 10).toFixed(1).replace('.', ',') + ' s';
         if (blk) {
@@ -306,11 +449,19 @@
         } else {
           txt += ' — geen actief blok (stilte of nog niets)';
         }
+        var wi = L.captionRunAt(state.runs, t, LINGER);
+        if (wi >= 0) {
+          txt += ' | woord-voor-woord: run ' + (wi + 1) + '/' + state.runs.length +
+            ', ' + L.captionWordIndex(state.runs[wi].words, t, 0.05) + '/' + state.runs[wi].words.length + ' woorden';
+        }
         document.getElementById('clockText').textContent = txt;
         document.getElementById('scrub').value = t;
 
         var rows = document.querySelectorAll('#rowsBlocks tr');
         for (var i = 0; i < rows.length; i++) rows[i].classList.toggle('active', i === bi);
+
+        var wrows = document.querySelectorAll('#rowsRuns tr');
+        for (var w = 0; w < wrows.length; w++) wrows[w].classList.toggle('active', w === wi);
       }
 
       /** Waarom eindigde dit blok hier? (voor de validatietabel) */
@@ -362,6 +513,8 @@
         setupStages(hostW, hostH, pctSize, inc);
         state.events = L.parseCaptionJson({ events: SCENARIOS[key].events });
         state.blocks = L.buildCaptionBlocks(state.events, OPTS);
+        state.runs = L.buildCaptionRuns(L.buildCaptionWords(state.events), OPTS.silenceGap);
+        state.word = { run: -1, count: 0 };
         state.t = 0;
         var lastEnd = 0;
         state.blocks.forEach(function (b) { if (b.end > lastEnd) lastEnd = b.end; });
@@ -417,6 +570,25 @@
           flatten(state.blocks.map(function (b) { return b.text; }).join(' '));
         var reasonText = Object.keys(reasons).map(function (k) { return reasons[k] + 'x ' + k; }).join(', ');
 
+        // Woord-voor-woord: alle runs af (per woord) en meet het rollende venster.
+        var wordRes = validateWordWindow(lines);
+        var rowsR = document.getElementById('rowsRuns');
+        rowsR.innerHTML = '';
+        wordRes.runs.forEach(function (r, i) {
+          var gap = i + 1 < wordRes.runs.length ? wordRes.runs[i + 1].start - r.end : null;
+          var tr = document.createElement('tr');
+          tr.innerHTML =
+            '<td class="num">' + (i + 1) + '</td>' +
+            '<td class="num">' + r.start.toFixed(1).replace('.', ',') + ' - ' + r.end.toFixed(1).replace('.', ',') + ' s</td>' +
+            '<td class="num">' + r.count + '</td>' +
+            '<td>' + esc(r.text.length > 160 ? r.text.slice(0, 157) + '...' : r.text) + '</td>' +
+            '<td class="num">' + (gap === null ? 'einde video' : (Math.round(gap * 10) / 10).toFixed(1).replace('.', ',') + ' s') + '</td>' +
+            '<td class="num">' + r.maxLines + ' (venster: ' + lines + ')</td>' +
+            '<td class="num ' + (r.maxLines > lines ? 'good' : '') + '">' + r.steps + '</td>';
+          rowsR.appendChild(tr);
+        });
+        var wordOk = wordRes.stepOk && wordRes.windowOk && wordRes.heightOk && wordRes.textOk && wordRes.newestOk;
+
         var v = document.getElementById('verdict');
         v.textContent = SCENARIOS[key].label + ' @ ' + lines + ' regels / ' + pctSize + '% op ' + hostW + 'x' + hostH +
           ' - blokken: ' + state.blocks.length +
@@ -425,8 +597,13 @@
           ' | redenen: ' + reasonText +
           ' | tekst volledig behouden: ' + (preserved ? 'ja' : 'NEE') +
           ' | blokken afgekapt in het venster: ' + clipped + '/' + state.blocks.length +
-          ' | oude cue-weergave: ' + cueMid + '/' + state.events.length + ' cues lopen door naar de volgende cue';
-        v.className = 'verdict ' + (preserved && midCut === 0 && clipped === 0 ? 'pass' : (preserved ? 'warnbox' : 'fail'));
+          ' | oude cue-weergave: ' + cueMid + '/' + state.events.length + ' cues lopen door naar de volgende cue' +
+          ' | woord-voor-woord: ' + wordRes.runs.length + ' runs, max ' + wordRes.maxLines + ' regels, ' +
+          'venster altijd de laatste regels: ' + (wordRes.windowOk ? 'ja' : 'NEE') +
+          ', stapjes van hele regels: ' + (wordRes.stepOk ? 'ja' : 'NEE') +
+          ', nieuwste woord zichtbaar: ' + (wordRes.newestOk ? 'ja' : 'NEE') +
+          ', tekst compleet: ' + (wordRes.textOk ? 'ja' : 'NEE');
+        v.className = 'verdict ' + (preserved && midCut === 0 && clipped === 0 && wordOk ? 'pass' : (preserved && wordOk ? 'warnbox' : 'fail'));
         applyTime();
       }
 
