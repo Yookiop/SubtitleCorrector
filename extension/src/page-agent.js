@@ -492,13 +492,15 @@
     videoId: null,
     trackKey: null,
     events: null,
-    lastText: null,
     shownOnce: false,
     frame: 0,
     rafActive: false,
     rafHandle: null,
     overlay: null,
-    line: null,
+    box: null,
+    cueSpans: null,
+    cueKey: null,
+    cueShown: -1,
     styleReady: false
   };
 
@@ -635,9 +637,9 @@
     if (key === boostStyle.applied) return;
     boostStyle.applied = key;
     el.style.fontSize = (Math.round(px * 10) / 10) + 'px';
-    if (boost.line) {
-      boost.line.style.color = boostStyle.textColor;
-      boost.line.style.background = boostStyle.bgColor;
+    if (boost.box) {
+      boost.box.style.color = boostStyle.textColor;
+      boost.box.style.background = boostStyle.bgColor;
     }
   }
 
@@ -650,11 +652,11 @@
         st.id = 'sc-caption-style';
         st.textContent =
           '.sc-boost-on .ytp-caption-window-container{display:none!important}' +
-          '#sc-caption-overlay{position:absolute;left:5%;right:5%;bottom:10.5%;text-align:center;pointer-events:none;z-index:45;display:none;' +
+          '#sc-caption-overlay{position:absolute;left:0;right:0;bottom:10.5%;text-align:center;pointer-events:none;z-index:45;display:none;' +
           'font-weight:600;line-height:1.4;font-family:"YouTube Sans","Roboto",Arial,sans-serif}' +
           '#sc-caption-overlay.sc-on{display:block}' +
-          '#sc-caption-overlay .sc-caption-line{display:inline;white-space:pre-wrap;padding:.06em .32em;border-radius:3px;' +
-          '-webkit-box-decoration-break:clone;box-decoration-break:clone;text-shadow:0 0 2px rgba(0,0,0,.8)}';
+          '#sc-caption-overlay .sc-caption-box{display:inline-block;text-align:left;max-width:92%;white-space:pre-wrap;' +
+          'padding:.06em .32em;border-radius:3px;text-shadow:0 0 2px rgba(0,0,0,.8)}';
         (document.head || document.documentElement).appendChild(st);
         boost.styleReady = true;
       } catch (e) { /* ignore */ }
@@ -665,15 +667,15 @@
       el = document.createElement('div');
       el.id = 'sc-caption-overlay';
     }
-    var line = el.querySelector('.sc-caption-line');
-    if (!line) {
-      line = document.createElement('span');
-      line.className = 'sc-caption-line';
-      el.appendChild(line);
+    var box = el.querySelector('.sc-caption-box');
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'sc-caption-box';
+      el.appendChild(box);
     }
     if (el.parentNode !== p) p.appendChild(el);
     boost.overlay = el;
-    boost.line = line;
+    boost.box = box;
     applyBoostStyle();
     return el;
   }
@@ -686,8 +688,13 @@
     }
     if (boost.overlay) {
       if (on) boost.overlay.classList.add('sc-on');
-      else boost.overlay.classList.remove('sc-on');
-      if (!on && boost.line) boost.line.textContent = '';
+      else {
+        boost.overlay.classList.remove('sc-on');
+        if (boost.box) boost.box.textContent = '';
+        boost.cueSpans = null;
+        boost.cueKey = null;
+        boost.cueShown = -1;
+      }
     }
   }
 
@@ -697,9 +704,48 @@
       try { cancelAnimationFrame(boost.rafHandle); } catch (e) { /* ignore */ }
       boost.rafHandle = null;
     }
-    boost.lastText = null;
     boost.shownOnce = false;
     hideBoost(false);
+  }
+
+  /**
+   * Bouw de caption voor één cue. Alle woorden staan er in één keer in (met
+   * hun vaste plek), maar zijn verborgen tot hun tijd; per frame toggelen we
+   * alleen de visibility. Daardoor verspringt de tekst nooit: woord 1 blijft
+   * links staan en de rest schuift niet op, en de regelafbreking (meestal 2
+   * regels) wordt één keer door de browser berekend en blijft staan.
+   */
+  function buildCue(ev) {
+    var box = boost.box;
+    if (!box) return;
+    box.textContent = '';
+    boost.cueSpans = [];
+    var parts = [];
+    if (ev.bounds && ev.bounds.length) {
+      var prev = 0;
+      for (var i = 0; i < ev.bounds.length; i++) {
+        var end = Math.min(ev.bounds[i].end, ev.raw.length);
+        var chunk = ev.raw.slice(prev, end);
+        prev = end;
+        if (!chunk) continue;
+        parts.push({ text: chunk, t: ev.bounds[i].t });
+      }
+      if (prev < ev.raw.length) {
+        var tail = ev.bounds[ev.bounds.length - 1];
+        parts.push({ text: ev.raw.slice(prev), t: tail ? tail.t : ev.start });
+      }
+    } else {
+      parts.push({ text: ev.raw, t: ev.start });
+    }
+    for (var s = 0; s < parts.length; s++) {
+      var el = document.createElement('span');
+      el.className = 'sc-word';
+      el.textContent = parts[s].text;
+      el.style.visibility = 'hidden';
+      box.appendChild(el);
+      boost.cueSpans.push({ el: el, t: parts[s].t });
+    }
+    boost.cueShown = 0;
   }
 
   function renderBoost() {
@@ -720,15 +766,38 @@
       }
       applyBoostStyle(); // spelerformaat kan veranderd zijn (fullscreen/theater)
     }
+
     var t = safe(function () { return p.getCurrentTime(); }, 0);
-    var text = L.boostTextFor(boost.events, t);
-    if (text !== boost.lastText) {
-      boost.lastText = text;
-      if (boost.line) boost.line.textContent = text;
-      if (text) {
-        boost.shownOnce = true;
-        hideBoost(true);
+    var idx = L.captionEventIndex(boost.events, t);
+    var ev = idx >= 0 ? boost.events[idx] : null;
+    var next = idx >= 0 ? boost.events[idx + 1] : null;
+
+    // Niets te tonen: vóór de eerste cue, of ruim na de laatste cue.
+    if (!ev || (!next && t > ev.start + ev.dur + 5)) {
+      if (boost.shownOnce) {
+        boost.shownOnce = false;
+        hideBoost(false);
       }
+      boost.rafHandle = requestAnimationFrame(renderBoost);
+      return;
+    }
+
+    if (boost.cueKey !== ev.start || !boost.cueSpans) {
+      buildCue(ev);
+      boost.cueKey = ev.start;
+    }
+
+    var count = L.captionRevealCount(ev, t);
+    if (count !== boost.cueShown) {
+      boost.cueShown = count;
+      for (var i = 0; i < boost.cueSpans.length; i++) {
+        var want = i < count ? '' : 'hidden';
+        if (boost.cueSpans[i].el.style.visibility !== want) boost.cueSpans[i].el.style.visibility = want;
+      }
+    }
+    if (count > 0 && !boost.shownOnce) {
+      boost.shownOnce = true;
+      hideBoost(true);
     }
     boost.rafHandle = requestAnimationFrame(renderBoost);
   }

@@ -185,28 +185,33 @@
     ] });
     eq(events.length, 1);
     eq(events[0].start, 4.4);
-    eq(L.boostTextFor(events, 4.5), 'This');
-    eq(L.boostTextFor(events, 4.85), 'This is');
-    eq(L.boostTextFor(events, 5.05), 'This is a');
-    eq(L.boostTextFor(events, 5.2), 'This is a three.');
+    eq(events[0].raw, 'This is a three.');
+    eq(events[0].bounds.length, 4);
+    eq(L.captionRevealCount(events[0], 4.5), 1);
+    eq(L.captionRevealCount(events[0], 4.85), 2);
+    eq(L.captionRevealCount(events[0], 5.05), 3);
+    eq(L.captionRevealCount(events[0], 5.25), 4);
   });
 
-  test('boostTextFor toont niets vóór de start en de hele cue zonder offsets', function (L) {
+  test('captionEventIndex en captionRevealCount: vóór de start en zonder offsets', function (L) {
     var events = L.parseCaptionJson({ events: [
       { tStartMs: 10000, dDurationMs: 2000, segs: [{ utf8: 'Hallo wereld' }] }
     ] });
     eq(events.length, 1);
-    eq(L.boostTextFor(events, 9), '');
-    eq(L.boostTextFor(events, 10.5), 'Hallo wereld');
+    eq(L.captionEventIndex(events, 9), -1);
+    eq(L.captionRevealCount(events[0], 9), 0);
+    eq(L.captionEventIndex(events, 10.5), 0);
+    eq(L.captionRevealCount(events[0], 10.5), 1); // geen offsets -> hele cue in één keer
   });
 
-  test('boostTextFor bewaart regelovergangen voor meerregelige cues', function (L) {
+  test('parseCaptionJson bewaart regelovergangen in raw', function (L) {
     var events = L.parseCaptionJson({ events: [
       { tStartMs: 1000, dDurationMs: 3000, segs: [{ utf8: 'eerste regel\n' }, { utf8: 'tweede regel', tOffsetMs: 1200 }] }
     ] });
     eq(events.length, 1);
-    eq(L.boostTextFor(events, 1.6), 'eerste regel');
-    eq(L.boostTextFor(events, 2.3), 'eerste regel\ntweede regel');
+    ok(events[0].raw.indexOf('\n') !== -1, 'newline moet bewaard blijven voor de 2-regelige weergave');
+    eq(L.captionRevealCount(events[0], 1.6), 1);
+    eq(L.captionRevealCount(events[0], 2.3), 2);
   });
 
   test('rgbaFromHex maakt rgba met opacity', function (L) {

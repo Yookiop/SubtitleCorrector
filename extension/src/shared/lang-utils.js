@@ -361,8 +361,9 @@
     return out;
   }
 
-  /** Index van het laatste event dat op tijd `t` (seconden) begonnen is. */
-  function findCaptionEvent(events, t) {
+  /** Index van het laatste event dat op tijd `t` (seconden) begonnen is (-1 = nog niets). */
+  function captionEventIndex(events, t) {
+    if (!events || !events.length) return -1;
     var lo = 0;
     var hi = events.length - 1;
     var ans = -1;
@@ -373,24 +374,20 @@
     return ans;
   }
 
-  /** Welke tekst hoort bij tijd `t` (seconden)? Woord-voor-woord bij offsets. */
-  function boostTextFor(events, t) {
-    if (!events || !events.length) return '';
-    var idx = findCaptionEvent(events, t);
-    if (idx < 0) return '';
-    var ev = events[idx];
-    var next = events[idx + 1];
-    if (!next && t > ev.start + ev.dur + 5) return '';
-    var text = ev.raw;
-    if (ev.bounds && ev.bounds.length) {
-      var last = -1;
-      for (var i = 0; i < ev.bounds.length; i++) {
-        if (ev.bounds[i].t <= t + 0.05) last = i;
-        else break;
-      }
-      text = last < 0 ? '' : ev.raw.slice(0, ev.bounds[last].end);
+  /**
+   * Hoeveel woorden van dit event zijn op tijd `t` (seconden) al gezegd?
+   * De overlay zet alle woorden vooraf in de DOM (vaste layout/linkse uitlijning)
+   * en maakt ze stuk voor stuk zichtbaar met deze telling.
+   */
+  function captionRevealCount(ev, t) {
+    if (!ev) return 0;
+    if (!ev.bounds || !ev.bounds.length) return ev.start <= t ? 1 : 0;
+    var n = 0;
+    for (var i = 0; i < ev.bounds.length; i++) {
+      if (ev.bounds[i].t <= t + 0.05) n++;
+      else break;
     }
-    return String(text).replace(/[^\S\n]+/g, ' ').trim();
+    return n;
   }
 
   /* ------------------------------------------------------------------ *
@@ -494,7 +491,8 @@
     detectAudioLanguage: detectAudioLanguage,
     planFix: planFix,
     parseCaptionJson: parseCaptionJson,
-    boostTextFor: boostTextFor,
+    captionEventIndex: captionEventIndex,
+    captionRevealCount: captionRevealCount,
     rgbaFromHex: rgbaFromHex,
     captionSizeScale: captionSizeScale,
     captionFontPx: captionFontPx,

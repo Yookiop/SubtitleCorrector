@@ -115,7 +115,8 @@ Daarnaast tekent **Caption Boost** (default aan) de ondertitels zelf:
 
 * de timedtext-track die de speler zelf ophaalt (json3, met per-woord `tOffsetMs` bij auto-gegenereerde tracks) wordt passief uit de XHR gelezen — een eigen fetch kan niet, want YouTube's timedtext vereist een `pot`-token (zonder token: HTTP 200 met een lege body);
 * de tekst wordt woord voor woord gerenderd in een overlay, synchroon met `getCurrentTime()`;
-* de **stijl** komt uit YouTube's eigen captioninstellingen (`getSubtitlesUserSettings`: tekstkleur, achtergrondkleur + opacity, `fontSizeIncrement`), dus wit-op-zwart of welke stijl je daar ook hebt gekozen wordt automatisch nagebouwd; meerregelige cues krijgen per regel een eigen achtergrondbox, net als YouTube;
+* de **stijl** komt uit YouTube's eigen captioninstellingen (`getSubtitlesUserSettings`: tekstkleur, achtergrondkleur + opacity, `fontSizeIncrement`), dus wit-op-zwart of welke stijl je daar ook hebt gekozen wordt automatisch nagebouwd;
+* de hele cue staat **vooraf vast**: alle woorden krijgen hun plek, het eerste woord blijft **links uitgelijnd** staan en de rest schuift niet op; de tekst wikkelt zoals bij YouTube in 1-2 regels;
 * de **grootte** stel je zelf in met *Ondertitelgrootte* (50 - 250%; 100% ≈ YouTube's standaardgrootte);
 * zolang dat lukt blijft YouTube's eigen caption-venster verborgen; bij advertenties, een actieve vertaling, een ontbrekende track of een videowissel gaat alles direct terug naar YouTube's eigen weergave.
 
