@@ -5,7 +5,7 @@ Zet YouTube-ondertitels automatisch in de **taal van de audio** (Engels of Neder
 > **Waarom:** YouTube onthoudt je laatst gebruikte ondertitelkeuze en past die toe op de volgende video. Kijk je Engels en Nederlands door elkaar, dan vertaalt YouTube je ondertitels de verkeerde kant op (Engelse video → Nederlandse ondertitels, Nederlandse video → Engelse ondertitels). Deze extensie zet per video de juiste track: de **auto-gegenereerde** ondertitel van de gesproken taal (prioriteit 1), of anders de **handmatige** (prioriteit 2).
 
 * **Lokaal**: losse extensie (unpacked), geen webstore, geen account, geen cloud.
-* **Automatisch** bij elke nieuwe video, plus handmatig met de hotkey <kbd>]</kbd> (optie: de hotkey zet de ondertiteling ook aan/uit, zie §2).
+* **Automatisch** bij elke nieuwe video, plus handmatig met de hotkey <kbd>]</kbd> (hotkey staat standaard uit; aanzetten of de hotkey-modus kiezen: zie §2).
 * **Alleen EN/NL** — andere talen worden met rust gelaten.
 * **Spaarzaam met CPU/GPU (caption-prioriteit)**: in playlists draait de zware audio-analyse alleen via de hotkey, er wordt nooit opgenomen als de bridge niet klaar is, en de extensie pollt langzamer op de achtergrond. Zo houdt YouTube ruimte over voor het tekenen van de ondertitels (zie §5.1).
 * **Caption Boost (eigen ondertitelweergave)**: tekent de ondertitel zelf, in plaats van YouTube's venster. Standaard **woord voor woord** (optie Word-for-Word); zet die uit voor blokken van **2 volle zinnen** in één keer. De blokgrens ligt exact op het 2e zinseinde — ook als dat midden in een YouTube-cue valt, want de rest van die cue gaat naar het volgende blok. Zo blijft elke zin bij elkaar en komt er geen halfgevuld blok meer waarin de rest van de zin pas later in een nieuw blok verschijnt. Dit lost het "loopt 1-2 s achter en plopt dan in blokken"-probleem op, ook als dat zonder de extensie gebeurt (zie §5.1).
@@ -29,9 +29,8 @@ Zet YouTube-ondertitels automatisch in de **taal van de audio** (Engels of Neder
 ## 2. Gebruiken
 
 * **Automatisch**: open je een YouTube-video, dan gaat het vanzelf goed (binnen ~2 seconden).
-* **Handmatig**: druk op <kbd>]</kbd> terwijl het YouTube-tabblad focus heeft (bijvoorbeeld als YouTube iets verkeerd heeft gezet).
-* **Hotkey uitzetten** (optie **Hotkey actief**, default aan): uit = de toets doet helemaal niets meer (geen correctie, geen toast) en de toets blijft gewoon naar de pagina gaan. Het hotkey-veld leegmaken werkt ook als "uit".
-* **Aan/uit met de hotkey** (optie **Hotkey zet ondertitels aan/uit**, default uit): staat die aan, dan is de hotkey een schakelaar. De eerste keer drukken zet de ondertiteling van dít tabblad volledig uit (captions uit, Caption Boost uit, geen bridge/audio-analyse); nog een keer drukken zet alles weer aan en past de gewone hotkey-logica toe (detecteren + juiste track). Uit = de hotkey forceert alleen een correctie.
+* **Handmatig**: druk op <kbd>]</kbd> terwijl het YouTube-tabblad focus heeft om de ondertiteling van dít tabblad aan/uit te zetten. De hotkey staat **standaard uit** (optie **Hotkey actief**).
+* **Hotkey aan/uit** (optie **Hotkey actief**, default uit): aan = de hotkey is de aan/uit-schakelaar van dit tabblad. De eerste keer drukken zet de ondertiteling volledig uit (captions uit, Caption Boost uit, geen bridge/audio-analyse, ook als YouTube ze daarna opnieuw aanzet); nog een keer drukken zet alles weer aan en past de correctie toe. Uit = de toets doet helemaal niets (geen correctie, geen toast) en gaat gewoon naar de pagina; een leeg hotkey-veld betekent hetzelfde. Wil je alleen een keer geforceerd corrigeren, gebruik dan **Nu toepassen** in de popup.
 * **Uitzetten per tabblad**: links naast het tandwiel in de speler staat een **CC-knopje**; één klik zet de ondertiteling van dít tabblad volledig uit (captions uit, Caption Boost uit én geen bridge/audio-analyse — ook als YouTube ze daarna opnieuw aanzet). Nog een klik (of de hotkey <kbd>]</kbd>) zet alles weer aan; in de uit-stand zie je een **rode streep** door het icoon en staat `off` op de badge.
 * **Popup** (klik op het icoon): toont de gedetecteerde audiotaal + bron, de huidige ondertitel, wat de extensie zou doen, en of de bridge online is. Met **Nu toepassen** forceer je een correctie.
 * **Toast**: linksonder in de video zie je kort wat er gebeurd is (uit te zetten in de opties).
@@ -42,9 +41,8 @@ Rechtermuisknop op het icoon → **Options** (of via de popup → Instellingen).
 
 | Optie | Default | Betekenis |
 |-------|---------|-----------|
-| Hotkey | `]` | Ook `ctrl+]` etc. mogelijk. Leeg laten = hotkey uit |
-| Hotkey actief | aan | Uit = de hotkey doet helemaal niets meer: geen correctie, geen toast, en de toets gaat gewoon naar de pagina |
-| Hotkey zet ondertitels aan/uit | uit | Modus van de hotkey (niet de aan/uit-schakelaar): aan = de hotkey wordt een schakelaar voor dít tabblad — 1e keer drukken = alles uit (captions, Caption Boost, bridge), nog een keer = weer aan + de gewone hotkey-logica (detecteren en de juiste track zetten) |
+| Hotkey | `]` | Ook `ctrl+]` etc. mogelijk. Leeg (`<empty>`) = hotkey uit |
+| Hotkey actief | **uit** | Aan = de hotkey is de aan/uit-schakelaar van dit tabblad: 1e keer drukken = alles uit (captions, Caption Boost, bridge), nog een keer = weer aan + de correctie. Uit (standaard) = de hotkey doet helemaal niets: geen correctie, geen toast, en de toets gaat gewoon naar de pagina |
 | Automatisch bij elke nieuwe video | aan | Uitzetten = alleen handmatig met de hotkey |
 | Auto-gegenereerd boven handmatig | aan | Prioriteit 1 = auto, 2 = handmatig |
 | Ondertitels aanzetten als ze uit staan | aan | Want YouTube activeert ze niet altijd |
@@ -146,7 +144,7 @@ Meer automatiek nodig voor video's zonder metadata? Zet in de opties **"Audio-an
 ## 6. Testen
 
 ```text
-dubbelklik tools\test-lang-utils.html     # 57 tests van de pure logica, geen Node nodig
+dubbelklik tools\test-lang-utils.html     # 56 tests van de pure logica, geen Node nodig
 node tools\test-lang-utils.mjs            # zelfde tests (als Node geïnstalleerd is)
 dubbelklik tools\check-caption-lines.html # blokken van 2 zinnen, het rollende woord-voor-woord-venster (ook zonder per-woordtijden en met sprekerswissels) en de Y-offset, met regels en vulling per blok/run
 python tools\bridge-smoke-test.py         # bridge end-to-end
@@ -163,9 +161,9 @@ python -m http.server 8099     ->  http://localhost:8099/tools/check-syntax.html
 
 | Symptoom | Oplossing |
 |----------|-----------|
-| Er gebeurt niets bij `]` | Staat in de opties **Hotkey actief** aan en staat er een toets in het hotkey-veld? Heeft het YouTube-tabblad focus? Staat de extensie aan? Ververs het tabblad na het (her)laden van de extensie. |
-| De hotkey doet nog iets terwijl ik hem uit wil | Zet in de opties **Hotkey actief** uit (of maak het hotkey-veld leeg). De optie *Hotkey zet ondertitels aan/uit* is iets anders: die kiest of de hotkey een aan/uit-schakelaar is of alleen een correctie forceert. |
-| De hotkey zet mijn ondertitels uit terwijl ik alleen wilde corrigeren | Zet in de opties **Hotkey zet ondertitels aan/uit** uit; dan forceert de hotkey alleen een correctie. Nog een keer drukken zet de ondertiteling ook weer aan, en het CC-knopje in de speler werkt altijd. |
+| Er gebeurt niets bij `]` | Staat in de opties **Hotkey actief** aan (staat standaard uit) en staat er een toets in het hotkey-veld? Heeft het YouTube-tabblad focus? Staat de extensie aan? Ververs het tabblad na het (her)laden van de extensie. |
+| De hotkey doet nog iets terwijl ik hem uit wil | Zet in de opties **Hotkey actief** uit (of maak het hotkey-veld leeg, dan staat er `<empty>`). |
+| Ik wil alleen corrigeren, maar de hotkey zet mijn ondertitels uit | Dat is de functie van de hotkey: hij is de aan/uit-schakelaar van dít tabblad. Druk nog een keer (dan gaat alles weer aan en wordt de correctie toegepast) of gebruik **Nu toepassen** in de popup; het CC-knopje in de speler werkt altijd. |
 | Ondertitels blijven uit terwijl ik ze wél wil | Je hebt het CC-knopje in de speler (rode streep) gebruikt: nog een klik op dat knopje of de hotkey `]` zet de kill switch van dat tabblad weer uit. |
 | Popup zegt "extensie nog niet actief" | Ververs het YouTube-tabblad (content scripts worden niet in bestaande tabs geïnjecteerd). |
 | Ondertitels worden niet gevonden | De video heeft geen EN/NL-ondertitel. De toast meldt dat; badge wordt `!`. |

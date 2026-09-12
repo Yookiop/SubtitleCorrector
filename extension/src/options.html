@@ -55,21 +55,15 @@
       </div>
       <div class="field">
         <label>Hotkey actief
-          <span class="hint">Standaard aan. Uit: de hotkey doet helemaal niets meer &mdash; geen correctie en geen melding. Het hotkey-veld hieronder leegmaken werkt ook als "uit".</span>
+          <span class="hint">Standaard uit. Aan: de hotkey werkt als aan/uit-schakelaar voor dít tabblad &mdash; de eerste keer drukken zet de ondertiteling volledig uit (captions uit, Caption Boost uit, geen audio-analyse, ook als YouTube ze daarna opnieuw aanzet), nog een keer drukken zet alles weer aan en past de correctie toe. Uit: de hotkey doet helemaal niets &mdash; geen correctie en geen melding; de toets gaat gewoon naar de pagina.</span>
         </label>
         <input type="checkbox" id="hotkeyEnabled">
       </div>
       <div class="field">
         <label>Hotkey
-          <span class="hint">Eén teken, eventueel met modifiers, bv. <code>]</code> of <code>ctrl+]</code>. Leeg = hotkey uit.</span>
+          <span class="hint">Eén teken, eventueel met modifiers, bv. <code>]</code> of <code>ctrl+]</code>. Leeg (<code>&lt;empty&gt;</code>) = hotkey uit.</span>
         </label>
-        <input type="text" id="hotkey" maxlength="12" placeholder="]">
-      </div>
-      <div class="field">
-        <label>Hotkey zet ondertitels aan/uit
-          <span class="hint">Standaard uit. Dit is niet de aan/uit-schakelaar van de hotkey zelf (zie <b>Hotkey actief</b>), maar de modus: aan = de hotkey wordt een schakelaar voor dít tabblad &mdash; de eerste keer drukken zet de ondertiteling volledig uit (captions uit, Caption Boost uit, geen audio-analyse, ook als YouTube ze daarna opnieuw aanzet), nog een keer drukken zet alles weer aan en past de gewone hotkey-logica toe. Uit = de hotkey forceert alleen een correctie.</span>
-        </label>
-        <input type="checkbox" id="hotkeyToggleSubtitles">
+        <input type="text" id="hotkey" maxlength="12" placeholder="<empty>">
       </div>
       <div class="field">
         <label>Automatisch bij elke nieuwe video

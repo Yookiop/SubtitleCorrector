@@ -171,29 +171,20 @@
   });
 
   /* ------------------------------------------------------------------ *
-   * Hotkey: forceren of aan/uit-schakelaar (optie hotkeyToggleSubtitles)
+   * Hotkey: aan/uit-schakelaar, of helemaal uit
    * ------------------------------------------------------------------ */
-  test('hotkeyAction: standaard forceert de hotkey alleen een correctie', function (L) {
-    eq(L.hotkeyAction({ enabled: true, hotkeyToggle: false, subtitlesOff: false }), 'run');
-    // Ontbrekende optie (oud profiel) = het oude gedrag.
-    eq(L.hotkeyAction({ enabled: true, subtitlesOff: true }), 'run');
-  });
-
-  test('hotkeyAction: met de toggle-optie schakelt de hotkey de kill switch', function (L) {
-    eq(L.hotkeyAction({ enabled: true, hotkeyToggle: true, subtitlesOff: false }), 'toggle-off');
-    eq(L.hotkeyAction({ enabled: true, hotkeyToggle: true, subtitlesOff: true }), 'toggle-on');
-    eq(L.hotkeyAction({ enabled: false, hotkeyToggle: true, subtitlesOff: false }), 'none');
-    eq(L.hotkeyAction({ enabled: false }), 'none');
-  });
-
-  test('hotkeyAction: hotkeyEnabled = false zet de hotkey helemaal uit', function (L) {
-    // Uit wint van alles: geen correctie en geen toggle.
+  test('hotkeyAction: hotkey uit (optie uit) doet niets', function (L) {
     eq(L.hotkeyAction({ enabled: true, hotkeyEnabled: false, subtitlesOff: false }), 'none');
-    eq(L.hotkeyAction({ enabled: true, hotkeyEnabled: false, hotkeyToggle: true, subtitlesOff: false }), 'none');
-    eq(L.hotkeyAction({ enabled: true, hotkeyEnabled: false, hotkeyToggle: true, subtitlesOff: true }), 'none');
-    // Ontbrekende optie (oud profiel) = aan, dus het gedrag verandert niet.
-    eq(L.hotkeyAction({ enabled: true, subtitlesOff: false }), 'run');
-    eq(L.hotkeyAction({ enabled: true, hotkeyEnabled: true, hotkeyToggle: true, subtitlesOff: false }), 'toggle-off');
+    eq(L.hotkeyAction({ enabled: true, hotkeyEnabled: false, subtitlesOff: true }), 'none');
+    eq(L.hotkeyAction({ enabled: false, hotkeyEnabled: true, subtitlesOff: false }), 'none');
+  });
+
+  test('hotkeyAction: aan = ondertitels aan/uit schakelen voor dit tabblad', function (L) {
+    eq(L.hotkeyAction({ enabled: true, hotkeyEnabled: true, subtitlesOff: false }), 'toggle-off');
+    eq(L.hotkeyAction({ enabled: true, hotkeyEnabled: true, subtitlesOff: true }), 'toggle-on');
+    // Ontbrekende optie in de pure functie = aan (de app-default in
+    // DEFAULT_SETTINGS staat sinds 2026-09-12 op uit).
+    eq(L.hotkeyAction({ enabled: true, subtitlesOff: false }), 'toggle-off');
   });
 
   /* ------------------------------------------------------------------ *

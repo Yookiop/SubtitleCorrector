@@ -1040,11 +1040,9 @@
   /* ------------------------------------------------------------------ *
    * Hotkey
    *
-   * Standaard doet de hotkey één ding: geforceerd corrigeren ("Nu toepassen").
-   * Met de optie `hotkeyToggleSubtitles` wordt hij een echte aan/uit-schakelaar
-   * voor dít tabblad (dezelfde kill switch als het CC-knopje in de speler);
-   * bij "aan" blijft de bestaande hotkey-logica gelden. Met `hotkeyEnabled`
-   * uit doet hij helemaal niets.
+   * De hotkey is een aan/uit-schakelaar voor dít tabblad (dezelfde kill switch
+   * als het CC-knopje in de speler). Staat hij uit (`hotkeyEnabled` uit of een
+   * leeg hotkey-veld), dan doet hij helemaal niets.
    * ------------------------------------------------------------------ */
   /**
    * Wat moet de hotkey doen?
@@ -1052,16 +1050,14 @@
    * @param {Object} ctx
    *   ctx.enabled        extensie aan? (anders: niets)
    *   ctx.hotkeyEnabled  optie `hotkeyEnabled` aan?
-   *                      (ontbrekend = aan; false = hotkey doet helemaal niets)
-   *   ctx.hotkeyToggle   optie `hotkeyToggleSubtitles` aan?
+   *                      (ontbrekend = aan; de app-default staat op uit)
    *   ctx.subtitlesOff   staat de kill switch van dit tabblad uit?
-   * @returns {'none'|'run'|'toggle-off'|'toggle-on'}
+   * @returns {'none'|'toggle-off'|'toggle-on'}
    */
   function hotkeyAction(ctx) {
     ctx = ctx || {};
     if (ctx.enabled === false) return 'none';
     if (ctx.hotkeyEnabled === false) return 'none';
-    if (ctx.hotkeyToggle !== true) return 'run';
     return ctx.subtitlesOff ? 'toggle-on' : 'toggle-off';
   }
 
