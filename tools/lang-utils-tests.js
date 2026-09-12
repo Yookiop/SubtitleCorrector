@@ -313,10 +313,23 @@
   });
 
   test('captionBoxHeightEm: vast venster van 1 of 2 regels', function (L) {
-    eq(L.captionBoxHeightEm(2), 2.92);       // 2 x 1,4 + 2 x 0,06
-    eq(L.captionBoxHeightEm(1), 1.52);
-    eq(L.captionBoxHeightEm(undefined), 2.92);
-    eq(L.captionBoxHeightEm(7), 2.92);       // geclamped op 2 regels
+    eq(L.captionBoxHeightEm(2), 2.89);       // 2 x 1,4 + 0,06 boven + 0,03 onder
+    eq(L.captionBoxHeightEm(1), 1.49);
+    eq(L.captionBoxHeightEm(undefined), 2.89);
+    eq(L.captionBoxHeightEm(7), 2.89);       // geclamped op 2 regels
+  });
+
+  test('captionBoxHeightEm: bovenpadding klein genoeg om een regel weg te schuiven', function (L) {
+    // Een regel die het venster uit schuift, moet volledig buiten het venster
+    // vallen. Dat kan alleen als de bovenpadding kleiner is dan de halve
+    // regelafstand (het lege deel van de regelbox onder de baseline).
+    ok(L.CAPTION_PAD_TOP_EM < (L.CAPTION_LINE_HEIGHT - 1.13) / 2,
+      'bovenpadding (' + L.CAPTION_PAD_TOP_EM + 'em) moet kleiner zijn dan de halve regelafstand');
+    ok(L.CAPTION_PAD_BOTTOM_EM <= L.CAPTION_PAD_TOP_EM,
+      'onderpadding mag niet groter zijn dan bovenpadding');
+    // De vensterhoogte is exact regels x line-height + padding.
+    ok(Math.abs(L.captionBoxHeightEm(2) - (2 * L.CAPTION_LINE_HEIGHT + L.CAPTION_PAD_TOP_EM + L.CAPTION_PAD_BOTTOM_EM)) < 1e-9,
+      'vensterhoogte moet de CSS-padding exact volgen');
   });
 
   /* ------------------------------------------------------------------ *

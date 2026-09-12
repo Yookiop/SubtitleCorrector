@@ -408,15 +408,27 @@
    * (`maxChars`, standaard 150).
    * ------------------------------------------------------------------ */
 
-  var CAPTION_LINE_HEIGHT = 1.4; // line-height van de eigen overlay (CSS)
-  var CAPTION_PAD_EM = 0.06;     // verticale padding per kant (.06em in de CSS)
+  var CAPTION_LINE_HEIGHT = 1.4;     // line-height van de eigen overlay (CSS)
+  var CAPTION_PAD_TOP_EM = 0.06;     // ruimte boven de 1e regel (.06em in de CSS)
+  var CAPTION_PAD_BOTTOM_EM = 0.03;  // ruimte onder de laatste regel (.03em in de CSS);
+                                     // bewust kleiner dan boven, want de regelbox heeft
+                                     // onder de baseline al meer lege ruimte (descender)
+  var CAPTION_PAD_X_EM = 0.32;       // horizontale padding (links/rechts, in de CSS)
 
-  /** Hoogte van het vaste captionvenster in em (1 of 2 regels + padding). */
+  /**
+   * Hoogte van het vaste captionvenster in em (1 of 2 regels + padding).
+   *
+   * Dit is tegelijk de hoogte waarop de overlay klipt (`overflow:hidden` in
+   * page-agent.js), dus deze waarde moet exact bij de CSS-padding horen. De
+   * bovenste padding is bewust kleiner dan de halve regelafstand (≈0,13em),
+   * zodat een regel die het venster uit schuift gegarandeerd volledig buiten
+   * het venster valt: de regelbox onder de baseline is dan al leeg.
+   */
   function captionBoxHeightEm(lines) {
     var n = typeof lines === 'number' && isFinite(lines) ? Math.round(lines) : 2;
     if (n < 1) n = 1;
     if (n > 2) n = 2;
-    return Math.round((n * CAPTION_LINE_HEIGHT + 2 * CAPTION_PAD_EM) * 1000) / 1000;
+    return Math.round((n * CAPTION_LINE_HEIGHT + CAPTION_PAD_TOP_EM + CAPTION_PAD_BOTTOM_EM) * 1000) / 1000;
   }
 
   /** Eindposities (index ná het leesteken) van alle zinseinden in `text`. */
@@ -979,6 +991,10 @@
     captionEventIndex: captionEventIndex,
     captionRevealCount: captionRevealCount,
     captionBoxHeightEm: captionBoxHeightEm,
+    CAPTION_LINE_HEIGHT: CAPTION_LINE_HEIGHT,
+    CAPTION_PAD_TOP_EM: CAPTION_PAD_TOP_EM,
+    CAPTION_PAD_BOTTOM_EM: CAPTION_PAD_BOTTOM_EM,
+    CAPTION_PAD_X_EM: CAPTION_PAD_X_EM,
     splitSentences: splitSentences,
     buildCaptionBlocks: buildCaptionBlocks,
     captionBlockIndex: captionBlockIndex,

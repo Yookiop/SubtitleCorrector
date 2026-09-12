@@ -707,13 +707,34 @@
           // begint linksboven, links uitgelijnd. In de blokweergave staat het
           // hele blok er in één keer in (wat niet past wordt afgekapt); in de
           // woord-voor-woord-weergave wordt elk woord op zijn tijd toegevoegd
-          // en schuift `.sc-caption-scroll` per regel omhoog (transition) zodat
-          // altijd de laatste regels zichtbaar zijn.
+          // en schuift `.sc-caption-scroll` per HELE regel omhoog (`top`), zodat
+          // altijd precies de laatste regels zichtbaar zijn.
+          //
+          // `display:block` + `margin:0 auto` (niet inline-block): een
+          // inline-block met `overflow:hidden` heeft zijn ONDERrand als
+          // baseline, waardoor de regelbox van de overlay onder de box nog de
+          // descender van de strut toevoegde — de zwarte balk stak daardoor
+          // ~15px verder door onder de tekst dan erboven. Als block is de
+          // overlay precies zo hoog als de box en zit de balk dus strak om de
+          // tekst. De verticale padding is bewust asymmetrisch: onder minder
+          // dan boven, want de regelbox heeft onder de baseline al meer ruimte.
+          // De som moet exact gelijk zijn aan L.captionBoxHeightEm().
+          //
+          // `clip-path:inset(0)` is een extra vangnet naast `overflow:hidden`:
+          // het klipt ook eventueel gecompositeerde lagen op de rand van het
+          // venster af, zodat er nooit tekst buiten het zwarte blok valt als
+          // de tekst omhoog schuift (zie setWordShift()).
           '#sc-caption-overlay .sc-caption-bar{position:absolute;top:0;bottom:0}' +
-          '#sc-caption-overlay .sc-caption-box{position:relative;display:inline-block;overflow:hidden;box-sizing:border-box;width:' +
+          '#sc-caption-overlay .sc-caption-box{position:relative;display:block;margin:0 auto;overflow:hidden;clip-path:inset(0);' +
+          'box-sizing:border-box;width:' +
           (Math.round(BOOST_BAR_WIDTH * 1000) / 10) + '%;text-align:left;white-space:pre-wrap;' +
-          'padding:.06em .32em;text-shadow:0 0 2px rgba(0,0,0,.8)}' +
-          '#sc-caption-overlay .sc-caption-scroll{position:relative;transition:transform .16s ease-out}';
+          'padding:' + L.CAPTION_PAD_TOP_EM + 'em ' + L.CAPTION_PAD_X_EM + 'em ' + L.CAPTION_PAD_BOTTOM_EM + 'em;' +
+          'text-shadow:0 0 2px rgba(0,0,0,.8)}' +
+          // De tekst schuift met een korte overgang op `top` (en niet met
+          // `transform`: dat zet de tekst op een eigen compositing-laag, want
+          // dan kan hij tijdens het schuiven buiten het venster getekend
+          // worden — "regel 1 komt boven het blok uit").
+          '#sc-caption-overlay .sc-caption-scroll{position:relative;transition:top .2s ease-out}';
         (document.head || document.documentElement).appendChild(st);
         boost.styleReady = true;
       } catch (e) { /* ignore */ }
@@ -780,6 +801,34 @@
   }
 
   /**
+   * Verschuiving van het rollende venster zetten: `px` = het aantal pixels dat
+   * de tekst omhoog moet (0 = bovenaan).
+   *
+   * Met `animate=true` schuift de tekst zichtbaar omhoog via de CSS-overgang op
+   * `top` (slide-up, zoals YouTube's auto-ondertitels). Bij het opnieuw opbouwen
+   * van het venster (nieuwe run, terugspoelen, moduswissel) gaat het juist
+   * met-een: anders zou de tekst zichtbaar terugschuiven naar boven. Daarvoor
+   * wordt de overgang heel even uitgezet en met een reflow afgedwongen.
+   */
+  function setWordShift(px, animate) {
+    var wrap = boost.scrollEl;
+    if (!wrap) return;
+    // Altijd een expliciete lengte, nooit `''` (= `top:auto`): CSS kan niet van
+    // `auto` naar een lengte interpoleren, dus dan zou de slide-up niet
+    // animeren maar in één keer springen.
+    var val = (px ? -px : 0) + 'px';
+    if (wrap.style.top === val) return;
+    if (animate) {
+      wrap.style.top = val;
+      return;
+    }
+    wrap.style.transition = 'none';
+    wrap.style.top = val;
+    try { void wrap.offsetHeight; } catch (e) { /* ignore */ }
+    wrap.style.transition = '';
+  }
+
+  /**
    * Alles wat in de DOM staat ongeldig maken (stijl-, grootte- of moduswissel,
    * video-/trackwissel, overlay uit): de volgende frame bouwt de tekst opnieuw
    * op. In de woord-voor-woord-weergave begint het venster dan weer bovenaan.
@@ -791,7 +840,8 @@
     boost.windowShift = -1;
     if (boost.scrollEl) {
       boost.scrollEl.textContent = '';
-      boost.scrollEl.style.transform = '';
+      boost.scrollEl.style.transform = ''; // oude versies schoven met transform
+      setWordShift(0, false);
     }
   }
 
@@ -842,6 +892,7 @@
     // blijft staan (die toont YouTube ook).
     wrap.textContent = L.captionSpeakerBreaks(blk.text);
     wrap.style.transform = '';
+    setWordShift(0, false);
     box.style.fontSize = '';
     box.style.maxWidth = '';
     box.style.height = L.captionBoxHeightEm(BOOST_LINES) + 'em';
@@ -891,6 +942,12 @@
    * regels past gebeurt er niets; daarboven schuift de tekst per HELE regel
    * omhoog zodat altijd de laatste regels zichtbaar zijn. De box zelf blijft
    * even hoog (het font krimpt nooit).
+   *
+   * Het schuiven gebeurt met `top` op een `position:relative`-wrapper (via
+   * setWordShift), met een korte CSS-overgang zodat je de slide-up ziet. Bewust
+   * geen `transform`: dat zet de tekst op een eigen compositing-laag en dan kan
+   * hij tijdens de beweging buiten het `overflow:hidden`-venster getekend
+   * worden. `top` wordt niet gecompositeerd, dus het venster klipt elke frame.
    */
   function updateWordWindow() {
     var wrap = boost.scrollEl;
@@ -900,7 +957,7 @@
     var shift = L.captionWindowShift(h, boostLineHeightPx(), BOOST_LINES);
     if (shift === boost.windowShift) return;
     boost.windowShift = shift;
-    wrap.style.transform = shift ? 'translateY(' + (-shift) + 'px)' : '';
+    setWordShift(shift, true);
   }
 
   /**
