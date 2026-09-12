@@ -228,14 +228,58 @@
     ok(L.captionFontPx(400, 0, 200) > L.captionFontPx(400, 0, 100), '200% moet groter zijn dan 100%');
   });
 
-  test('captionBoxWidth: 1 regel = volle breedte, 2 regels = uitgebalanceerd', function (L) {
-    eq(L.captionBoxWidth(1, 400, 80, 368, 6), 368);   // 1 regel: niets dwingen
-    eq(L.captionBoxWidth(2, 400, 80, 368, 6), 206);   // helft + marge
-    eq(L.captionBoxWidth(2, 100, 80, 368, 6), 86);    // breedste woord wint (mag nooit afbreken)
-    eq(L.captionBoxWidth(2, 1000, 80, 368, 6), 368);  // nooit breder dan beschikbaar
-    eq(L.captionBoxWidth(2, 40, 30, 368, 4), 34);     // korte cue verdeelt ook
-    eq(L.captionBoxWidth(2, 0, 0, 368, 6), 368);      // zonder tekst: natuurlijke breedte
-    eq(L.captionBoxWidth(2, 100, 0, 0, 6), 0);        // geen ruimte -> 0
+  test('captionLineCount: greedy afbreking zoals de browser', function (L) {
+    var w = [100, 100, 100];
+    eq(L.captionLineCount(w, 20, 400), 1);
+    eq(L.captionLineCount(w, 20, 240), 2);
+    eq(L.captionLineCount(w, 20, 150), 3);
+    eq(L.captionLineCount([100], 20, 50), 1);   // één lang woord overflowt, blijft 1 regel
+    eq(L.captionLineCount([], 20, 200), 0);     // geen woorden
+    eq(L.captionLineCount(w, 20, 0), 3);        // geen ruimte: elk woord zijn eigen regel
+  });
+
+  test('captionFitWidth: kleinste breedte voor max. 2 regels', function (L) {
+    eq(L.captionFitWidth([100, 100, 100], 20, 1), 340);  // 1 regel: volledige breedte
+    eq(L.captionFitWidth([100, 100, 100], 20, 2), 220);  // beste grens (2+1 of 1+2)
+    eq(L.captionFitWidth([300, 400, 250], 20, 2), 670);  // 300 | 400+250
+    eq(L.captionFitWidth([100], 20, 2), 100);            // één woord blijft één regel
+    eq(L.captionFitWidth([], 20, 2), 0);
+    ok(L.captionLineCount([100, 100, 100], 20, 220) === 2 && L.captionLineCount([100, 100, 100], 20, 219) === 3,
+      'fit-breedte moet precies de grens zijn waar 2 regels passen');
+  });
+
+  test('captionBoxWidth: 1 regel = volle breedte, 2 regels groeien mee tot hardMax', function (L) {
+    var r = L.captionBoxWidth(1, [120, 150, 130], 20, 368, 368, 6);
+    eq(r.width, 368);                       // 1 regel: niets dwingen
+    eq(r.fontScale, 1);
+    r = L.captionBoxWidth(2, [120, 150, 130], 20, 368, 368, 6);
+    eq(r.width, 296);                       // fit 290 + marge 6
+    eq(r.fontScale, 1);
+    eq(L.captionLineCount([120, 150, 130], 20, r.width - 6), 2);
+    r = L.captionBoxWidth(2, [900], 20, 1200, 1246, 6);
+    eq(r.width, 906);                       // één woord: geen halve breedte
+    eq(r.fontScale, 1);
+    // Grote captionSize: box groeit voorbij de normale 92% (softMax), tot hardMax.
+    r = L.captionBoxWidth(2, [400, 500, 450], 50, 700, 1000, 6);
+    eq(r.width, 956);                       // fit 950 + 6, breder dan softMax 700
+    ok(r.width > 700 && r.width <= 1000, 'moet tussen softMax en hardMax groeien');
+    eq(r.fontScale, 1);
+    // Zelfs hardMax niet genoeg: font krimpt (schaal) zodat het toch 2 regels blijft.
+    r = L.captionBoxWidth(2, [800, 900, 850], 50, 1000, 1200, 6);
+    ok(r.fontScale < 1, 'verwacht fontkrimp, kreeg ' + r.fontScale);
+    ok(Math.abs(r.width - 1200) < 0.5, 'moet op hardMax uitkomen, kreeg ' + r.width);
+    var s = r.fontScale;
+    eq(L.captionLineCount([800 * s, 900 * s, 850 * s], 50 * s, r.width - 6), 2);
+    // Ondergrens van de krimp: extreem lange cue blijft op hardMax (schaal 0,4).
+    r = L.captionBoxWidth(2, [2000, 2100, 2050], 100, 800, 1000, 6);
+    eq(r.fontScale, 0.4);
+    eq(r.width, 1000);
+    // Randgevallen.
+    r = L.captionBoxWidth(2, [], 0, 368, 400, 6);
+    eq(r.width, 368);                       // zonder tekst: natuurlijke breedte
+    eq(r.fontScale, 1);
+    r = L.captionBoxWidth(2, [100], 20, 0, 0, 6);
+    eq(r.width, 0);                         // geen ruimte -> 0
   });
 
   /* ------------------------------------------------------------------ *

@@ -424,24 +424,95 @@
   }
 
   /**
-   * Boxbreedte (px) voor de eigen captionweergave bij een maximaal aantal regels.
-   * lines: 1 of 2 (2 = de cue wordt zoveel mogelijk over twee regels verdeeld).
-   * totalPx: breedte van de hele cue op één regel.
-   * longestWordPx: breedte van het breedste woord (dat mag nooit afgebroken worden).
-   * maxWidthPx: beschikbare breedte (92% van de speler); padPx: kleine marge.
-   * Bij lines = 1 krijg je de volle breedte (alleen afbreken als het echt niet past).
+   * Aantal regels dat de browser (greedy, per woord) nodig heeft om
+   * `wordWidths` — met `spacePx` ertussen — in een box van `widthPx` te zetten.
+   * Simuleert de regelafbreking; zonder woorden 0.
    */
-  function captionBoxWidth(lines, totalPx, longestWordPx, maxWidthPx, padPx) {
-    var max = typeof maxWidthPx === 'number' && isFinite(maxWidthPx) && maxWidthPx > 0 ? maxWidthPx : 0;
-    if (!max) return 0;
-    var total = typeof totalPx === 'number' && isFinite(totalPx) && totalPx > 0 ? totalPx : 0;
-    if (!total) return max;
-    if (lines < 2) return max;
-    var longest = typeof longestWordPx === 'number' && isFinite(longestWordPx) && longestWordPx > 0 ? longestWordPx : 0;
+  function captionLineCount(wordWidths, spacePx, widthPx) {
+    var n = wordWidths && wordWidths.length ? wordWidths.length : 0;
+    if (!n) return 0;
+    var w = typeof widthPx === 'number' && isFinite(widthPx) ? widthPx : 0;
+    if (w <= 0) return n;
+    var sp = typeof spacePx === 'number' && isFinite(spacePx) && spacePx > 0 ? spacePx : 0;
+    var lines = 1;
+    var cur = wordWidths[0];
+    for (var i = 1; i < n; i++) {
+      if (cur + sp + wordWidths[i] <= w + 0.01) cur += sp + wordWidths[i];
+      else { lines++; cur = wordWidths[i]; }
+    }
+    return lines;
+  }
+
+  /**
+   * Kleinste boxbreedte (px) waarin `wordWidths` in maximaal `lines` regels
+   * past. Voor 2 regels: de best mogelijke woordgrens (`min` over alle grenzen
+   * van `max(links, rechts)`). Bij die breedte kiest de browser automatisch
+   * dezelfde grens: hij neemt zoveel woorden als passen en de rest is een
+   * suffix van de rechterkant, dus die past ook. `lines < 2` of één woord:
+   * de volledige breedte op één regel.
+   */
+  function captionFitWidth(wordWidths, spacePx, lines) {
+    var n = wordWidths && wordWidths.length ? wordWidths.length : 0;
+    if (!n) return 0;
+    var sp = typeof spacePx === 'number' && isFinite(spacePx) && spacePx > 0 ? spacePx : 0;
+    var total = 0;
+    for (var i = 0; i < n; i++) total += wordWidths[i] + (i ? sp : 0);
+    if (lines < 2 || n === 1) return total;
+    var best = total;
+    var left = 0;
+    for (var k = 1; k < n; k++) {
+      left += wordWidths[k - 1] + (k > 1 ? sp : 0);
+      var right = total - left - sp;
+      var w = left > right ? left : right;
+      if (w < best) best = w;
+    }
+    return best;
+  }
+
+  /**
+   * Boxbreedte (px) + eventuele fontkrimp voor de eigen captionweergave bij
+   * een maximaal aantal regels.
+   *
+   * lines     1 of 2 (2 = de cue wordt zoveel mogelijk over twee regels verdeeld).
+   * wordWidths  breedtes van de losse woorden (px, canvas `measureText`).
+   * spacePx   breedte van één spatie (px).
+   * softMaxPx normale bovengrens (92% van de speler).
+   * hardMaxPx absolute bovengrens (bijna de hele spelerbreedte). Past de cue
+   *           door een grote `captionSize` niet in `lines` regels binnen
+   *           softMaxPx, dan groeit de box tot maximaal hardMaxPx — anders zou
+   *           de tekst naar 3+ regels wikkelen (bug 2026-09-12 bij 175%).
+   * padPx     kleine marge.
+   *
+   * -> { width, fontScale }
+   *    width     boxbreedte (px); 0 = geen ruimte/geen beperking.
+   *    fontScale 1, of < 1 (ondergrens 0,4) als zelfs hardMaxPx niet genoeg
+   *              is: de caller verkleint de fontgrootte met deze factor; alle
+   *              breedtes schalen mee, dus de cue past dan alsnog in `lines`.
+   */
+  function captionBoxWidth(lines, wordWidths, spacePx, softMaxPx, hardMaxPx, padPx) {
+    var soft = typeof softMaxPx === 'number' && isFinite(softMaxPx) && softMaxPx > 0 ? softMaxPx : 0;
+    if (!soft) return { width: 0, fontScale: 1 };
+    var hard = typeof hardMaxPx === 'number' && isFinite(hardMaxPx) && hardMaxPx > 0 ? hardMaxPx : 0;
+    if (hard < soft) hard = soft;
     var pad = typeof padPx === 'number' && isFinite(padPx) && padPx > 0 ? padPx : 0;
-    var width = Math.ceil(total / 2) + pad;
-    if (longest + pad > width) width = longest + pad;
-    return Math.max(1, Math.min(max, width));
+    var widths = [];
+    if (wordWidths && wordWidths.length) {
+      for (var i = 0; i < wordWidths.length; i++) {
+        var v = Number(wordWidths[i]);
+        if (isFinite(v) && v > 0) widths.push(v);
+      }
+    }
+    if (!widths.length) return { width: soft, fontScale: 1 };
+    if (lines < 2) return { width: soft, fontScale: 1 };
+    var fit = captionFitWidth(widths, spacePx, 2);
+    var width = fit + pad;
+    var scale = 1;
+    if (width > hard) {
+      scale = Math.max(0.4, Math.max(1, hard - pad) / fit);
+      width = fit * scale + pad;
+      if (width > hard) width = hard;
+    }
+    return { width: Math.max(1, width), fontScale: scale };
   }
 
   /* ------------------------------------------------------------------ *
@@ -517,6 +588,8 @@
     rgbaFromHex: rgbaFromHex,
     captionSizeScale: captionSizeScale,
     captionFontPx: captionFontPx,
+    captionLineCount: captionLineCount,
+    captionFitWidth: captionFitWidth,
     captionBoxWidth: captionBoxWidth,
     describePlan: describePlan,
     toastText: toastText

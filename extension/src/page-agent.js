@@ -736,33 +736,65 @@
    * (`L.captionBoxWidth`). Alle woorden staan al (verborgen) in de DOM, dus de
    * regelafbreking wordt hier één keer bepaald en blijft daarna staan: woord 1
    * verspringt nooit en de tekst wikkelt in maximaal 1 of 2 regels.
+   *
+   * Bij een grote tekstgrootte wordt de box breder dan de normale 92% — tot
+   * bijna de volle spelerbreedte (`hardMax`) — zodat de cue in twee regels
+   * blijft passen i.p.v. naar 3+ regels te wikkelen (bug 2026-09-12: bij 175%
+   * gaf de oude halve-breedte-logica 3 tot 5 regels). Is zelfs hardMax niet
+   * genoeg (heel lange cue bij een extreme grootte), dan verkleint
+   * `L.captionBoxWidth` het font voor deze cue met `fontScale` (ondergrens
+   * 0,4); alle breedtes schalen mee, dus de 2-regelige layout blijft staan.
    */
   function applyCueWidth(ev) {
     var box = boost.box;
     if (!box || typeof L.captionBoxWidth !== 'function') return;
     var p = player();
     var hostW = (p && p.clientWidth) || box.offsetWidth || 400;
-    var maxW = Math.max(160, Math.round(hostW * 0.92));
+    box.style.fontSize = ''; // meten op de ingestelde grootte (niet op een eerdere krimp)
     var cs = window.getComputedStyle(box);
     var font = cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
-    var text = String((ev && (ev.raw || ev.text)) || '').replace(/\s*\n\s*/g, ' ').replace(/\s+/g, ' ').trim();
-    var total = textWidthPx(text, font);
-    var longest = 0;
-    var words = text.split(' ');
-    for (var i = 0; i < words.length; i++) {
-      var w = textWidthPx(words[i], font);
-      if (w > longest) longest = w;
+    var fontPx = parseFloat(cs.fontSize) || 0;
+    var text = String((ev && (ev.raw || ev.text)) || '').replace(/\s+/g, ' ').trim();
+    var words = text ? text.split(' ') : [];
+    var widths = [];
+    for (var i = 0; i < words.length; i++) widths.push(textWidthPx(words[i], font));
+    var spacePx = textWidthPx(' ', font);
+    if (!(spacePx > 0)) spacePx = fontPx * 0.28;
+    var padSide = Math.ceil(Math.max(0, fontPx * 0.32)); // .32em padding per kant (CSS)
+    var softMax = Math.max(160, Math.round(hostW * 0.92));
+    var hardMax = Math.max(softMax, Math.round(hostW - 2 * padSide - 8));
+    var res = L.captionBoxWidth(BOOST_LINES, widths, spacePx, softMax, hardMax, 4) || { width: 0, fontScale: 1 };
+    if (!res.width) {
+      box.style.maxWidth = '';
+      box.style.fontSize = '';
+      return;
     }
-    var px = L.captionBoxWidth(BOOST_LINES, total, longest, maxW, 4);
-    box.style.maxWidth = px > 0 ? Math.round(px) + 'px' : '';
+    box.style.maxWidth = Math.round(res.width) + 'px';
+    if (res.fontScale && res.fontScale < 1 && fontPx) {
+      box.style.fontSize = (Math.round(fontPx * res.fontScale * 10) / 10) + 'px';
+    }
+  }
+
+  /**
+   * Witruimte voor de weergave normaliseren: YouTube's eigen \n en dubbele
+   * spaties worden één spatie. Anders komt zo'n harde regelovergang bovenop
+   * onze eigen afbreking en wordt de cue alsnog 3+ regels i.p.v. de gekozen
+   * 1 of 2 (bug 2026-09-12). Dubbele spaties op chunk-grenzen worden gemerged.
+   */
+  function normChunkText(s, prevParts) {
+    var txt = String(s == null ? '' : s).replace(/\s+/g, ' ');
+    var prev = prevParts && prevParts.length ? prevParts[prevParts.length - 1].text : '';
+    if (txt.charAt(0) === ' ' && prev.charAt(prev.length - 1) === ' ') txt = txt.slice(1);
+    return txt;
   }
 
   /**
    * Bouw de caption voor één cue. Alle woorden staan er in één keer in (met
    * hun vaste plek), maar zijn verborgen tot hun tijd; per frame toggelen we
    * alleen de visibility. Daardoor verspringt de tekst nooit: woord 1 blijft
-   * links staan en de rest schuift niet op, en de regelafbreking (meestal 2
-   * regels) wordt één keer door de browser berekend en blijft staan.
+   * links staan en de rest schuift niet op, en de regelafbreking (max. 1 of 2
+   * regels, bepaald door `applyCueWidth`) wordt één keer door de browser
+   * berekend en blijft staan.
    */
   function buildCue(ev) {
     var box = boost.box;
@@ -770,21 +802,23 @@
     box.textContent = '';
     boost.cueSpans = [];
     var parts = [];
+    var prev = 0;
     if (ev.bounds && ev.bounds.length) {
-      var prev = 0;
       for (var i = 0; i < ev.bounds.length; i++) {
         var end = Math.min(ev.bounds[i].end, ev.raw.length);
-        var chunk = ev.raw.slice(prev, end);
+        var chunk = normChunkText(ev.raw.slice(prev, end), parts);
         prev = end;
         if (!chunk) continue;
         parts.push({ text: chunk, t: ev.bounds[i].t });
       }
       if (prev < ev.raw.length) {
         var tail = ev.bounds[ev.bounds.length - 1];
-        parts.push({ text: ev.raw.slice(prev), t: tail ? tail.t : ev.start });
+        var rest = normChunkText(ev.raw.slice(prev), parts);
+        if (rest) parts.push({ text: rest, t: tail ? tail.t : ev.start });
       }
     } else {
-      parts.push({ text: ev.raw, t: ev.start });
+      var all = normChunkText(ev.raw, null);
+      if (all) parts.push({ text: all, t: ev.start });
     }
     for (var s = 0; s < parts.length; s++) {
       var el = document.createElement('span');

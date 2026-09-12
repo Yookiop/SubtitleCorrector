@@ -45,7 +45,7 @@ Rechtermuisknop op het icoon → **Options** (of via de popup → Instellingen).
 | Bridge gebruiken als metadata onduidelijk is | aan | Zie §4 |
 | Eigen ondertitelweergave (Caption Boost) | aan | Tekent de ondertitel zelf woord voor woord en verbergt YouTube's eigen caption-venster zolang dat lukt |
 | Ondertitelgrootte (Caption Boost) | 100% | 50 - 250% van de standaardgrootte; stijl (kleur/achtergrond en de grove "Font size"-stand) volgt automatisch je YouTube-ondertitelinstellingen |
-| Ondertitelregels (Caption Boost) | 2 regels | Maximaal 1 of 2 regels per cue; 2 = verdeeld over twee uitgebalanceerde regels, korte cues blijven op één regel |
+| Ondertitelregels (Caption Boost) | 2 regels | Maximaal 1 of 2 regels per cue; 2 = verdeeld over twee uitgebalanceerde regels. Bij een grote *Ondertitelgrootte* groeit de box mee (tot bijna de volle spelerbreedte) en krimpt het font alleen in extreme gevallen, zodat het bij 2 regels blijft |
 | Caption-prioriteit | aan | Playlists soepel houden: langere wachttijd bij videostart, geen zware audio-analyse zonder hotkey, rustiger pollen op de achtergrond |
 | Audio-analyse ook automatisch in playlists | uit | Aanzetten = ook in playlists automatisch opnemen (kost meer CPU/GPU) |
 | Bridge-URL | `http://127.0.0.1:8791` | Alleen nodig als je een andere poort gebruikt |
@@ -118,7 +118,7 @@ Daarnaast tekent **Caption Boost** (default aan) de ondertitels zelf:
 * de timedtext-track die de speler zelf ophaalt (json3, met per-woord `tOffsetMs` bij auto-gegenereerde tracks) wordt passief uit de XHR gelezen — een eigen fetch kan niet, want YouTube's timedtext vereist een `pot`-token (zonder token: HTTP 200 met een lege body);
 * de tekst wordt woord voor woord gerenderd in een overlay, synchroon met `getCurrentTime()`;
 * de **stijl** komt uit YouTube's eigen captioninstellingen (`getSubtitlesUserSettings`: tekstkleur, achtergrondkleur + opacity, `fontSizeIncrement`), dus wit-op-zwart of welke stijl je daar ook hebt gekozen wordt automatisch nagebouwd;
-* de hele cue staat **vooraf vast**: alle woorden krijgen hun plek, het eerste woord blijft **links uitgelijnd** staan en de rest schuift niet op; de tekst wikkelt in **max. 1 of 2 regels** (*Ondertitelregels*, standaard 2 — verdeeld over twee uitgebalanceerde regels);
+* de hele cue staat **vooraf vast**: alle woorden krijgen hun plek, het eerste woord blijft **links uitgelijnd** staan en de rest schuift niet op; de tekst wikkelt in **max. 1 of 2 regels** (*Ondertitelregels*, standaard 2 — verdeeld over twee uitgebalanceerde regels). Zoom je met *Ondertitelgrootte* verder in, dan wordt de box automatisch breder (tot bijna de volle spelerbreedte); is zelfs dat niet genoeg, dan krimpt alleen die ene cue precies genoeg zodat het bij 2 regels blijft; de tekst wordt daarvoor opnieuw verdeeld (YouTube's eigen regelovergangen worden als spatie behandeld);
 * de **grootte** stel je zelf in met *Ondertitelgrootte* (50 - 250%; 100% ≈ YouTube's standaardgrootte);
 * zolang dat lukt blijft YouTube's eigen caption-venster verborgen; bij advertenties, een actieve vertaling, een ontbrekende track of een videowissel gaat alles direct terug naar YouTube's eigen weergave.
 
@@ -127,8 +127,9 @@ Meer automatiek nodig voor video's zonder metadata? Zet in de opties **"Audio-an
 ## 6. Testen
 
 ```text
-dubbelklik tools\test-lang-utils.html     # 32 tests van de pure logica, geen Node nodig
+dubbelklik tools\test-lang-utils.html     # 34 tests van de pure logica, geen Node nodig
 node tools\test-lang-utils.mjs            # zelfde tests (als Node geïnstalleerd is)
+dubbelklik tools\check-caption-lines.html # regelafbreking: oud vs nieuw bij een gekozen grootte/spelerformaat
 python tools\bridge-smoke-test.py         # bridge end-to-end
 powershell -ExecutionPolicy Bypass -File tools\make_tts_fixtures.ps1   # EN/NL spraak-WAV's maken
 ```
