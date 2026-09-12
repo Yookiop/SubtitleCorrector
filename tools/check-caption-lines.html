@@ -2,393 +2,443 @@
 <html lang="nl">
 <head>
   <meta charset="utf-8">
-  <title>Caption Boost - regelafbreking controleren</title>
+  <title>Caption Boost - blokken van 2 volle zinnen controleren</title>
   <style>
     :root { color-scheme: dark; }
     body { margin: 0; padding: 24px; font: 14px/1.5 "Segoe UI", system-ui, sans-serif; background: #14161c; color: #e8eef7; }
     h1 { font-size: 18px; margin: 0 0 6px; }
-    .sub { color: #93a1b5; margin-bottom: 18px; max-width: 980px; }
-    .controls { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+    h2 { font-size: 15px; margin: 22px 0 6px; color: #c9d5e6; }
+    .sub { color: #93a1b5; margin-bottom: 18px; max-width: 1100px; }
+    .controls { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; align-items: end; }
     label { display: block; font-size: 12px; color: #93a1b5; margin-bottom: 3px; }
-    input[type=number], textarea { background: #232936; border: 1px solid #333c4d; color: #e8eef7; border-radius: 6px; padding: 6px 8px; font: 13px Consolas, monospace; }
+    input[type=number], select { background: #232936; border: 1px solid #333c4d; color: #e8eef7; border-radius: 6px; padding: 6px 8px; font: 13px Consolas, monospace; }
     input[type=number] { width: 90px; }
-    textarea { width: 100%; max-width: 980px; min-height: 54px; }
-    table { border-collapse: collapse; width: 100%; max-width: 1100px; font-size: 13px; margin-top: 14px; }
+    button { background: #2b3446; border: 1px solid #3d4a60; color: #e8eef7; border-radius: 6px; padding: 7px 14px; font: 600 13px "Segoe UI", sans-serif; cursor: pointer; }
+    button:hover { background: #354157; }
+    table { border-collapse: collapse; width: 100%; max-width: 1300px; font-size: 13px; margin-top: 10px; }
     th, td { border-bottom: 1px solid #232936; padding: 7px 9px; text-align: left; vertical-align: top; }
     th { color: #93a1b5; font-weight: 600; }
     td.num { white-space: nowrap; }
+    tr.active { background: #1c2633; }
     .bad { color: #ff9a9a; font-weight: 700; }
     .good { color: #56e39f; font-weight: 700; }
     .warn { color: #ffd166; font-weight: 700; }
-    .verdict { font-size: 15px; font-weight: 600; padding: 10px 14px; border-radius: 8px; margin: 6px 0 16px; display: inline-block; }
+    .verdict { font-size: 15px; font-weight: 600; padding: 10px 14px; border-radius: 8px; margin: 6px 0 16px; display: inline-block; max-width: 1200px; }
     .pass { background: #12331f; color: #56e39f; border: 1px solid #1e5a37; }
     .fail { background: #3a1414; color: #ff9a9a; border: 1px solid #6a2020; }
-    .warn { background: #3a3214; color: #ffd166; border: 1px solid #6a5a20; }
-    .stageRow { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 16px; }
+    .warnbox { background: #3a3214; color: #ffd166; border: 1px solid #6a5a20; }
+    .stageRow { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 10px; }
     .stageCol { flex: 0 0 auto; }
     .stageCol h3 { font-size: 13px; margin: 0 0 6px; color: #93a1b5; }
     .stageWrap { overflow: auto; max-width: 100%; }
     /* Exact de stijlen van de eigen captionweergave (page-agent.js) */
-    .sc-player { position: relative; background: #000; overflow: hidden; }
+    .sc-player { position: relative; background: linear-gradient(135deg, #45566b, #8a9aab); overflow: hidden; }
     #sc-caption-overlay { position: absolute; left: 0; right: 0; bottom: 10.5%; text-align: center; pointer-events: none; z-index: 45; display: block;
       font-weight: 600; line-height: 1.4; font-family: "YouTube Sans", "Roboto", Arial, sans-serif; }
-    #sc-caption-overlay .sc-caption-bar { position: absolute; left: 10%; right: 10%; top: 0; bottom: 0; background: rgba(0,0,0,.75); }
+    #sc-caption-overlay .sc-caption-bar { position: absolute; left: 10%; right: 10%; top: 0; bottom: 0; background: rgba(8,8,8,.75); }
     #sc-caption-overlay .sc-caption-box { position: relative; display: inline-block; overflow: hidden; box-sizing: border-box; width: 80%; text-align: left; white-space: pre-wrap;
       padding: .06em .32em; text-shadow: 0 0 2px rgba(0,0,0,.8); color: rgba(255,255,255,1); }
     #sc-caption-overlay .sc-caption-scroll { position: relative; }
-    .note { color: #93a1b5; font-size: 12.5px; max-width: 980px; margin-top: 12px; }
+    .clock { display: flex; gap: 14px; align-items: center; margin: 6px 0 4px; flex-wrap: wrap; }
+    .clock input[type=range] { width: 420px; }
+    #clockText { font: 13px Consolas, monospace; color: #c9d5e6; }
+    .note { color: #93a1b5; font-size: 12.5px; max-width: 1100px; margin-top: 14px; }
     code { font-family: Consolas, monospace; background: #232936; padding: 1px 5px; border-radius: 4px; }
   </style>
 </head>
 <body>
-  <h1>Caption Boost - regelafbreking controleren</h1>
+  <h1>Caption Boost - blokken van 2 volle zinnen controleren</h1>
   <div class="sub">
-    Rechts staat de <b>app-weergave</b> (Caption Boost): de tekst vult de balk vanaf linksboven,
-    het <b>font krimpt nooit</b> en het venster toont max. 2 regels. Past een woord niet meer op de
-    2e regel, dan schuift de tekst één regel omhoog — druk op <b>▶ Speel af</b> om dat precies zo te
-    zien als in de app. Links staat de <b>oude</b> bug (halve breedte + fontkrimp) ter vergelijking.
-    Het aantal regels wordt empirisch geteld met <code>Range.getClientRects()</code>.
+    Simuleert de echte page-agent-logica: <code>L.buildCaptionBlocks()</code> groepeert de cue's
+    vooraf in blokken van 2 volle zinnen — de grens ligt exact op het 2e zinseinde, ook als dat
+    midden in een cue valt (de rest van die cue gaat naar het volgende blok) — en
+    <code>L.captionBlockAt()</code> kiest per tijdstip het actieve blok. Rechts staat de
+    <b>nieuwe weergave</b>: het hele blok komt in één keer in beeld (geen woord-voor-woord) in een
+    vast venster van 2 regels, linksboven uitgelijnd; het font krimpt nooit en wat niet past wordt
+    onderaan afgekapt. Links staat wat YouTube zelf per cue zou tonen — de oude klacht: regel 2
+    maar een kwart gevuld en de rest van de zin in een volgend blok. De regels worden empirisch
+    geteld met <code>Range.getClientRects()</code>; druk op <b>▶ Speel af</b> om beide naast elkaar
+    te zien lopen.
   </div>
 
   <div class="controls">
-    <div><label>Spelerbreedte (px)</label><input type="number" id="hostW" value="1280" min="200" step="10"></div>
-    <div><label>Spelerhoogte (px)</label><input type="number" id="hostH" value="720" min="150" step="10"></div>
+    <div><label>Scenario</label><select id="scenario">
+      <option value="podcast">Podcast: 5 zinnen op rij (cue's met meerdere zinnen)</option>
+      <option value="stilte">Stiltes: korte zin, stilte, korte zin</option>
+      <option value="punctuatie">Zonder punctuatie (noodrem op tekens)</option>
+      <option value="kort">Korte zinnen: losse blokken van 1 zin</option>
+    </select></div>
+    <div><label>Spelerbreedte (px)</label><input type="number" id="hostW" value="1280" min="320" step="10"></div>
+    <div><label>Spelerhoogte (px)</label><input type="number" id="hostH" value="720" min="180" step="10"></div>
     <div><label>Ondertitelgrootte (%)</label><input type="number" id="sizePct" value="175" min="50" max="250" step="5"></div>
     <div><label>YouTube fontSizeIncrement</label><input type="number" id="increment" value="0" min="-3" max="4" step="1"></div>
     <div><label>Ondertitelregels</label><input type="number" id="maxLines" value="2" min="1" max="2" step="1"></div>
-    <div><label>&nbsp;</label><button id="playBtn" type="button">▶ Speel af (nieuw)</button></div>
+    <div><label>Snelheid</label><select id="speed">
+      <option value="1">1x</option>
+      <option value="4" selected>4x</option>
+      <option value="10">10x</option>
+    </select></div>
+    <div><label>&nbsp;</label><button id="playBtn" type="button">▶ Speel af</button></div>
   </div>
 
-  <div><label>Eigen tekst (optioneel, komt bovenaan de lijst; gebruik \n om een YouTube-regelovergang na te bootsen)</label>
-    <textarea id="customText" placeholder="plak hier een lange cue..."></textarea>
+  <div class="clock">
+    <input type="range" id="scrub" min="0" max="10" step="0.02" value="0">
+    <span id="clockText">t = 0,0 s</span>
   </div>
 
   <div id="verdict" class="verdict">bezig...</div>
 
   <div class="stageRow">
     <div class="stageCol">
-      <h3>Oud (bug: halve breedte + fontkrimp)</h3>
-      <div class="stageWrap"><div class="sc-player" id="stageOld">
+      <h3>YouTube-cue per stuk (oud: losse zinsdelen)</h3>
+      <div class="stageWrap"><div class="sc-player" id="stageCue">
         <div id="sc-caption-overlay"><div class="sc-caption-bar"></div><div class="sc-caption-box"><div class="sc-caption-scroll"></div></div></div>
       </div></div>
     </div>
     <div class="stageCol">
-      <h3>App (nieuw): venster van 2 regels, schuift omhoog</h3>
+      <h3>Caption Boost: blok van 2 volle zinnen (nieuw)</h3>
       <div class="stageWrap"><div class="sc-player" id="stageNew">
         <div id="sc-caption-overlay"><div class="sc-caption-bar"></div><div class="sc-caption-box"><div class="sc-caption-scroll"></div></div></div>
       </div></div>
     </div>
   </div>
 
+  <h2>Blokken van 2 volle zinnen (nieuwe weergave)</h2>
   <table>
-    <thead><tr><th style="width:38%">cue</th><th>oud: regels (boxbreedte)</th><th>nieuw: totaal regels (zichtbaar)</th><th>nieuw: details</th></tr></thead>
-    <tbody id="rows"></tbody>
+    <thead><tr>
+      <th style="width:34px">#</th><th style="width:120px">tijd</th><th style="width:70px">zinnen</th>
+      <th>tekst</th><th style="width:110px">einde blok</th><th style="width:130px">regels (natuurlijk)</th><th style="width:120px">laatste regel gevuld</th>
+      <th style="width:110px">afgekapt</th>
+    </tr></thead>
+    <tbody id="rowsBlocks"></tbody>
+  </table>
+
+  <h2>YouTube-cues (oude weergave, ter vergelijking)</h2>
+  <table>
+    <thead><tr>
+      <th style="width:34px">#</th><th style="width:120px">tijd</th><th>tekst (cue zoals YouTube hem levert)</th>
+      <th style="width:130px">regels (natuurlijk)</th><th style="width:120px">laatste regel gevuld</th><th style="width:150px">zin af?</th>
+    </tr></thead>
+    <tbody id="rowsCues"></tbody>
   </table>
 
   <div class="note">
-    Nieuw/app: de tekst gebruikt de volle balkbreedte (box <code>box-sizing:border-box; width:80%</code>), begint
-    linksboven en het <b>font krimpt nooit</b>. De box is een venster van max. <code>Ondertitelregels</code> regels
-    (<code>overflow:hidden</code>); is de cue langer, dan schuift de tekst tijdens het uitspreken regel voor regel
-    omhoog — de bovenste regel verdwijnt, de nieuwe komt eronder, zodat er altijd twee gevulde regels staan
-    (zoals YouTube's auto-generated ondertitels). De <b>▶ Speel af</b>-knop doorloopt de cue woord voor woord
-    met exact dezelfde logica als <code>measureBoostWindow()</code>/<code>applyBoostWindow()</code> in
-    <code>page-agent.js</code>.
+    Zo werkt de validatie: de scenario's bouwen json3-cue's met per-woord <code>tOffsetMs</code>
+    (net als de ASR-track van de speler). Daarna draaien exact dezelfde functies als in de app:
+    <code>L.parseCaptionJson()</code> → <code>L.buildCaptionBlocks()</code> (2 zinnen per blok,
+    stilte &gt; 1,6 s sluit een blok af, tracks zonder punctuatie vallen terug op de tekenlimiet)
+    → <code>L.captionBlockAt(blocks, t, 0,45)</code> per frame. De boxhoogte komt uit
+    <code>L.captionBoxHeightEm(regels)</code> — dezelfde maat als de CSS in
+    <code>page-agent.js</code> (line-height 1,4 + padding 0,12em). De kolom
+    <b>laatste regel gevuld</b> laat precies het probleem uit de klacht zien: bij de cue-weergave
+    blijft die vaak steken (25%), bij de blokken loopt de tekst door tot een zinseinde.
   </div>
 
   <script src="../extension/src/shared/lang-utils.js"></script>
   <script>
     (function () {
       var L = window.SCLang;
-      var canvas = document.createElement('canvas');
-      var ctx = canvas.getContext('2d');
+      var OPTS = { sentences: 2, silenceGap: 1.6, maxChars: 150 };
+      var LINGER = 0.45;
+      var state = { events: [], blocks: [], t: 0, playing: false, raf: null, last: 0, duration: 1 };
+      var cueStage = document.getElementById('stageCue');
+      var newStage = document.getElementById('stageNew');
 
-      function textWidth(str, font) {
-        try {
-          if (ctx.font !== font) ctx.font = font;
-          return ctx.measureText(String(str)).width;
-        } catch (e) { return 0; }
+      /* --- Scenario's: cue's zoals de speler ze levert (json3) ---------- */
+
+      /** Eén cue als json3-event met per-woord tOffsetMs (~2,6 woorden/s). */
+      function makeEvent(tStartMs, text) {
+        var words = String(text).split(' ');
+        var step = 380;
+        var segs = [];
+        for (var i = 0; i < words.length; i++) {
+          segs.push({ utf8: (i ? ' ' : '') + words[i], tOffsetMs: i * step });
+        }
+        return { tStartMs: tStartMs, dDurationMs: words.length * step + 420, segs: segs };
       }
 
-      /* OUDE formule (de bug): halve breedte + marge, nooit breder dan 92%. */
-      function oldCaptionBoxWidth(lines, totalPx, longestWordPx, maxWidthPx, padPx) {
-        var max = typeof maxWidthPx === 'number' && isFinite(maxWidthPx) && maxWidthPx > 0 ? maxWidthPx : 0;
-        if (!max) return 0;
-        var total = typeof totalPx === 'number' && isFinite(totalPx) && totalPx > 0 ? totalPx : 0;
-        if (!total) return max;
-        if (lines < 2) return max;
-        var longest = typeof longestWordPx === 'number' && isFinite(longestWordPx) && longestWordPx > 0 ? longestWordPx : 0;
-        var pad = typeof padPx === 'number' && isFinite(padPx) && padPx > 0 ? padPx : 0;
-        var width = Math.ceil(total / 2) + pad;
-        if (longest + pad > width) width = longest + pad;
-        return Math.max(1, Math.min(max, width));
+      /** Cue's na elkaar plannen; `gap` = stilte (s) ná die cue. */
+      function schedule(cues) {
+        var events = [];
+        var tMs = 1000;
+        cues.forEach(function (c) {
+          events.push(makeEvent(tMs, c.text));
+          tMs += c.text.split(' ').length * 380 + 420 + Math.round((c.gap || 0) * 1000);
+        });
+        return events;
       }
 
-      /* Echt aantal zichtbare regels: unieke rect-tops met breedte > 0
-         (lege fragmenten — trailing newline/spaties — tellen niet mee). */
-      function measureLines(box) {
-        var r = document.createRange();
-        r.selectNodeContents(box);
-        var rects = r.getClientRects();
-        var tops = {};
-        var count = 0;
+      var SCENARIOS = {
+        podcast: {
+          label: 'Podcast',
+          events: schedule([
+            { text: ">> I'm doing really well, thank you. I'm slightly full. I had a", gap: 0.15 },
+            { text: "really big lunch, but that's fine. We already ate before coming here. So", gap: 0.15 },
+            { text: 'we should be good for the rest of the day.', gap: 0.5 }
+          ])
+        },
+        stilte: {
+          label: 'Stiltes',
+          events: schedule([
+            { text: 'Yes.', gap: 2.6 },
+            { text: 'Exactly.', gap: 2.6 },
+            { text: 'That makes sense.', gap: 0.5 }
+          ])
+        },
+        punctuatie: {
+          label: 'Zonder punctuatie',
+          events: schedule([
+            { text: 'we are walking to the bank now and then we will check the prices', gap: 0.2 },
+            { text: 'and maybe buy something nice for the road because it is a long walk back', gap: 0.2 },
+            { text: 'to the city centre and we still have plenty of time before the sun goes down', gap: 0.5 }
+          ])
+        },
+        kort: {
+          label: 'Korte zinnen',
+          events: schedule([
+            { text: 'Hi there.', gap: 0.8 },
+            { text: 'Good to see you.', gap: 0.5 }
+          ])
+        }
+      };
+
+      /* --- Meten (identiek aan de oude check-tool) ---------------------- */
+
+      function measureLineInfo(box, wrap) {
+        var cs = window.getComputedStyle(box);
+        var padL = parseFloat(cs.paddingLeft) || 0;
+        var padR = parseFloat(cs.paddingRight) || 0;
+        var inner = Math.max(1, box.clientWidth - padL - padR);
+        var range = document.createRange();
+        range.selectNodeContents(wrap);
+        var rects = range.getClientRects();
+        var lines = [];
         for (var i = 0; i < rects.length; i++) {
-          if (rects[i].width <= 0) continue;
-          var t = Math.round(rects[i].top);
-          if (!(t in tops)) { tops[t] = 1; count++; }
+          var r = rects[i];
+          if (r.width <= 0) continue;
+          var hit = null;
+          for (var l = 0; l < lines.length; l++) {
+            if (Math.abs(lines[l].top - r.top) <= 4) { hit = lines[l]; break; }
+          }
+          if (!hit) lines.push({ top: r.top, left: r.left, right: r.right });
+          else {
+            if (r.left < hit.left) hit.left = r.left;
+            if (r.right > hit.right) hit.right = r.right;
+          }
         }
-        return count;
+        lines.sort(function (a, b) { return a.top - b.top; });
+        var contentLeft = box.getBoundingClientRect().left + padL;
+        var last = lines.length ? lines[lines.length - 1] : null;
+        return {
+          lines: lines.length,
+          lastFill: last ? Math.max(0, Math.min(1, (last.right - contentLeft) / inner)) : 0
+        };
       }
 
-      /* Regeltops met tolerantie: fragmenten binnen LINE_TOL px horen bij
-         dezelfde visuele regel (afrondingsverschillen mogen geen spookregel
-         opleveren). Geeft ook per span de regelindex — precies zoals
-         measureBoostWindow() in page-agent.js. */
-      var LINE_TOL = 4;
-      function rangeLayout(wrap, spans) {
-        var tops = [];
-        function lineOf(y) {
-          for (var t = 0; t < tops.length; t++) {
-            if (Math.abs(tops[t] - y) <= LINE_TOL) return t;
-          }
-          tops.push(y);
-          tops.sort(function (a, b) { return a - b; });
-          for (var t2 = 0; t2 < tops.length; t2++) if (tops[t2] === y) return t2;
-          return tops.length - 1;
-        }
-        var spanLine = [];
-        for (var s = 0; s < spans.length; s++) {
-          var fr = spans[s].getClientRects();
-          var last = spanLine.length ? spanLine[spanLine.length - 1] : 0;
-          for (var f = 0; f < fr.length; f++) {
-            if (fr[f].width <= 0) continue;
-            last = lineOf(fr[f].top);
-          }
-          spanLine.push(last);
-        }
-        return { tops: tops, spanLine: spanLine };
-      }
-
-      function setupStage(stage, hostW, hostH, inc, pct) {
-        stage.style.width = hostW + 'px';
-        stage.style.height = hostH + 'px';
+      /** Tekst met natuurlijke hoogte meten en daarna het vaste venster terugzetten. */
+      function measureEntry(stage, text, lines) {
         var overlay = stage.querySelector('#sc-caption-overlay');
-        overlay.style.fontSize = L.captionFontPx(hostH, inc, pct) + 'px';
-      }
-
-      /**
-       * Bootst applyCueWidth() na (page-agent.js) voor de oude of de nieuwe
-       * logica. mode 'old' laat de \n staan (huidige weergave), 'new'
-       * normaliseert witruimte net als buildCue() gaat doen.
-       */
-      function renderCue(stage, lines, text, mode) {
         var box = stage.querySelector('.sc-caption-box');
         var wrap = stage.querySelector('.sc-caption-scroll');
-        box.style.maxWidth = '';
-        box.style.fontSize = '';
-        box.style.height = '';
-        wrap.style.transform = '';
-        var hostW = Math.round(stage.clientWidth * 0.8); // de balk is 80% van de speler (BOOST_BAR_WIDTH)
-        var cs = window.getComputedStyle(box);
-        var font = cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
-        var fontPx = parseFloat(cs.fontSize) || 0;
-        var flat = String(text).replace(/\s+/g, ' ').trim();
-        var width = 0;
-        var totalLines = 0;
-        if (mode === 'old') {
-          // Oude logica (strawman): halve breedte + marge, nooit breder dan 92%.
-          var words = flat ? flat.split(' ') : [];
-          var longest = 0;
-          for (var i = 0; i < words.length; i++) {
-            var w = textWidth(words[i], font);
-            if (w > longest) longest = w;
-          }
-          var totalPx = textWidth(flat, font);
-          var softMax = Math.max(160, Math.round(hostW * 0.92));
-          width = oldCaptionBoxWidth(lines, totalPx, longest, softMax, 4);
-          wrap.textContent = String(text);
-          box.style.maxWidth = width > 0 ? Math.round(width) + 'px' : '';
-          totalLines = measureLines(wrap);
-        } else {
-          // Nieuw: volle balkbreedte, geen fontkrimp; het venster toont max.
-          // `lines` regels en schuift omhoog zodra een nieuwe regel begint
-          // (identiek aan measureBoostWindow()/applyBoostWindow() in
-          // page-agent.js). Alle woorden staan al in de DOM (verborgen).
-          wrap.textContent = '';
-          var words = flat ? flat.split(' ') : [];
-          var spans = [];
-          for (var w = 0; w < words.length; w++) {
-            var sp2 = document.createElement('span');
-            sp2.textContent = words[w] + (w < words.length - 1 ? ' ' : '');
-            sp2.style.visibility = 'hidden';
-            wrap.appendChild(sp2);
-            spans.push(sp2);
-          }
-          var lay = rangeLayout(wrap, spans);
-          totalLines = lay.tops.length;
-          var natH = wrap.offsetHeight;
-          var padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
-          var shown = Math.max(1, Math.min(totalLines, lines));
-          box.style.height = Math.max(1, Math.round(natH * shown / totalLines + padY)) + 'px';
-          stage._scSpans = spans;
-          stage._scLayout = lay;
-          width = Math.round(box.getBoundingClientRect().width);
-        }
-        return { lines: measureLines(wrap), width: width, fontPx: fontPx, barW: hostW, total: totalLines };
+        overlay.style.display = 'block'; // meten kan niet als de overlay verborgen is
+        wrap.textContent = text || '';
+        box.style.height = 'auto';
+        var info = measureLineInfo(box, wrap);
+        box.style.height = L.captionBoxHeightEm(lines) + 'em';
+        info.clipped = info.lines > lines;
+        return info;
       }
 
-      /** Zelfde als applyBoostWindow() in page-agent.js: de regel van de
-          laatst zichtbare span komt onderaan het venster (max. `lines`). */
-      function applyWindowNew(stage, lines, count) {
+      /** Als in de app: zonder actief blok gaat de overlay helemaal uit. */
+      function renderStage(stage, text, lines) {
+        var overlay = stage.querySelector('#sc-caption-overlay');
+        var box = stage.querySelector('.sc-caption-box');
         var wrap = stage.querySelector('.sc-caption-scroll');
-        if (!wrap) return;
-        var lay = stage._scLayout;
-        if (!lay || count <= 0) { wrap.style.transform = ''; return; }
-        var n = Math.min(count, lay.spanLine.length);
-        var line = lay.spanLine[n - 1];
-        if (typeof line !== 'number' || line < 0) return;
-        var total = lay.tops.length;
-        var k = line - (lines - 1);
-        if (k < 0) k = 0;
-        var maxK = total > lines ? total - lines : 0;
-        if (k > maxK) k = maxK;
-        var off = lay.tops.length > k ? lay.tops[k] - lay.tops[0] : 0;
-        off = Math.max(0, Math.round(off || 0));
-        wrap.style.transform = off ? 'translateY(' + (-off) + 'px)' : '';
+        if (text == null) { overlay.style.display = 'none'; return; }
+        overlay.style.display = 'block';
+        if (wrap.textContent !== text) wrap.textContent = text;
+        box.style.height = L.captionBoxHeightEm(lines) + 'em';
       }
 
-      /** Speel de cue in de "nieuw"-stage woord voor woord af (zoals de app). */
-      function revealNew(stage, lines, count) {
-        var spans = stage._scSpans || [];
-        for (var i = 0; i < spans.length; i++) spans[i].style.visibility = i < count ? '' : 'hidden';
-        applyWindowNew(stage, lines, count);
+      /* --- Besturing ----------------------------------------------------- */
+
+      function curLines() {
+        return Number(document.getElementById('maxLines').value) === 1 ? 1 : 2;
       }
 
-      var playTimer = null;
-      function play() {
-        var btn = document.getElementById('playBtn');
-        var stage = document.getElementById('stageNew');
-        var lines = Number(document.getElementById('maxLines').value) === 1 ? 1 : 2;
-        var spans = stage._scSpans || [];
-        if (!spans.length) return;
-        if (playTimer) {
-          clearInterval(playTimer);
-          playTimer = null;
-          btn.textContent = '▶ Speel af (nieuw)';
-          revealNew(stage, lines, spans.length);
-          return;
-        }
-        btn.textContent = '■ Stop';
-        var count = 0;
-        revealNew(stage, lines, 0);
-        playTimer = setInterval(function () {
-          count++;
-          if (count > spans.length) {
-            clearInterval(playTimer);
-            playTimer = null;
-            btn.textContent = '▶ Speel af (nieuw)';
-            return;
-          }
-          revealNew(stage, lines, count);
-        }, 220);
+      function setupStages(hostW, hostH, pct, inc) {
+        [cueStage, newStage].forEach(function (stage) {
+          stage.style.width = hostW + 'px';
+          stage.style.height = hostH + 'px';
+          var overlay = stage.querySelector('#sc-caption-overlay');
+          overlay.style.fontSize = L.captionFontPx(hostH, inc, pct) + 'px';
+        });
       }
 
-      var SAMPLES = [
-        'this is a short cue',
-        'and then we are going to take a look at the next part of the map',
-        'so if you look closely at the screen right now you can see that the character is standing next to the bank in varrock',
-        'and that is exactly why we decided to change the way the whole system works because it simply was not good enough for what we are trying to do here today',
-        'okay so before we get started i quickly want to explain how the whole thing works because there are a few important details that you really need to know about if you want to follow along with everything that is happening on the screen right now',
-        'we are going to head over to the grand exchange\nand then we will take a look at the prices'
-      ];
+      function flatten(s) {
+        return String(s == null ? '' : s).replace(/\s+/g, '');
+      }
+
+      function pct(n) { return Math.round(n * 100) + '%'; }
 
       function esc(s) {
-        return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '\\n');
+        return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       }
 
-      function regels(n) { return n + (n === 1 ? ' regel' : ' regels'); }
+      function fillClass(fill) {
+        return fill >= 0.6 ? 'good' : (fill >= 0.25 ? 'warn' : 'bad');
+      }
+
+      function applyTime() {
+        var t = Math.max(0, Math.min(state.t, state.duration));
+        var ci = L.captionEventIndex(state.events, t);
+        var cue = ci >= 0 ? state.events[ci] : null;
+        var bi = L.captionBlockAt(state.blocks, t, LINGER);
+        var blk = bi >= 0 ? state.blocks[bi] : null;
+        var lines = curLines();
+        renderStage(cueStage, cue ? cue.text : '', lines);
+        renderStage(newStage, blk ? blk.text : '', lines);
+
+        var txt = 't = ' + (Math.round(t * 10) / 10).toFixed(1).replace('.', ',') + ' s';
+        if (blk) {
+          txt += ' — blok ' + (bi + 1) + '/' + state.blocks.length + ' (' + blk.sentences +
+            (blk.sentences === 1 ? ' zin' : ' zinnen') + ')';
+        } else {
+          txt += ' — geen actief blok (stilte of nog niets)';
+        }
+        document.getElementById('clockText').textContent = txt;
+        document.getElementById('scrub').value = t;
+
+        var rows = document.querySelectorAll('#rowsBlocks tr');
+        for (var i = 0; i < rows.length; i++) rows[i].classList.toggle('active', i === bi);
+      }
+
+      /** Waarom eindigde dit blok hier? (voor de validatietabel) */
+      function blockEndReason(blocks, i) {
+        var b = blocks[i];
+        var next = blocks[i + 1];
+        if (b.sentences >= OPTS.sentences) return 'zin 2';
+        if (next && (next.start - b.end) > OPTS.silenceGap) return 'stilte';
+        if (b.text.length >= OPTS.maxChars) return 'tekenlimiet';
+        if (!next) return 'einde video';
+        return 'onbekend';
+      }
+
+      function loop(now) {
+        if (!state.playing) return;
+        var dt = state.last ? (now - state.last) / 1000 : 0;
+        state.last = now;
+        var speed = Number(document.getElementById('speed').value) || 1;
+        state.t += dt * speed;
+        if (state.t > state.duration) state.t = 0;
+        applyTime();
+        state.raf = requestAnimationFrame(loop);
+      }
+
+      function togglePlay() {
+        var btn = document.getElementById('playBtn');
+        if (state.playing) {
+          state.playing = false;
+          if (state.raf) cancelAnimationFrame(state.raf);
+          state.raf = null;
+          btn.textContent = '▶ Speel af';
+          return;
+        }
+        state.playing = true;
+        state.last = 0;
+        btn.textContent = '■ Stop';
+        state.raf = requestAnimationFrame(loop);
+      }
 
       function run() {
-        if (playTimer) {
-          clearInterval(playTimer);
-          playTimer = null;
-          document.getElementById('playBtn').textContent = '▶ Speel af (nieuw)';
-        }
+        if (state.playing) togglePlay();
         var hostW = Math.max(200, Number(document.getElementById('hostW').value) || 1280);
-        var hostH = Math.max(150, Number(document.getElementById('hostH').value) || 720);
-        var pct = Math.max(50, Math.min(250, Number(document.getElementById('sizePct').value) || 100));
+        var hostH = Math.max(120, Number(document.getElementById('hostH').value) || 720);
+        var pctSize = Math.max(50, Math.min(250, Number(document.getElementById('sizePct').value) || 175));
         var inc = Number(document.getElementById('increment').value) || 0;
-        var lines = Number(document.getElementById('maxLines').value) === 1 ? 1 : 2;
-        var custom = document.getElementById('customText').value.trim();
+        var lines = curLines();
+        var key = document.getElementById('scenario').value;
 
-        setupStage(document.getElementById('stageOld'), hostW, hostH, inc, pct);
-        setupStage(document.getElementById('stageNew'), hostW, hostH, inc, pct);
+        setupStages(hostW, hostH, pctSize, inc);
+        state.events = L.parseCaptionJson({ events: SCENARIOS[key].events });
+        state.blocks = L.buildCaptionBlocks(state.events, OPTS);
+        state.t = 0;
+        var lastEnd = 0;
+        state.blocks.forEach(function (b) { if (b.end > lastEnd) lastEnd = b.end; });
+        state.duration = Math.max(1, lastEnd + 1.2);
+        document.getElementById('scrub').max = state.duration;
 
-        var samples = (custom ? [custom] : []).concat(SAMPLES);
-        var rows = document.getElementById('rows');
-        rows.innerHTML = '';
-        var oldBad = 0, newClipped = 0;
-        var oldRes0 = null, newRes0 = null;
-
-        samples.forEach(function (text, idx) {
-          var oldRes = renderCue(document.getElementById('stageOld'), lines, text, 'old');
-          var newRes = renderCue(document.getElementById('stageNew'), lines, text, 'new');
-          if (idx === 0) { oldRes0 = oldRes; newRes0 = newRes; }
-          if (oldRes.lines > lines) oldBad++;
-          if (newRes.total > lines) newClipped++;
-
+        var rowsB = document.getElementById('rowsBlocks');
+        rowsB.innerHTML = '';
+        var clipped = 0;
+        var reasons = {};
+        var midCut = 0;
+        state.blocks.forEach(function (b, i) {
+          var info = measureEntry(newStage, b.text, lines);
+          if (info.clipped) clipped++;
+          var reason = blockEndReason(state.blocks, i);
+          reasons[reason] = (reasons[reason] || 0) + 1;
+          var whole = /[.!?…]["')\]]*\s*$/.test(b.text);
+          if (!whole && i < state.blocks.length - 1) midCut++;
           var tr = document.createElement('tr');
-          var cell = '<td>' + esc(text.length > 96 ? text.slice(0, 93) + '...' : text) + '</td>' +
-            '<td class="num ' + (oldRes.lines > lines ? 'bad' : 'good') + '">' + oldRes.lines + ' regels (' + Math.round(oldRes.width) + 'px)</td>' +
-            '<td class="num ' + (newRes.total > lines ? 'warn' : 'good') + '">' + regels(newRes.total) + ' (' + Math.min(newRes.total, lines) + ' zichtbaar)</td>' +
-            '<td class="num">balk ' + newRes.barW + 'px, font ' + (Math.round(newRes.fontPx * 10) / 10) + 'px' +
-            (newRes.total > lines ? ', <span class="warn">venster schuift omhoog</span>' : '') + '</td>';
-          tr.innerHTML = cell;
-          rows.appendChild(tr);
+          tr.innerHTML =
+            '<td class="num">' + (i + 1) + '</td>' +
+            '<td class="num">' + b.start.toFixed(1).replace('.', ',') + ' - ' + b.end.toFixed(1).replace('.', ',') + ' s</td>' +
+            '<td class="num ' + (b.sentences === 2 ? 'good' : (i === state.blocks.length - 1 ? '' : 'warn')) + '">' + b.sentences + '</td>' +
+            '<td>' + esc(b.text.length > 150 ? b.text.slice(0, 147) + '...' : b.text) + '</td>' +
+            '<td class="num ' + (reason === 'zin 2' ? 'good' : 'warn') + '">' + reason + '</td>' +
+            '<td class="num">' + info.lines + ' (venster: ' + lines + ')</td>' +
+            '<td class="num ' + fillClass(info.lastFill) + '">' + pct(info.lastFill) + '</td>' +
+            '<td class="num ' + (info.clipped ? 'warn' : 'good') + '">' + (info.clipped ? 'ja' : 'nee') + '</td>';
+          rowsB.appendChild(tr);
         });
 
-        // De twee stages tonen de EERSTE cue (eigen tekst of het eerste
-        // voorbeeld); zonder eigen tekst de langste voorbeeldzin, zodat meteen
-        // zichtbaar is hoe het venster schuift. De nieuw-stage begint met
-        // alles zichtbaar (eindstand) en de ▶ Speel af-knop doorloopt de cue
-        // woord voor woord.
-        var demo = samples[0];
-        if (!custom) {
-          demo = samples.reduce(function (a, b) {
-            return (a.split(' ').length >= b.split(' ').length) ? a : b;
-          });
-        }
-        var stOld = document.getElementById('stageOld');
-        var stNew = document.getElementById('stageNew');
-        renderCue(stOld, lines, demo, 'old');
-        renderCue(stNew, lines, demo, 'new');
-        revealNew(stNew, lines, (stNew._scSpans || []).length);
-
-        var note = document.querySelectorAll('.stageCol td, .stageCol .cueNote');
-        for (var n = 0; n < note.length; n++) note[n].remove();
-        [['stageOld', oldRes0, 'old'], ['stageNew', newRes0, 'new']].forEach(function (row) {
-          var st = document.getElementById(row[0]);
-          var r = st.closest('.stageCol');
-          var p = document.createElement('div');
-          p.className = 'cueNote note';
-          var res = row[1];
-          p.textContent = row[2] === 'old'
-            ? regels(res.lines) + ' getekend'
-            : regels(res.total) + ' (venster: ' + Math.min(res.total, lines) + ' zichtbaar)';
-          r.appendChild(p);
+        var rowsC = document.getElementById('rowsCues');
+        rowsC.innerHTML = '';
+        var cueMid = 0;
+        state.events.forEach(function (ev, i) {
+          var info = measureEntry(cueStage, ev.text, lines);
+          var endsSentence = /[.!?…]["')\]]*\s*$/.test(ev.text);
+          if (!endsSentence) cueMid++;
+          var tr = document.createElement('tr');
+          tr.innerHTML =
+            '<td class="num">' + (i + 1) + '</td>' +
+            '<td class="num">' + ev.start.toFixed(1).replace('.', ',') + ' - ' + (ev.start + ev.dur).toFixed(1).replace('.', ',') + ' s</td>' +
+            '<td>' + esc(ev.text) + '</td>' +
+            '<td class="num">' + info.lines + ' (venster: ' + lines + ')</td>' +
+            '<td class="num ' + fillClass(info.lastFill) + '">' + pct(info.lastFill) + '</td>' +
+            '<td class="num ' + (endsSentence ? 'good' : 'bad') + '">' + (endsSentence ? 'ja' : 'nee (loopt door)') + '</td>';
+          rowsC.appendChild(tr);
         });
+
+        var withTwo = 0;
+        state.blocks.forEach(function (b) { if (b.sentences === 2) withTwo++; });
+        var preserved = flatten(state.events.map(function (e) { return e.text; }).join(' ')) ===
+          flatten(state.blocks.map(function (b) { return b.text; }).join(' '));
+        var reasonText = Object.keys(reasons).map(function (k) { return reasons[k] + 'x ' + k; }).join(', ');
 
         var v = document.getElementById('verdict');
-        v.textContent = 'venster ' + lines + ' regels @ ' + pct + '% op ' + hostW + 'x' + hostH + ' (increment ' + inc + '): ' +
-          'oud ' + oldBad + ' van ' + samples.length + ' cues te veel regels; nieuw ' + newClipped + ' van ' + samples.length +
-          ' cues langer dan het venster (die schuiven regel voor regel omhoog)';
-        v.className = 'verdict ' + (newClipped ? 'warn' : 'pass');
+        v.textContent = SCENARIOS[key].label + ' @ ' + lines + ' regels / ' + pctSize + '% op ' + hostW + 'x' + hostH +
+          ' - blokken: ' + state.blocks.length +
+          ' | met 2 volle zinnen: ' + withTwo +
+          ' | grens midden in een zin: ' + midCut +
+          ' | redenen: ' + reasonText +
+          ' | tekst volledig behouden: ' + (preserved ? 'ja' : 'NEE') +
+          ' | blokken afgekapt in het venster: ' + clipped + '/' + state.blocks.length +
+          ' | oude cue-weergave: ' + cueMid + '/' + state.events.length + ' cues lopen door naar de volgende cue';
+        v.className = 'verdict ' + (preserved && midCut === 0 && clipped === 0 ? 'pass' : (preserved ? 'warnbox' : 'fail'));
+        applyTime();
       }
 
-      ['hostW', 'hostH', 'sizePct', 'increment', 'maxLines'].forEach(function (id) {
+      ['hostW', 'hostH', 'sizePct', 'increment', 'maxLines', 'scenario'].forEach(function (id) {
         document.getElementById(id).addEventListener('input', run);
+        document.getElementById(id).addEventListener('change', run);
       });
-      document.getElementById('customText').addEventListener('input', run);
-      document.getElementById('playBtn').addEventListener('click', play);
+      document.getElementById('playBtn').addEventListener('click', togglePlay);
+      document.getElementById('scrub').addEventListener('input', function () {
+        state.t = Number(this.value) || 0;
+        applyTime();
+      });
       run();
     })();
   </script>

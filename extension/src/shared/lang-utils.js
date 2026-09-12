@@ -319,12 +319,13 @@
   }
 
   /* ------------------------------------------------------------------ *
-   * Caption Boost: json3 timedtext parsen en per woord uitlezen
+   * Caption Boost: json3 timedtext parsen en in blokken groeperen
    *
    * De YouTube-speler haalt de ondertitel-track op als json3; ASR-tracks
-   * hebben per segment `tOffsetMs` per woord. Daarmee kan de extensie zelf
-   * woord-voor-woord renderen en zo het achterlopende caption-venster van
-   * YouTube omzeilen. Alles hier is puur (geen DOM) en dus testbaar.
+   * hebben per segment `tOffsetMs` per woord. Met die data bouwt de
+   * extensie zelf blokken van 2 volle zinnen en omzeilt zo het
+   * achterlopende caption-venster van YouTube. Alles hier is puur (geen
+   * DOM) en dus testbaar.
    * ------------------------------------------------------------------ */
 
   /**
@@ -388,6 +389,189 @@
       else break;
     }
     return n;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Caption Boost: van losse cue's naar blokken van 2 volle zinnen
+   *
+   * De YouTube-track bestaat uit korte cue's (zinsdelen). Die los renderen
+   * geeft halfgevulde regels: de 2e regel vult maar een kwart en de rest
+   * komt pas in een volgend blok. Daarom groepeert de extensie de cue's
+   * vooraf in blokken van (standaard) 2 VOLLEDIGE zinnen: zo'n blok komt in
+   * één keer in beeld, van het eerste tot het laatste woord. De grens ligt
+   * exact op het 2e zinseinde — ook als dat midden in een cue valt; de rest
+   * van die cue gaat dan naar het volgende blok.
+   *
+   * Een stilte (standaard > 1,6 s tussen twee woorden) sluit een blok af,
+   * ook met maar één zin erin (korte zin tussen twee stiltes houdt dus zijn
+   * eigen blok). Tracks zonder punctuatie vallen terug op een tekenlimiet
+   * (`maxChars`, standaard 150).
+   * ------------------------------------------------------------------ */
+
+  var CAPTION_LINE_HEIGHT = 1.4; // line-height van de eigen overlay (CSS)
+  var CAPTION_PAD_EM = 0.06;     // verticale padding per kant (.06em in de CSS)
+
+  /** Hoogte van het vaste captionvenster in em (1 of 2 regels + padding). */
+  function captionBoxHeightEm(lines) {
+    var n = typeof lines === 'number' && isFinite(lines) ? Math.round(lines) : 2;
+    if (n < 1) n = 1;
+    if (n > 2) n = 2;
+    return Math.round((n * CAPTION_LINE_HEIGHT + 2 * CAPTION_PAD_EM) * 1000) / 1000;
+  }
+
+  /** Eindposities (index ná het leesteken) van alle zinseinden in `text`. */
+  function sentenceEndPositions(text) {
+    var re = /[.!?…]+["'”’)\]]*(?=\s|$)/g;
+    var out = [];
+    var m;
+    while ((m = re.exec(String(text == null ? '' : text)))) {
+      out.push(m.index + m[0].length);
+    }
+    return out;
+  }
+
+  /**
+   * Tekst opdelen in zinnen (leestekens blijven bij de zin). Een rest zonder
+   * eindpunt is ook een zin. "3.5" wordt niet gesplitst; "etc." wel
+   * (bewust simpel gehouden — het gaat om spraak, niet om proza).
+   */
+  function splitSentences(text) {
+    var s = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+    if (!s) return [];
+    var out = [];
+    var pos = sentenceEndPositions(s);
+    var start = 0;
+    for (var i = 0; i < pos.length; i++) {
+      var piece = s.slice(start, pos[i]).trim();
+      if (piece) out.push(piece);
+      start = pos[i];
+    }
+    var rest = s.slice(start).trim();
+    if (rest) out.push(rest);
+    return out;
+  }
+
+  /**
+   * Alle events omzetten naar losse stukjes (woorddelen) met een tijd, zodat
+   * een blokgrens ook midden in een cue kan liggen. Elk stukje krijgt een
+   * `end` (start van het volgende stukje, of het einde van het event).
+   */
+  function captionChunks(events) {
+    var chunks = [];
+    for (var i = 0; i < events.length; i++) {
+      var ev = events[i];
+      if (!ev) continue;
+      var next = events[i + 1] || null;
+      var dur = ev.dur > 0 ? ev.dur : (next ? Math.max(0.2, next.start - ev.start) : 1.5);
+      var evEnd = ev.start + dur;
+      var parts = [];
+      if (ev.bounds && ev.bounds.length) {
+        var prev = 0;
+        for (var b = 0; b < ev.bounds.length; b++) {
+          var end = Math.min(ev.bounds[b].end, ev.raw.length);
+          if (end > prev) {
+            parts.push({ raw: ev.raw.slice(prev, end), t: ev.bounds[b].t });
+            prev = end;
+          }
+        }
+        if (prev < ev.raw.length) {
+          parts.push({ raw: ev.raw.slice(prev), t: ev.bounds[ev.bounds.length - 1].t });
+        }
+      } else {
+        parts.push({ raw: ev.raw, t: ev.start });
+      }
+      for (var p = 0; p < parts.length; p++) {
+        var endT = p + 1 < parts.length ? parts[p + 1].t : evEnd;
+        parts[p].end = endT > parts[p].t ? endT : parts[p].t;
+      }
+      chunks = chunks.concat(parts);
+    }
+    return chunks;
+  }
+
+  /**
+   * Groepeer events in blokken van hele zinnen.
+   *
+   * opts.sentences   zinnen per blok (default 2)
+   * opts.silenceGap  stilte (s) die een blok afsluit (default 1.6)
+   * opts.maxChars    noodrem voor tracks zonder punctuatie (default 150)
+   *
+   * -> [{start, end, text, sentences}] op tijdsorde
+   */
+  function buildCaptionBlocks(events, opts) {
+    opts = opts || {};
+    var perBlock = typeof opts.sentences === 'number' && isFinite(opts.sentences) ? Math.max(1, Math.round(opts.sentences)) : 2;
+    var silenceGap = typeof opts.silenceGap === 'number' && isFinite(opts.silenceGap) ? Math.max(0, opts.silenceGap) : 1.6;
+    var maxChars = typeof opts.maxChars === 'number' && isFinite(opts.maxChars) ? Math.max(20, opts.maxChars) : 150;
+    var chunks = captionChunks(events || []);
+    var blocks = [];
+    var cur = null;
+
+    function close() {
+      if (!cur) return;
+      var text = String(cur.raw).replace(/\s+/g, ' ').trim();
+      if (text) {
+        blocks.push({ start: cur.start, end: cur.until, text: text, sentences: sentenceEndPositions(text).length });
+      }
+      cur = null;
+    }
+
+    for (var i = 0; i < chunks.length; i++) {
+      var ch = chunks[i];
+      if (!ch.raw || !ch.raw.trim()) continue;
+      if (cur && ch.t - cur.until > silenceGap) close(); // stilte: blok sluit
+      var rest = ch.raw;
+      var guard = 0;
+      while (rest && rest.trim() && guard++ < 12) {
+        if (!cur) cur = { start: ch.t, until: ch.end, raw: '' };
+        // Sommige tracks leveren segmenten zonder leidende spatie; vul die
+        // aan, anders plakken twee stukjes aan elkaar ("ccccdddd").
+        var piece = rest;
+        if (cur.raw && !/\s$/.test(cur.raw) && !/^\s/.test(piece)) piece = ' ' + piece;
+        var combined = cur.raw + piece;
+        var ends = sentenceEndPositions(combined);
+        if (ends.length >= perBlock) {
+          // Knippen op het 2e zinseinde; de rest van dit stukje gaat door
+          // naar het volgende blok (zelfde tijd).
+          cur.raw = combined.slice(0, ends[perBlock - 1]);
+          cur.until = ch.end;
+          close();
+          rest = combined.slice(ends[perBlock - 1]);
+          continue;
+        }
+        cur.raw = combined;
+        cur.until = ch.end;
+        if (cur.raw.replace(/\s+/g, ' ').trim().length >= maxChars) close();
+        rest = '';
+      }
+    }
+    close();
+    return blocks;
+  }
+
+  /** Index van het laatste blok dat op tijd `t` (s) begonnen is (-1 = nog niets). */
+  function captionBlockIndex(blocks, t) {
+    if (!blocks || !blocks.length) return -1;
+    var lo = 0;
+    var hi = blocks.length - 1;
+    var ans = -1;
+    while (lo <= hi) {
+      var mid = (lo + hi) >> 1;
+      if (blocks[mid].start <= t) { ans = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    return ans;
+  }
+
+  /**
+   * Actief blok op tijd `t`: het laatste blok dat begonnen is, zolang `t`
+   * binnen het blok + `linger` (default 0,45 s) valt. In een stilte geeft dat
+   * -1 -> de overlay gaat uit (zoals YouTube's eigen venster).
+   */
+  function captionBlockAt(blocks, t, linger) {
+    var idx = captionBlockIndex(blocks, t);
+    if (idx < 0) return -1;
+    var lg = typeof linger === 'number' && isFinite(linger) && linger >= 0 ? linger : 0.45;
+    return t <= blocks[idx].end + lg ? idx : -1;
   }
 
   /* ------------------------------------------------------------------ *
@@ -585,6 +769,11 @@
     parseCaptionJson: parseCaptionJson,
     captionEventIndex: captionEventIndex,
     captionRevealCount: captionRevealCount,
+    captionBoxHeightEm: captionBoxHeightEm,
+    splitSentences: splitSentences,
+    buildCaptionBlocks: buildCaptionBlocks,
+    captionBlockIndex: captionBlockIndex,
+    captionBlockAt: captionBlockAt,
     rgbaFromHex: rgbaFromHex,
     captionSizeScale: captionSizeScale,
     captionFontPx: captionFontPx,

@@ -111,7 +111,7 @@
       <h2>Prestaties (caption-prioriteit)</h2>
       <div class="field">
         <label>Eigen ondertitelweergave (Caption Boost)
-          <span class="hint">Tekent dezelfde ondertitel zelf woord voor woord, direct synchroon met de video. Verbergt YouTube's eigen caption-venster zolang dat lukt; lost het "loopt 1-2 seconden achter en plopt dan in blokken"-probleem op — ook als dat zonder deze extensie gebeurt.</span>
+          <span class="hint">Toont de ondertitel in blokken van 2 volle zinnen, in één keer (geen woord-voor-woord): het hele blok staat direct in beeld en blijft staan tot het volgende blok begint. Zo blijven zinnen bij elkaar en komt er geen halfgevuld blok meer waarin de rest van de zin pas later verschijnt. Verbergt YouTube's eigen caption-venster zolang dat lukt; lost het "loopt 1-2 seconden achter en plopt dan in blokken"-probleem op — ook als dat zonder deze extensie gebeurt.</span>
         </label>
         <input type="checkbox" id="captionBoost">
       </div>
@@ -123,7 +123,7 @@
       </div>
       <div class="field">
         <label>Ondertitelregels
-          <span class="hint">Maximaal aantal regels dat de eigen weergave (Caption Boost) tegelijk toont; "2 regels" is de standaard. De tekst vult elke regel tot het einde toe: past een woord niet meer op de 2e regel, dan schuift de tekst één regel omhoog (regel 1 verdwijnt uit beeld, het woord begint links op de nieuwe 2e regel) — zoals YouTube's eigen ondertitels. Het font krimpt nooit.</span>
+          <span class="hint">Hoogte van het vaste captionblok in regels; "2 regels" is de standaard. Het blok is altijd precies zo hoog — ook als er maar één zin in staat: de 1e regel staat linksboven, de 2e blijft dan leeg. Past een blok van 2 zinnen niet helemaal, dan wordt de tekst onderaan afgekapt. Het font krimpt nooit en er schuift niets op.</span>
         </label>
         <select id="captionLines">
           <option value="2">2 regels (standaard)</option>

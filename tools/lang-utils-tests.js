@@ -209,9 +209,114 @@
       { tStartMs: 1000, dDurationMs: 3000, segs: [{ utf8: 'eerste regel\n' }, { utf8: 'tweede regel', tOffsetMs: 1200 }] }
     ] });
     eq(events.length, 1);
-    ok(events[0].raw.indexOf('\n') !== -1, 'newline moet bewaard blijven voor de 2-regelige weergave');
+    ok(events[0].raw.indexOf('\n') !== -1, 'newline moet in raw bewaard blijven (blokken normaliseren witruimte zelf)');
     eq(L.captionRevealCount(events[0], 1.6), 1);
     eq(L.captionRevealCount(events[0], 2.3), 2);
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Blokken van 2 volle zinnen (Caption Boost, user-keuze 2026-09-12)
+   * ------------------------------------------------------------------ */
+
+  // Podcast-fragment uit de user-feedback: cue 1 bevat 2 zinnen + de start
+  // van een 3e, cue 2 maakt die 3e zin af en begint al aan zin 4.
+  var PODCAST_JSON = { events: [
+    { tStartMs: 2000, dDurationMs: 3400, segs: [
+      { utf8: '>> ' }, { utf8: "I'm", tOffsetMs: 200 }, { utf8: ' doing', tOffsetMs: 400 },
+      { utf8: ' really', tOffsetMs: 600 }, { utf8: ' well,', tOffsetMs: 800 },
+      { utf8: ' thank', tOffsetMs: 1000 }, { utf8: ' you.', tOffsetMs: 1200 },
+      { utf8: " I'm", tOffsetMs: 1600 }, { utf8: ' slightly', tOffsetMs: 1800 },
+      { utf8: ' full.', tOffsetMs: 2000 },
+      { utf8: ' I', tOffsetMs: 2600 }, { utf8: ' had', tOffsetMs: 2800 }, { utf8: ' a', tOffsetMs: 3000 }
+    ] },
+    { tStartMs: 5400, dDurationMs: 3000, segs: [
+      { utf8: ' really' }, { utf8: ' big', tOffsetMs: 300 }, { utf8: ' lunch,', tOffsetMs: 600 },
+      { utf8: ' but', tOffsetMs: 1000 }, { utf8: " that's", tOffsetMs: 1200 }, { utf8: ' fine.', tOffsetMs: 1400 },
+      { utf8: ' We', tOffsetMs: 1900 }, { utf8: ' already', tOffsetMs: 2100 }, { utf8: ' ate', tOffsetMs: 2300 },
+      { utf8: ' before', tOffsetMs: 2500 }, { utf8: ' coming', tOffsetMs: 2700 }, { utf8: ' here.', tOffsetMs: 2900 }
+    ] },
+    { tStartMs: 8800, dDurationMs: 2200, segs: [
+      { utf8: ' So' }, { utf8: ' we', tOffsetMs: 200 }, { utf8: ' should', tOffsetMs: 400 },
+      { utf8: ' be', tOffsetMs: 600 }, { utf8: ' good', tOffsetMs: 800 }, { utf8: ' for', tOffsetMs: 1000 },
+      { utf8: ' the', tOffsetMs: 1200 }, { utf8: ' rest', tOffsetMs: 1400 }, { utf8: ' of', tOffsetMs: 1600 },
+      { utf8: ' the', tOffsetMs: 1800 }, { utf8: ' day.', tOffsetMs: 2000 }
+    ] }
+  ] };
+
+  test('splitSentences knipt op zinseinden (niet op "3.5")', function (L) {
+    var s = L.splitSentences('One. Two! Three?');
+    eq(s.length, 3);
+    eq(s[1], 'Two!');
+    eq(L.splitSentences('De prijs is 3.5 euro vandaag.').length, 1);
+    eq(L.splitSentences('zonder punt').length, 1);
+    eq(L.splitSentences('   ').length, 0);
+  });
+
+  test('buildCaptionBlocks: 5 zinnen op rij -> blokken van 2, 2 en 1', function (L) {
+    var blocks = L.buildCaptionBlocks(L.parseCaptionJson(PODCAST_JSON));
+    eq(blocks.length, 3);
+    eq(blocks[0].text, ">> I'm doing really well, thank you. I'm slightly full.");
+    eq(blocks[0].sentences, 2);
+    eq(blocks[0].start, 2);
+    eq(blocks[0].end, 4.6);
+    eq(blocks[1].text, "I had a really big lunch, but that's fine. We already ate before coming here.");
+    eq(blocks[1].sentences, 2);
+    eq(blocks[1].start, 4.6);   // de rest van cue 1 gaat naar het volgende blok
+    eq(blocks[2].text, 'So we should be good for the rest of the day.');
+    eq(blocks[2].sentences, 1);
+  });
+
+  test('buildCaptionBlocks: een stilte sluit het blok af, een korte pauze niet', function (L) {
+    var stil = L.parseCaptionJson({ events: [
+      { tStartMs: 1000, dDurationMs: 900, segs: [{ utf8: 'Yes.' }] },
+      { tStartMs: 4000, dDurationMs: 900, segs: [{ utf8: 'Exactly.' }] }
+    ] });
+    var blokken = L.buildCaptionBlocks(stil);
+    eq(blokken.length, 2);
+    eq(blokken[0].text, 'Yes.');
+    eq(blokken[0].sentences, 1);
+    eq(blokken[1].text, 'Exactly.');
+
+    var kort = L.parseCaptionJson({ events: [
+      { tStartMs: 1000, dDurationMs: 900, segs: [{ utf8: 'Yes.' }] },
+      { tStartMs: 2500, dDurationMs: 900, segs: [{ utf8: 'No.' }] }
+    ] });
+    eq(L.buildCaptionBlocks(kort).length, 1);
+  });
+
+  test('buildCaptionBlocks: zonder punctuatie grijpt de tekenlimiet in', function (L) {
+    var events = L.parseCaptionJson({ events: [
+      { tStartMs: 0, dDurationMs: 600, segs: [{ utf8: 'aaaa bbbb cccc' }] },
+      { tStartMs: 700, dDurationMs: 600, segs: [{ utf8: 'dddd eeee ffff' }] },
+      { tStartMs: 1400, dDurationMs: 600, segs: [{ utf8: 'gggg hhhh iiii' }] }
+    ] });
+    var blocks = L.buildCaptionBlocks(events, { maxChars: 20, silenceGap: 5 });
+    eq(blocks.length, 2);
+    eq(blocks[0].text, 'aaaa bbbb cccc dddd eeee ffff');
+    eq(blocks[0].sentences, 0);
+    eq(blocks[1].text, 'gggg hhhh iiii');
+  });
+
+  test('captionBlockAt: actief blok, stilte en linger', function (L) {
+    var blocks = L.buildCaptionBlocks(L.parseCaptionJson({ events: [
+      { tStartMs: 1000, dDurationMs: 900, segs: [{ utf8: 'Yes.' }] },
+      { tStartMs: 4000, dDurationMs: 900, segs: [{ utf8: 'Exactly.' }] }
+    ] }));
+    eq(blocks[0].start, 1);
+    eq(blocks[0].end, 1.9);
+    eq(L.captionBlockAt(blocks, 0.5), -1);  // vóór het eerste blok
+    eq(L.captionBlockAt(blocks, 1.2), 0);   // midden in blok 1
+    eq(L.captionBlockAt(blocks, 2.2), 0);   // linger na het laatste woord
+    eq(L.captionBlockAt(blocks, 2.6), -1);  // stilte: overlay uit
+    eq(L.captionBlockAt(blocks, 4.2), 1);   // blok 2
+    eq(L.captionBlockAt(blocks, 9), -1);    // na alles
+  });
+
+  test('captionBoxHeightEm: vast venster van 1 of 2 regels', function (L) {
+    eq(L.captionBoxHeightEm(2), 2.92);       // 2 x 1,4 + 2 x 0,06
+    eq(L.captionBoxHeightEm(1), 1.52);
+    eq(L.captionBoxHeightEm(undefined), 2.92);
+    eq(L.captionBoxHeightEm(7), 2.92);       // geclamped op 2 regels
   });
 
   test('rgbaFromHex maakt rgba met opacity', function (L) {
