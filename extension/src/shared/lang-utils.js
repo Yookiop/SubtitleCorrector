@@ -414,11 +414,11 @@
 
   /**
    * Fontgrootte (px) voor de overlay: 3,2% van de spelerhoogte × YouTube's
-   * size-stand × het gebruikerspercentage (50-250).
+   * size-stand × het gebruikerspercentage (50-250; ontbreekt -> default 175).
    */
   function captionFontPx(playerHeight, increment, sizePercent) {
     var h = typeof playerHeight === 'number' && isFinite(playerHeight) && playerHeight > 0 ? playerHeight : 400;
-    var pct = typeof sizePercent === 'number' && isFinite(sizePercent) ? Math.max(50, Math.min(250, sizePercent)) : 100;
+    var pct = typeof sizePercent === 'number' && isFinite(sizePercent) ? Math.max(50, Math.min(250, sizePercent)) : 175;
     var px = h * 0.032 * captionSizeScale(increment) * (pct / 100);
     return Math.max(10, Math.min(160, px));
   }

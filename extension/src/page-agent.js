@@ -616,7 +616,7 @@
   /* Stijl en grootte van de overlay: kleuren/opacity komen uit YouTube's eigen
      captioninstellingen (player.getSubtitlesUserSettings), de grootte is een
      percentage bovenop YouTube's size-stand. */
-  var BOOST_SIZE_PCT = 100;
+  var BOOST_SIZE_PCT = 175;    // default ondertitelgrootte (%; optie 50-250)
   var BOOST_LINES = 2;         // max. regels in de eigen weergave (1 of 2; optie, default 2)
   var BOOST_BAR_WIDTH = 0.8;   // de ondertitelbalk is 80% van de spelerbreedte en staat
                                // gecentreerd: links en rechts blijft video zichtbaar
@@ -710,6 +710,9 @@
       box.className = 'sc-caption-box';
       el.appendChild(box);
     }
+    // Oudere versies zetten een inline max-width (fit-breedte) op de box; die
+    // moet weg, anders wikkelt de tekst niet meer over de volle balk.
+    if (box.style.maxWidth) box.style.maxWidth = '';
     var scrollEl = box.querySelector('.sc-caption-scroll');
     if (!scrollEl) {
       // Eerste keer (of een oudere versie zette de spans direct in de box):
@@ -781,6 +784,11 @@
    * i.p.v. dat het font krimpt (user-feedback 2026-09-12: "als een zin te
    * lang is, wordt gewoon een nieuwe regel eronder gezet en verder gegaan
    * woord voor woord" — zoals YouTube's auto-generated ondertitels).
+   *
+   * Regeltops worden met een tolerantie gegroepeerd, zodat
+   * afrondingsverschillen tussen spans nooit een spookregel opleveren; de
+   * vensterhoogte is evenredig (natH x zichtbare regels / totaal + padding),
+   * zodat het venster altijd precies min(total, BOOST_LINES) regels toont.
    */
   function measureBoostWindow() {
     var box = boost.box;
@@ -788,32 +796,39 @@
     if (!box || !wrap || !boost.cueSpans || !boost.cueSpans.length) return;
     wrap.style.transform = '';
     var wrapTop = wrap.getBoundingClientRect().top;
-    var lineTops = [];
+    var LINE_TOL = 4; // px: alles binnen deze marge is dezelfde visuele regel
+    var tops = [];    // unieke regeltops (px t.o.v. de wrapper), gesorteerd
     var spanLine = [];
     for (var i = 0; i < boost.cueSpans.length; i++) {
       var rects = boost.cueSpans[i].el.getClientRects();
       var last = spanLine.length ? spanLine[spanLine.length - 1] : 0;
       for (var r = 0; r < rects.length; r++) {
         if (rects[r].width <= 0) continue; // lege fragmenten (spaties) overslaan
-        var top = Math.round(rects[r].top - wrapTop);
-        var idx = lineTops.indexOf(top);
-        if (idx === -1) { lineTops.push(top); idx = lineTops.length - 1; }
+        var top = rects[r].top - wrapTop;
+        var idx = -1;
+        for (var t = 0; t < tops.length; t++) {
+          if (Math.abs(tops[t] - top) <= LINE_TOL) { idx = t; break; }
+        }
+        if (idx === -1) {
+          tops.push(top);
+          tops.sort(function (a, b) { return a - b; });
+          for (var ti = 0; ti < tops.length; ti++) { if (tops[ti] === top) { idx = ti; break; } }
+        }
         last = idx;
       }
       spanLine.push(last);
     }
-    var total = lineTops.length;
+    var total = tops.length;
     if (!total) return;
-    var offsets = [0];
-    for (var k = 1; k < total; k++) offsets.push(lineTops[k] - lineTops[0]);
-    var lineH = total > 1 ? offsets[1] : 0;
     var natH = wrap.offsetHeight;
-    var height = natH;
-    if (total > BOOST_LINES && lineH > 0) {
-      height = natH - (total - BOOST_LINES) * lineH; // precies de laatste N regels
-    }
-    box.style.height = Math.max(1, Math.round(height)) + 'px';
-    boost.lines = { total: total, offsets: offsets, spanLine: spanLine };
+    var padY = 0;
+    try {
+      var cs = getComputedStyle(box);
+      padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+    } catch (e) { /* ignore */ }
+    var shown = Math.min(total, BOOST_LINES);
+    box.style.height = Math.max(1, Math.round(natH * shown / total + padY)) + 'px';
+    boost.lines = { total: total, natH: natH, lineH: natH / total, tops: tops, spanLine: spanLine };
     boost.windowOffset = -1;
   }
 
@@ -821,7 +836,9 @@
    * Schuif het venster naar de regel van de laatste zichtbare span. Bij
    * BOOST_LINES = 2 begint dat zodra het eerste woord van regel 3 in beeld
    * komt: regel 1 verdwijnt dan boven uit het venster en de nieuwe regel
-   * komt eronder ("de 1e regel schuift 1 naar boven").
+   * komt eronder ("de 1e regel schuift 1 naar boven"), zodat er altijd twee
+   * gevulde regels zichtbaar zijn. De verschuiving komt uit de gemeten top
+   * van de doellijn en is geclamped op het einde van de tekst.
    */
   function applyBoostWindow(count) {
     var info = boost.lines;
@@ -831,7 +848,10 @@
     if (typeof line !== 'number' || line < 0) return;
     var k = line - (BOOST_LINES - 1);
     if (k < 0) k = 0;
-    var off = info.offsets[k] || 0;
+    var maxK = info.total > BOOST_LINES ? info.total - BOOST_LINES : 0;
+    if (k > maxK) k = maxK;
+    var off = info.tops && info.tops.length > k ? info.tops[k] - info.tops[0] : k * info.lineH;
+    off = Math.max(0, Math.round(off || 0));
     if (off === boost.windowOffset) return;
     boost.windowOffset = off;
     boost.scrollEl.style.transform = off ? 'translateY(' + (-off) + 'px)' : '';
@@ -867,6 +887,7 @@
     wrap.style.transform = '';
     box.style.height = '';
     box.style.fontSize = ''; // nooit krimpen: altijd de ingestelde grootte
+    box.style.maxWidth = ''; // oude fit-breedte (vorige versie) niet overnemen
     boost.cueSpans = [];
     boost.lines = null;
     boost.windowOffset = -1;

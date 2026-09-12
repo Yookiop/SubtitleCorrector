@@ -226,6 +226,7 @@
     eq(L.captionSizeScale(-2), 0.76);
     ok(Math.abs(L.captionFontPx(400, 0, 100) - 12.8) < 0.01, 'verwacht ~12.8px, kreeg ' + L.captionFontPx(400, 0, 100));
     ok(L.captionFontPx(400, 0, 200) > L.captionFontPx(400, 0, 100), '200% moet groter zijn dan 100%');
+    ok(Math.abs(L.captionFontPx(400, 0, undefined) - L.captionFontPx(400, 0, 175)) < 0.01, 'ontbrekende grootte = default 175%');
   });
 
   test('captionLineCount: greedy afbreking zoals de browser', function (L) {

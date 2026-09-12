@@ -26,7 +26,7 @@
     captionPriority: true,
     audioFallbackInPlaylists: false,
     captionBoost: true,
-    captionSize: 100,
+    captionSize: 175,
     captionLines: 2,
     audioSeconds: 5,
     minConfidence: 0.5,
@@ -229,7 +229,7 @@
   function pushPageOptions() {
     ask('setOptions', {
       captionBoost: !!settings.captionBoost,
-      captionSize: Number(settings.captionSize) || 100,
+      captionSize: Number(settings.captionSize) || 175,
       captionLines: Number(settings.captionLines) === 1 ? 1 : 2
     }).catch(function () {});
   }
