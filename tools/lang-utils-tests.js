@@ -571,15 +571,25 @@
     eq(L.captionFontStack('onbekend'), L.CAPTION_FONTS[0].stack);
   });
 
-  test('captionFontWeight: alleen 400/500/600/700, anders 500 (de standaard)', function (L) {
-    eq(L.CAPTION_WEIGHTS.length, 4);
-    eq(L.captionFontWeight(400), 400);   // normaal, zoals YouTube
-    eq(L.captionFontWeight(500), 500);   // de standaard van de extensie
-    eq(L.captionFontWeight(700), 700);
-    eq(L.captionFontWeight('400'), 400); // uit een <select> komt een string
-    eq(L.captionFontWeight(300), 500);
-    eq(L.captionFontWeight(undefined), 500);
-    eq(L.captionFontWeight('vet'), 500);
+  test('captionFontWeight: 300-700 in stappen van 25, anders 400 (de standaard)', function (L) {
+    eq(L.CAPTION_WEIGHTS.length, 17);            // 300 t/m 700, stap 25
+    eq(L.CAPTION_WEIGHTS[0], 300);
+    eq(L.CAPTION_WEIGHTS[L.CAPTION_WEIGHTS.length - 1], 700);
+    ok(L.CAPTION_WEIGHTS.indexOf(400) >= 0 && L.CAPTION_WEIGHTS.indexOf(325) >= 0, 'de fijne stappen moeten erin zitten');
+    eq(L.CAPTION_WEIGHT_DEFAULT, 400);           // de standaard = normaal, zoals YouTube
+    eq(L.captionFontWeight(400), 400);           // normaal, zoals YouTube
+    eq(L.captionFontWeight(300), 300);           // licht
+    eq(L.captionFontWeight(325), 325);           // fijne stap
+    eq(L.captionFontWeight(700), 700);           // vet
+    eq(L.captionFontWeight('400'), 400);         // uit een <select> komt een string
+    eq(L.captionFontWeight(462), 450);           // tussen twee stappen -> dichtstbijzijnde
+    eq(L.captionFontWeight(463), 475);
+    eq(L.captionFontWeight(299), 300);           // geclamped onder
+    eq(L.captionFontWeight(900), 700);           // geclamped boven
+    eq(L.captionFontWeight(undefined), 400);
+    eq(L.captionFontWeight(null), 400);
+    eq(L.captionFontWeight(''), 400);            // leeg = standaard (niet 0/300)
+    eq(L.captionFontWeight('vet'), 400);
   });
 
   test('captionBarWidthPct: breedte van het tekstvlak 30-100%, standaard 50', function (L) {
@@ -606,7 +616,7 @@
     eq(L.captionSizeScale(-2), 0.76);
     ok(Math.abs(L.captionFontPx(400, 0, 100) - 12.8) < 0.01, 'verwacht ~12.8px, kreeg ' + L.captionFontPx(400, 0, 100));
     ok(L.captionFontPx(400, 0, 200) > L.captionFontPx(400, 0, 100), '200% moet groter zijn dan 100%');
-    ok(Math.abs(L.captionFontPx(400, 0, undefined) - L.captionFontPx(400, 0, 125)) < 0.01, 'ontbrekende grootte = default 125%');
+    ok(Math.abs(L.captionFontPx(400, 0, undefined) - L.captionFontPx(400, 0, 130)) < 0.01, 'ontbrekende grootte = default 130%');
   });
 
   test('captionLineCount: greedy afbreking zoals de browser', function (L) {

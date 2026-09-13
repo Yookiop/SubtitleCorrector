@@ -636,13 +636,13 @@
   /* Stijl en grootte van de overlay: kleuren/opacity komen uit YouTube's eigen
      captioninstellingen (player.getSubtitlesUserSettings), de grootte is een
      percentage bovenop YouTube's size-stand. */
-  var BOOST_SIZE_PCT = 125;    // default ondertitelgrootte (%; optie 50-250)
+  var BOOST_SIZE_PCT = 130;    // default ondertitelgrootte (%; optie 50-250)
   var BOOST_LINES = 2;         // max. regels in de eigen weergave (1 of 2; optie, default 2)
   var BOOST_OFFSET_PCT = 9;    // y-offset in %-punten (optie; + = omlaag, - = omhoog)
   var BOOST_OFFSET_X_PCT = -9; // x-offset in %-punten (optie; + = naar rechts, - = naar
                                // links, 0 = gecentreerd)
   var BOOST_FONT = 'youtube';  // lettertype (optie; sleutel uit L.CAPTION_FONTS)
-  var BOOST_WEIGHT = 500;      // letterdikte (optie; 400/500/600/700)
+  var BOOST_WEIGHT = 400;      // letterdikte (optie; 300-700 in stappen van 25)
   var BOOST_BAR_WIDTH_PCT = 50; // breedte van het ondertitelvlak in % van de spelerbreedte
                                 // (optie 30-100; het vlak staat gecentreerd, dus links en
                                 // rechts blijft video zichtbaar)

@@ -27,13 +27,13 @@
     captionPriority: true,
     audioFallbackInPlaylists: false,
     captionBoost: true,
-    captionSize: 125,
+    captionSize: 130,
     captionLines: 2,
     captionOffset: 9,
     captionOffsetX: -9,
     captionWidth: 50,
     captionFont: 'youtube',
-    captionWeight: 500,
+    captionWeight: 400,
     captionWordByWord: true,
     audioSeconds: 5,
     minConfidence: 0.5,
@@ -246,13 +246,13 @@
   function pushPageOptions() {
     ask('setOptions', {
       captionBoost: !!settings.captionBoost,
-      captionSize: numOr(settings.captionSize, 125),
+      captionSize: numOr(settings.captionSize, 130),
       captionLines: Number(settings.captionLines) === 1 ? 1 : 2,
       captionOffset: numOr(settings.captionOffset, 9),
       captionOffsetX: numOr(settings.captionOffsetX, -9),
       captionWidth: numOr(settings.captionWidth, 50),
       captionFont: settings.captionFont || 'youtube',
-      captionWeight: numOr(settings.captionWeight, 500),
+      captionWeight: numOr(settings.captionWeight, 400),
       captionWordByWord: !!settings.captionWordByWord
     }).catch(function () {});
   }

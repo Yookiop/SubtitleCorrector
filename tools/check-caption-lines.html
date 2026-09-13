@@ -90,17 +90,14 @@
     </select></div>
     <div><label>Spelerbreedte (px)</label><input type="number" id="hostW" value="1280" min="320" step="10"></div>
     <div><label>Spelerhoogte (px)</label><input type="number" id="hostH" value="720" min="180" step="10"></div>
-    <div><label>Ondertitelgrootte (%)</label><input type="number" id="sizePct" value="125" min="50" max="250" step="5"></div>
+    <div><label>Ondertitelgrootte (%)</label><input type="number" id="sizePct" value="130" min="50" max="250" step="5"></div>
     <div><label>YouTube fontSizeIncrement</label><input type="number" id="increment" value="0" min="-3" max="4" step="1"></div>
     <div><label>Ondertitelregels</label><input type="number" id="maxLines" value="2" min="1" max="2" step="1"></div>
     <div><label>Y-offset (%; + = omlaag)</label><input type="number" id="yOffset" value="9" min="-40" max="30" step="1"></div>
     <div><label>X-offset (%; + = rechts)</label><input type="number" id="xOffset" value="-9" min="-40" max="40" step="1"></div>
     <div><label>Lettertype</label><select id="fontKey"></select></div>
     <div><label>Letterdikte</label><select id="fontWeight">
-      <option value="400">400 normaal</option>
-      <option value="500" selected>500 medium (standaard)</option>
-      <option value="600">600 halfvet</option>
-      <option value="700">700 vet</option>
+      <option value="400">400 (normaal, standaard)</option>
     </select></div>
     <div><label>Breedte tekstvlak (%)</label><input type="number" id="barWidth" value="50" min="30" max="100" step="1"></div>
     <div><label>Snelheid</label><select id="speed">
@@ -710,12 +707,13 @@
         if (state.playing) togglePlay();
         var hostW = Math.max(200, Number(document.getElementById('hostW').value) || 1280);
         var hostH = Math.max(120, Number(document.getElementById('hostH').value) || 720);
-        var pctSize = Math.max(50, Math.min(250, numField('sizePct', 125)));
+        var pctSize = Math.max(50, Math.min(250, numField('sizePct', 130)));
         var inc = numField('increment', 0);
         var yOff = numField('yOffset', 9);
         var xOff = numField('xOffset', -9);
         var font = document.getElementById('fontKey').value || 'youtube';
-        var weight = Number(document.getElementById('fontWeight').value) || 600;
+        // Dikte via dezelfde pure helper als de app (300-700, stap 25, anders 400).
+        var weight = L.captionFontWeight(document.getElementById('fontWeight').value);
         var barW = numField('barWidth', 50);
         var lines = curLines();
         var key = document.getElementById('scenario').value;
@@ -832,6 +830,21 @@
           o.textContent = f.label;
           sel.appendChild(o);
         });
+      })();
+
+      /* Idem voor de letterdiktes (300-700 in stappen van 25). */
+      (function fillWeightOptions() {
+        var sel = document.getElementById('fontWeight');
+        if (!sel || !L || !L.CAPTION_WEIGHTS) return;
+        sel.textContent = '';
+        L.CAPTION_WEIGHTS.forEach(function (w) {
+          var o = document.createElement('option');
+          o.value = String(w);
+          o.textContent = String(w) + (w === L.CAPTION_WEIGHT_DEFAULT ? ' (normaal, standaard)' : '');
+          sel.appendChild(o);
+        });
+        // Standaard (400) geselecteerd laten staan, niet de eerste optie (300).
+        sel.value = String(L.CAPTION_WEIGHT_DEFAULT);
       })();
 
       ['hostW', 'hostH', 'sizePct', 'increment', 'maxLines', 'yOffset', 'xOffset', 'fontKey', 'fontWeight', 'barWidth', 'scenario'].forEach(function (id) {

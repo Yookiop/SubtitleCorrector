@@ -17,13 +17,13 @@ const DEFAULTS = {
   captionPriority: true,
   audioFallbackInPlaylists: false,
   captionBoost: true,
-  captionSize: 125,
+  captionSize: 130,
   captionLines: 2,
   captionOffset: 9,
   captionOffsetX: -9,
   captionWidth: 50,
   captionFont: 'youtube',
-  captionWeight: 500,
+  captionWeight: 400,
   captionWordByWord: true,
   bridgeUrl: 'http://127.0.0.1:8791',
   audioSeconds: 5,
@@ -80,7 +80,7 @@ function collect() {
   if (!out.bridgeUrl) out.bridgeUrl = DEFAULTS.bridgeUrl;
   out.audioSeconds = Math.max(2, Math.min(10, Math.round(out.audioSeconds || 5)));
   out.minConfidence = Math.max(0, Math.min(1, isFinite(out.minConfidence) ? out.minConfidence : 0.5));
-  out.captionSize = Math.max(50, Math.min(250, Math.round(out.captionSize || 125)));
+  out.captionSize = Math.max(50, Math.min(250, Math.round(out.captionSize || 130)));
   out.captionLines = Number(out.captionLines) === 1 ? 1 : 2;
   out.captionOffset = Math.max(-40, Math.min(30, Math.round(isFinite(out.captionOffset) ? out.captionOffset : 9)));
   out.captionOffsetX = Math.max(-40, Math.min(40, Math.round(isFinite(out.captionOffsetX) ? out.captionOffsetX : -9)));
@@ -110,6 +110,28 @@ function fillFontOptions() {
   });
 }
 fillFontOptions();
+
+/*
+ * De letterdiktelijst komt uit dezelfde bron (lang-utils.js): 300 t/m 700 in
+ * stappen van 25. Zonder dat script blijft de fallback uit de HTML staan
+ * (alleen 400). De standaard krijgt een label, de rest is het getal zelf.
+ */
+function fillWeightOptions() {
+  const sel = $('captionWeight');
+  const weights = (L && L.CAPTION_WEIGHTS) || [];
+  if (!sel || weights.length < 2) return;
+  sel.textContent = '';
+  weights.forEach((w) => {
+    const o = document.createElement('option');
+    o.value = String(w);
+    o.textContent = String(w) + (w === L.CAPTION_WEIGHT_DEFAULT ? ' (normaal, standaard)' : '');
+    sel.appendChild(o);
+  });
+  // Zonder opgeslagen waarde (of als fill() niet langskomt) moet de standaard
+  // geselecteerd staan en niet de eerste optie van de lijst (300).
+  sel.value = String(L.CAPTION_WEIGHT_DEFAULT);
+}
+fillWeightOptions();
 
 chrome.storage.sync.get(DEFAULTS, (items) => { fill(items); syncHotkeyPlaceholder(); });
 

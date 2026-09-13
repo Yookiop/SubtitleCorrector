@@ -835,11 +835,11 @@
 
   /**
    * Fontgrootte (px) voor de overlay: 3,2% van de spelerhoogte × YouTube's
-   * size-stand × het gebruikerspercentage (50-250; ontbreekt -> default 125).
+   * size-stand × het gebruikerspercentage (50-250; ontbreekt -> default 130).
    */
   function captionFontPx(playerHeight, increment, sizePercent) {
     var h = typeof playerHeight === 'number' && isFinite(playerHeight) && playerHeight > 0 ? playerHeight : 400;
-    var pct = typeof sizePercent === 'number' && isFinite(sizePercent) ? Math.max(50, Math.min(250, sizePercent)) : 125;
+    var pct = typeof sizePercent === 'number' && isFinite(sizePercent) ? Math.max(50, Math.min(250, sizePercent)) : 130;
     var px = h * 0.032 * captionSizeScale(increment) * (pct / 100);
     return Math.max(10, Math.min(160, px));
   }
@@ -933,16 +933,39 @@
     return CAPTION_FONTS[0].stack;
   }
 
-  /** Toegestane letterdiktes (400 = normaal, 600 = de oude standaard, 700 = vet). */
-  var CAPTION_WEIGHTS = [400, 500, 600, 700];
+  /**
+   * Toegestane letterdiktes: **300 t/m 700 in stappen van 25** (300, 325, 350,
+   * … 700). De fijnere stappen zijn er voor de variable fonts (Roboto op
+   * YouTube): 375 is nét iets lichter dan 400, en dat leest op sommige video's
+   * prettiger dan de grove sprong van 100 die er eerst was (400/500/600/700).
+   * De standaard is 400 — de dikte waarin YouTube zijn eigen ondertitels tekent.
+   *
+   * De lijst is de enige bron: de optiepagina en het testgereedschap bouwen hun
+   * keuzelijst hieruit (`L.CAPTION_WEIGHTS`).
+   */
+  var CAPTION_WEIGHT_MIN = 300;
+  var CAPTION_WEIGHT_MAX = 700;
+  var CAPTION_WEIGHT_STEP = 25;
+  var CAPTION_WEIGHT_DEFAULT = 400;
+  var CAPTION_WEIGHTS = (function () {
+    var out = [];
+    for (var w = CAPTION_WEIGHT_MIN; w <= CAPTION_WEIGHT_MAX; w += CAPTION_WEIGHT_STEP) out.push(w);
+    return out;
+  })();
 
-  /** Geldige letterdikte; onbekend wordt 500 (de standaard van de extensie). */
+  /**
+   * Geldige letterdikte. Een getal binnen 300-700 wordt op de dichtstbijzijnde
+   * stap van 25 afgerond (450 blijft 450, 462 wordt 450, 299 wordt 300); een
+   * lege, onbruikbare of ontbrekende waarde wordt de standaard **400**. Let op:
+   * 0 is géén geldige dikte, dus een leeg veld wordt niet met `||` behandeld.
+   */
   function captionFontWeight(value) {
-    var v = Number(value);
-    for (var i = 0; i < CAPTION_WEIGHTS.length; i++) {
-      if (CAPTION_WEIGHTS[i] === v) return v;
-    }
-    return 500;
+    var raw = String(value == null ? '' : value).trim();
+    if (!raw) return CAPTION_WEIGHT_DEFAULT;
+    var v = Number(raw);
+    if (!isFinite(v)) return CAPTION_WEIGHT_DEFAULT;
+    var clamped = Math.max(CAPTION_WEIGHT_MIN, Math.min(CAPTION_WEIGHT_MAX, v));
+    return Math.round(clamped / CAPTION_WEIGHT_STEP) * CAPTION_WEIGHT_STEP;
   }
 
   /**
@@ -1172,6 +1195,10 @@
     captionFontKey: captionFontKey,
     captionFontStack: captionFontStack,
     CAPTION_WEIGHTS: CAPTION_WEIGHTS,
+    CAPTION_WEIGHT_MIN: CAPTION_WEIGHT_MIN,
+    CAPTION_WEIGHT_MAX: CAPTION_WEIGHT_MAX,
+    CAPTION_WEIGHT_STEP: CAPTION_WEIGHT_STEP,
+    CAPTION_WEIGHT_DEFAULT: CAPTION_WEIGHT_DEFAULT,
     captionFontWeight: captionFontWeight,
     captionBarWidthPct: captionBarWidthPct,
     captionLineCount: captionLineCount,
