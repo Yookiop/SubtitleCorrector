@@ -17,10 +17,10 @@ const DEFAULTS = {
   captionPriority: true,
   audioFallbackInPlaylists: false,
   captionBoost: true,
-  captionSize: 175,
+  captionSize: 125,
   captionLines: 2,
-  captionOffset: 7,
-  captionOffsetX: 0,
+  captionOffset: 9,
+  captionOffsetX: -9,
   captionWidth: 50,
   captionFont: 'youtube',
   captionWeight: 500,
@@ -80,10 +80,10 @@ function collect() {
   if (!out.bridgeUrl) out.bridgeUrl = DEFAULTS.bridgeUrl;
   out.audioSeconds = Math.max(2, Math.min(10, Math.round(out.audioSeconds || 5)));
   out.minConfidence = Math.max(0, Math.min(1, isFinite(out.minConfidence) ? out.minConfidence : 0.5));
-  out.captionSize = Math.max(50, Math.min(250, Math.round(out.captionSize || 175)));
+  out.captionSize = Math.max(50, Math.min(250, Math.round(out.captionSize || 125)));
   out.captionLines = Number(out.captionLines) === 1 ? 1 : 2;
-  out.captionOffset = Math.max(-40, Math.min(30, Math.round(isFinite(out.captionOffset) ? out.captionOffset : 0)));
-  out.captionOffsetX = Math.max(-40, Math.min(40, Math.round(isFinite(out.captionOffsetX) ? out.captionOffsetX : 0)));
+  out.captionOffset = Math.max(-40, Math.min(30, Math.round(isFinite(out.captionOffset) ? out.captionOffset : 9)));
+  out.captionOffsetX = Math.max(-40, Math.min(40, Math.round(isFinite(out.captionOffsetX) ? out.captionOffsetX : -9)));
   if (L) {
     out.captionWidth = L.captionBarWidthPct(out.captionWidth);
     out.captionFont = L.captionFontKey(out.captionFont);

@@ -636,10 +636,10 @@
   /* Stijl en grootte van de overlay: kleuren/opacity komen uit YouTube's eigen
      captioninstellingen (player.getSubtitlesUserSettings), de grootte is een
      percentage bovenop YouTube's size-stand. */
-  var BOOST_SIZE_PCT = 175;    // default ondertitelgrootte (%; optie 50-250)
+  var BOOST_SIZE_PCT = 125;    // default ondertitelgrootte (%; optie 50-250)
   var BOOST_LINES = 2;         // max. regels in de eigen weergave (1 of 2; optie, default 2)
-  var BOOST_OFFSET_PCT = 7;    // y-offset in %-punten (optie; + = omlaag, - = omhoog)
-  var BOOST_OFFSET_X_PCT = 0;  // x-offset in %-punten (optie; + = naar rechts, - = naar
+  var BOOST_OFFSET_PCT = 9;    // y-offset in %-punten (optie; + = omlaag, - = omhoog)
+  var BOOST_OFFSET_X_PCT = -9; // x-offset in %-punten (optie; + = naar rechts, - = naar
                                // links, 0 = gecentreerd)
   var BOOST_FONT = 'youtube';  // lettertype (optie; sleutel uit L.CAPTION_FONTS)
   var BOOST_WEIGHT = 500;      // letterdikte (optie; 400/500/600/700)
@@ -1320,14 +1320,14 @@
     }
     if (opts && Object.prototype.hasOwnProperty.call(opts, 'captionOffset')) {
       var off = Number(opts.captionOffset);
-      BOOST_OFFSET_PCT = isFinite(off) ? Math.max(-40, Math.min(30, off)) : 7;
+      BOOST_OFFSET_PCT = isFinite(off) ? Math.max(-40, Math.min(30, off)) : 9;
       applyBoostStyle(); // zet de nieuwe bottom op de overlay (en herrekent niets onnodig)
       dbg('captionOffset', BOOST_OFFSET_PCT);
     }
     if (opts && Object.prototype.hasOwnProperty.call(opts, 'captionOffsetX')) {
       var offX = Number(opts.captionOffsetX);
       var maxX = L.CAPTION_OFFSET_X_MAX;
-      BOOST_OFFSET_X_PCT = isFinite(offX) ? Math.max(-maxX, Math.min(maxX, offX)) : 0;
+      BOOST_OFFSET_X_PCT = isFinite(offX) ? Math.max(-maxX, Math.min(maxX, offX)) : -9;
       applyBoostStyle(); // zet de nieuwe left/right op de overlay
       dbg('captionOffsetX', BOOST_OFFSET_X_PCT);
     }

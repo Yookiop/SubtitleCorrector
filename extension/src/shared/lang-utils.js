@@ -428,13 +428,23 @@
                                      // buiten de regelbox: daardoor raken de blokjes van
                                      // twee regels elkaar en blijft er geen streep video
                                      // tussen de regels staan.
-  var CAPTION_WORD_PAD_X_EM = 0.15;  // horizontale padding van een woordblokje (links en
+  var CAPTION_WORD_PAD_X_EM = 0.28;  // horizontale padding van een woordblokje (links en
                                      // rechts). Die wordt met een even grote NEGATIEVE
                                      // marge gecompenseerd, zodat de woordafstand en de
                                      // regelafbreking exact gelijk blijven: het zwart loopt
                                      // alleen door over de spaties (die zitten in het
-                                     // blokje) en steekt .15em voorbij de eerste/laatste
-                                     // letter van elke regel uit.
+                                     // blokje) en steekt aan het begin en het eind van
+                                     // elke regel een paar millimeter voorbij de tekst uit
+                                     // (0,28em ≈ 3 mm bij de standaardgrootte; op 40px is
+                                     // dat 11 px ≈ 3 mm). De tekst zelf blijft dus staan
+                                     // waar hij stond.
+                                     //
+                                     // LET OP: deze waarde moet ≤ CAPTION_PAD_X_EM zijn.
+                                     // De woordblokjes schuiven met hun padding tot in de
+                                     // padding van de box; `overflow:hidden` klipt op de
+                                     // rand van die paddingbox, dus is het blokje breder,
+                                     // dan wordt het zwart aan de zijkant hard afgeknipt.
+                                     // Dat is een geteste invariant (lang-utils-tests.js).
 
   /**
    * Hoogte van het vaste captionvenster in em (1 of 2 regels + padding).
@@ -825,11 +835,11 @@
 
   /**
    * Fontgrootte (px) voor de overlay: 3,2% van de spelerhoogte × YouTube's
-   * size-stand × het gebruikerspercentage (50-250; ontbreekt -> default 175).
+   * size-stand × het gebruikerspercentage (50-250; ontbreekt -> default 125).
    */
   function captionFontPx(playerHeight, increment, sizePercent) {
     var h = typeof playerHeight === 'number' && isFinite(playerHeight) && playerHeight > 0 ? playerHeight : 400;
-    var pct = typeof sizePercent === 'number' && isFinite(sizePercent) ? Math.max(50, Math.min(250, sizePercent)) : 175;
+    var pct = typeof sizePercent === 'number' && isFinite(sizePercent) ? Math.max(50, Math.min(250, sizePercent)) : 125;
     var px = h * 0.032 * captionSizeScale(increment) * (pct / 100);
     return Math.max(10, Math.min(160, px));
   }

@@ -336,7 +336,7 @@
     eq(L.captionBoxHeightEm(7), 2.89);       // geclamped op 2 regels
   });
 
-  test('captionBoxHeightEm: bovenpadding klein genoeg om een regel weg te schuiven', function (L) {
+  test('padding-invarianten: weggeschoven regel weg + woordblokjes binnen de box', function (L) {
     // Een regel die het venster uit schuift, moet volledig buiten het venster
     // vallen. Dat kan alleen als de bovenpadding kleiner is dan de halve
     // regelafstand (het lege deel van de regelbox onder de baseline).
@@ -347,6 +347,18 @@
     // De vensterhoogte is exact regels x line-height + padding.
     ok(Math.abs(L.captionBoxHeightEm(2) - (2 * L.CAPTION_LINE_HEIGHT + L.CAPTION_PAD_TOP_EM + L.CAPTION_PAD_BOTTOM_EM)) < 1e-9,
       'vensterhoogte moet de CSS-padding exact volgen');
+    // Elk woord is een inline-element met eigen padding; die wordt door een even
+    // grote negatieve marge gecompenseerd, dus de tekstpositie verandert niet.
+    // Het zwart steekt daardoor aan het begin en het eind van elke regel voorbij
+    // de tekst uit — dat mag niet voorbij de padding van de box komen, want daar
+    // klipt `overflow:hidden` het zwart hard af.
+    ok(L.CAPTION_WORD_PAD_X_EM > 0, 'horizontale woordpadding moet groter dan 0 zijn');
+    ok(L.CAPTION_WORD_PAD_X_EM <= L.CAPTION_PAD_X_EM,
+      'woordpadding (' + L.CAPTION_WORD_PAD_X_EM + 'em) mag niet groter zijn dan de boxpadding (' + L.CAPTION_PAD_X_EM + 'em)');
+    // Verticaal valt de padding buiten de regelbox: de blokjes van twee regels
+    // moeten elkaar dus raken, anders blijft er een streep video tussen staan.
+    ok(2 * L.CAPTION_WORD_PAD_Y_EM + 1.13 > L.CAPTION_LINE_HEIGHT,
+      'verticale woordpadding (' + L.CAPTION_WORD_PAD_Y_EM + 'em) moet de regelafstand overbruggen');
   });
 
   /* ------------------------------------------------------------------ *
@@ -594,7 +606,7 @@
     eq(L.captionSizeScale(-2), 0.76);
     ok(Math.abs(L.captionFontPx(400, 0, 100) - 12.8) < 0.01, 'verwacht ~12.8px, kreeg ' + L.captionFontPx(400, 0, 100));
     ok(L.captionFontPx(400, 0, 200) > L.captionFontPx(400, 0, 100), '200% moet groter zijn dan 100%');
-    ok(Math.abs(L.captionFontPx(400, 0, undefined) - L.captionFontPx(400, 0, 175)) < 0.01, 'ontbrekende grootte = default 175%');
+    ok(Math.abs(L.captionFontPx(400, 0, undefined) - L.captionFontPx(400, 0, 125)) < 0.01, 'ontbrekende grootte = default 125%');
   });
 
   test('captionLineCount: greedy afbreking zoals de browser', function (L) {

@@ -123,7 +123,7 @@
       </div>
       <div class="field">
         <label>Ondertitelgrootte (%)
-          <span class="hint">50 - 250%. <b>100% = precies zo groot als YouTube's eigen ondertitels</b>; 175% is de standaard van de extensie. Handige stappen: 75, 100, 125, 150, 175, 200. De rest van de stijl (tekstkleur, achtergrondkleur en -opacity én de grove "Font size"-stand) wordt automatisch uit je YouTube-ondertitelinstellingen overgenomen.</span>
+          <span class="hint">50 - 250%. <b>100% = precies zo groot als YouTube's eigen ondertitels</b>; 125% is de standaard van de extensie. Handige stappen: 75, 100, 125, 150, 175, 200. De rest van de stijl (tekstkleur, achtergrondkleur en -opacity én de grove "Font size"-stand) wordt automatisch uit je YouTube-ondertitelinstellingen overgenomen.</span>
         </label>
         <input type="number" id="captionSize" min="50" max="250" step="5" list="captionSizePresets">
         <datalist id="captionSizePresets">
@@ -171,13 +171,13 @@
       </div>
       <div class="field">
         <label>Y-offset (%)
-          <span class="hint">Verticale positie van de ondertiteling, in procentpunten van de spelerhoogte. <b>Positief = omlaag</b> (dichter bij de onderrand), <b>negatief = omhoog</b>. De standaard is 7 (iets hoger dan het uitgangspunt); 0 = geen verschuiving. Bereik −40 tot +30. De ondertiteling blijft altijd binnen de speler.</span>
+          <span class="hint">Verticale positie van de ondertiteling, in procentpunten van de spelerhoogte. <b>Positief = omlaag</b> (dichter bij de onderrand), <b>negatief = omhoog</b>. De standaard is 9 (dus iets hoger dan het uitgangspunt); 0 = geen verschuiving. Bereik −40 tot +30. De ondertiteling blijft altijd binnen de speler.</span>
         </label>
         <input type="number" id="captionOffset" min="-40" max="30" step="1">
       </div>
       <div class="field">
         <label>X-offset (%)
-          <span class="hint">Horizontale positie van de ondertiteling, in procentpunten van de spelerbreedte. <b>Positief = naar rechts</b>, <b>negatief = naar links</b>; 0 (standaard) = gecentreerd. Bereik −40 tot +40. Met een positieve waarde schuift de ondertiteling dus naar rechts en blijft er links meer video zichtbaar (en andersom).</span>
+          <span class="hint">Horizontale positie van de ondertiteling, in procentpunten van de spelerbreedte. <b>Positief = naar rechts</b>, <b>negatief = naar links</b>. De standaard is −9 (dus iets links van het midden); 0 = gecentreerd. Bereik −40 tot +40. Met een positieve waarde schuift de ondertiteling dus naar rechts en blijft er links meer video zichtbaar (en andersom).</span>
         </label>
         <input type="number" id="captionOffsetX" min="-40" max="40" step="1">
       </div>
