@@ -34,10 +34,18 @@
     /* Exact de stijlen van de eigen captionweergave (page-agent.js) */
     .sc-player { position: relative; background: linear-gradient(135deg, #45566b, #8a9aab); overflow: hidden; }
     #sc-caption-overlay { position: absolute; left: 0; right: 0; bottom: 3.5%; text-align: center; pointer-events: none; z-index: 45; display: block;
-      font-weight: 500; line-height: 1.4; font-family: "YouTube Sans", "Roboto", Arial, sans-serif; }
-    #sc-caption-overlay .sc-caption-bar { position: absolute; left: 15%; right: 15%; top: 0; bottom: 0; background: rgba(8,8,8,.75); }
+      font-weight: 500; line-height: 1.4; font-family: Roboto, Arial, sans-serif; --sc-caption-bg: rgba(8,8,8,.75); }
+    /* De achtergrond zit op elk woord apart (net als YouTube's auto-ondertitels),
+       niet op één balk achter het hele venster. De verticale padding valt buiten de
+       regelbox (blokjes van twee regels raken elkaar); de horizontale padding wordt
+       door een even grote negatieve marge gecompenseerd, zodat de woordafstand en de
+       regelafbreking gelijk blijven. De maten komen uit dezelfde constanten als de
+       app (L.CAPTION_WORD_PAD_*_EM, gezet in setupStages). */
+    #sc-caption-overlay .sc-caption-word { background: var(--sc-caption-bg);
+      padding: var(--sc-word-pad-y, .16em) var(--sc-word-pad-x, .15em);
+      margin: 0 calc(-1 * var(--sc-word-pad-x, .15em)); }
     /* display:block + margin:0 auto (geen inline-block): anders wordt de
-       onderrand van de box de baseline en steekt de balk ~15px verder door
+       onderrand van de box de baseline en steken de blokjes ~15px verder door
        onder de tekst dan erboven. Padding komt uit L.CAPTION_PAD_*_EM. */
     #sc-caption-overlay .sc-caption-box { position: relative; display: block; margin: 0 auto; overflow: hidden; clip-path: inset(0); box-sizing: border-box; width: 70%; text-align: left; white-space: pre-wrap;
       padding: .06em .32em .03em; text-shadow: 0 0 2px rgba(0,0,0,.8); color: rgba(255,255,255,1); }
@@ -86,6 +94,7 @@
     <div><label>YouTube fontSizeIncrement</label><input type="number" id="increment" value="0" min="-3" max="4" step="1"></div>
     <div><label>Ondertitelregels</label><input type="number" id="maxLines" value="2" min="1" max="2" step="1"></div>
     <div><label>Y-offset (%; + = omlaag)</label><input type="number" id="yOffset" value="7" min="-40" max="30" step="1"></div>
+    <div><label>X-offset (%; + = rechts)</label><input type="number" id="xOffset" value="0" min="-40" max="40" step="1"></div>
     <div><label>Lettertype</label><select id="fontKey"></select></div>
     <div><label>Letterdikte</label><select id="fontWeight">
       <option value="400">400 normaal</option>
@@ -93,7 +102,7 @@
       <option value="600">600 halfvet</option>
       <option value="700">700 vet</option>
     </select></div>
-    <div><label>Balkbreedte (%)</label><input type="number" id="barWidth" value="70" min="30" max="100" step="1"></div>
+    <div><label>Breedte tekstvlak (%)</label><input type="number" id="barWidth" value="50" min="30" max="100" step="1"></div>
     <div><label>Snelheid</label><select id="speed">
       <option value="1">1x</option>
       <option value="4" selected>4x</option>
@@ -113,19 +122,19 @@
     <div class="stageCol">
       <h3>YouTube-cue per stuk (oud: losse zinsdelen)</h3>
       <div class="stageWrap"><div class="sc-player" id="stageCue">
-        <div id="sc-caption-overlay"><div class="sc-caption-bar"></div><div class="sc-caption-box"><div class="sc-caption-scroll"></div></div></div>
+        <div id="sc-caption-overlay"><div class="sc-caption-box"><div class="sc-caption-scroll"></div></div></div>
       </div></div>
     </div>
     <div class="stageCol">
       <h3>Caption Boost: blok van 2 volle zinnen (nieuw)</h3>
       <div class="stageWrap"><div class="sc-player" id="stageNew">
-        <div id="sc-caption-overlay"><div class="sc-caption-bar"></div><div class="sc-caption-box"><div class="sc-caption-scroll"></div></div></div>
+        <div id="sc-caption-overlay"><div class="sc-caption-box"><div class="sc-caption-scroll"></div></div></div>
       </div></div>
     </div>
     <div class="stageCol">
       <h3>Word-for-Word: rollend venster van 2 regels (optie)</h3>
       <div class="stageWrap"><div class="sc-player" id="stageWord">
-        <div id="sc-caption-overlay"><div class="sc-caption-bar"></div><div class="sc-caption-box"><div class="sc-caption-scroll"></div></div></div>
+        <div id="sc-caption-overlay"><div class="sc-caption-box"><div class="sc-caption-scroll"></div></div></div>
       </div></div>
     </div>
   </div>
@@ -295,11 +304,65 @@
 
       /* --- Meten (identiek aan de oude check-tool) ---------------------- */
 
+      /**
+       * Eén woord als eigen element met zijn eigen zwarte achtergrond, net als
+       * appendBoostWord() in de app: de spatie NA het woord zit erin, zodat er
+       * tussen twee woorden nooit een kier in het zwart valt.
+       */
+      function appendWordEl(wrap, text) {
+        var el = document.createElement('span');
+        el.className = 'sc-caption-word';
+        el.textContent = text + ' ';
+        wrap.appendChild(el);
+        return el;
+      }
+
+      /** Nieuwe regel beginnen (sprekerswissel), net als startCaptionLine() in de app. */
+      function startLine(wrap) {
+        var last = wrap.lastChild;
+        if (!last) return;
+        if (last.nodeType === 1 && last.tagName === 'BR') return;
+        var node = last.firstChild;
+        if (node && node.nodeType === 3) node.data = node.data.replace(/\s+$/, '');
+        else if (last.nodeType === 3) last.data = last.data.replace(/\s+$/, '');
+        wrap.appendChild(document.createElement('br'));
+      }
+
+      /**
+       * Een hele tekst in woordblokjes zetten, net als buildBoostText() in de
+       * app: elke sprekerswissel (">>") begint op een nieuwe regel. De laatste
+       * tekst wordt onthouden (`_scText`), zodat een frame dat niets verandert
+       * de DOM niet opnieuw hoeft op te bouwen.
+       */
+      function setTextDom(wrap, text) {
+        var display = L.captionSpeakerBreaks(text || '');
+        if (wrap._scText === display) return;
+        wrap._scText = display;
+        wrap.textContent = '';
+        var lines = display.split('\n');
+        for (var i = 0; i < lines.length; i++) {
+          if (i) startLine(wrap);
+          var words = lines[i].split(' ');
+          for (var j = 0; j < words.length; j++) {
+            if (words[j]) appendWordEl(wrap, words[j]);
+          }
+        }
+      }
+
       function measureLineInfo(box, wrap) {
         var cs = window.getComputedStyle(box);
         var padL = parseFloat(cs.paddingLeft) || 0;
         var padR = parseFloat(cs.paddingRight) || 0;
         var inner = Math.max(1, box.clientWidth - padL - padR);
+        // Elk woord is een inline-element met verticale padding (.sc-caption-word);
+        // de Range geeft daardoor per woord TWEE rechthoeken: het element (met de
+        // padding eromheen) en de tekst erin. Die horen bij dezelfde regel. De
+        // tolerantie om rechthoeken bij één regel te tellen is daarom een fractie
+        // van de regelafstand (0,4 × line-height) in plaats van een vast aantal
+        // pixels: ruim groter dan de padding (0,16em ≈ 0,11 × line-height) en ruim
+        // kleiner dan de afstand tussen twee regels (1 × line-height).
+        var lh = parseFloat(window.getComputedStyle(wrap).lineHeight) || 0;
+        var tol = lh > 0 ? lh * 0.4 : 4;
         var range = document.createRange();
         range.selectNodeContents(wrap);
         var rects = range.getClientRects();
@@ -309,7 +372,7 @@
           if (r.width <= 0) continue;
           var hit = null;
           for (var l = 0; l < lines.length; l++) {
-            if (Math.abs(lines[l].top - r.top) <= 4) { hit = lines[l]; break; }
+            if (Math.abs(lines[l].top - r.top) <= tol) { hit = lines[l]; break; }
           }
           if (!hit) lines.push({ top: r.top, left: r.left, right: r.right });
           else {
@@ -333,7 +396,7 @@
         var wrap = stage.querySelector('.sc-caption-scroll');
         overlay.style.display = 'block'; // meten kan niet als de overlay verborgen is
         // Net als de app: elke sprekerswissel (">>") begint op een nieuwe regel.
-        wrap.textContent = L.captionSpeakerBreaks(text || '');
+        setTextDom(wrap, text);
         box.style.height = 'auto';
         var info = measureLineInfo(box, wrap);
         box.style.height = L.captionBoxHeightEm(lines) + 'em';
@@ -348,8 +411,7 @@
         var wrap = stage.querySelector('.sc-caption-scroll');
         if (text == null) { overlay.style.display = 'none'; return; }
         overlay.style.display = 'block';
-        var display = L.captionSpeakerBreaks(text);
-        if (wrap.textContent !== display) wrap.textContent = display;
+        setTextDom(wrap, text);
         box.style.height = L.captionBoxHeightEm(lines) + 'em';
       }
 
@@ -375,17 +437,14 @@
        * regel begint. In een leeg venster gebeurt er niets.
        */
       function appendWord(els, word) {
-        if (L.isSpeakerChange(word)) {
-          var last = els.wrap.lastChild;
-          if (last && last.nodeType === 3) last.data = last.data.replace(/\s+$/, '');
-          if (els.wrap.lastChild) els.wrap.appendChild(document.createElement('br'));
-        }
-        els.wrap.appendChild(document.createTextNode(word + ' '));
+        if (L.isSpeakerChange(word)) startLine(els.wrap);
+        appendWordEl(els.wrap, word);
       }
 
-      /** De eerste `n` woorden van een run als tekstknopen in de DOM zetten. */
+      /** De eerste `n` woorden van een run als woordblokjes in de DOM zetten. */
       function setWordText(els, run, n) {
         els.wrap.textContent = '';
+        els.wrap._scText = '';
         var txt = '';
         for (var i = 0; i < n; i++) {
           var w = run.words[i].text;
@@ -450,6 +509,7 @@
         if (state.word.run !== idx || n < state.word.count) {
           state.word = { run: idx, count: 0 };
           els.wrap.textContent = '';
+          els.wrap._scText = '';
           els.wrap.style.transform = '';
           setWordShift(els, 0, false);
         }
@@ -517,8 +577,8 @@
 
       /**
        * Alle stages dezelfde stijl geven als de app: spelerformaat, lettergrootte,
-       * lettertype, dikte, y-offset, balkbreedte en de padding (uit dezelfde
-       * constanten als L.captionBoxHeightEm()).
+       * lettertype, dikte, x- en y-offset, breedte van het tekstvlak en de padding
+       * (uit dezelfde constanten als L.captionBoxHeightEm()).
        */
       function setupStages(cfg) {
         [cueStage, newStage, wordStage].forEach(function (stage) {
@@ -528,17 +588,25 @@
           overlay.style.fontSize = L.captionFontPx(cfg.h, cfg.inc, cfg.pct) + 'px';
           overlay.style.fontFamily = L.captionFontStack(cfg.font);
           overlay.style.fontWeight = String(L.captionFontWeight(cfg.weight));
-          // Als in de app: dezelfde y-offset-berekening (positief = omlaag).
+          // Als in de app: dezelfde y-offset-berekening (positief = omlaag) en
+          // dezelfde x-offset (positief = naar rechts).
           overlay.style.bottom = L.captionBottomPct(cfg.yOff) + '%';
-          // Balkbreedte: balk gecentreerd (left/right) en de box even breed.
-          var barW = L.captionBarWidthPct(cfg.barW);
-          var side = ((100 - barW) / 2).toFixed(2) + '%';
-          var bar = stage.querySelector('.sc-caption-bar');
-          bar.style.left = side;
-          bar.style.right = side;
+          var side = L.captionSidePcts(cfg.xOff);
+          overlay.style.left = side.left + '%';
+          overlay.style.right = side.right + '%';
+          // Maten van de woordblokjes: dezelfde constanten als de app.
+          overlay.style.setProperty('--sc-word-pad-y', L.CAPTION_WORD_PAD_Y_EM + 'em');
+          overlay.style.setProperty('--sc-word-pad-x', L.CAPTION_WORD_PAD_X_EM + 'em');
+          // Breedte van het tekstvlak: het vlak staat gecentreerd in de overlay
+          // en bepaalt waar de tekst afbreekt; de zwarte blokjes zelf zijn zo
+          // breed als de tekst.
+          var wPct = L.captionBarWidthPct(cfg.barW);
           var box = stage.querySelector('.sc-caption-box');
-          box.style.width = barW + '%';
+          box.style.width = wPct + '%';
           box.style.padding = L.CAPTION_PAD_TOP_EM + 'em ' + L.CAPTION_PAD_X_EM + 'em ' + L.CAPTION_PAD_BOTTOM_EM + 'em';
+          // De stages zijn statisch opgebouwd; een nieuwe run moet de tekst dus
+          // opnieuw opbouwen.
+          stage.querySelector('.sc-caption-scroll')._scText = null;
         });
       }
 
@@ -633,13 +701,14 @@
         var pctSize = Math.max(50, Math.min(250, Number(document.getElementById('sizePct').value) || 175));
         var inc = Number(document.getElementById('increment').value) || 0;
         var yOff = Number(document.getElementById('yOffset').value) || 0;
+        var xOff = Number(document.getElementById('xOffset').value) || 0;
         var font = document.getElementById('fontKey').value || 'youtube';
         var weight = Number(document.getElementById('fontWeight').value) || 600;
-        var barW = Number(document.getElementById('barWidth').value) || 80;
+        var barW = Number(document.getElementById('barWidth').value) || 50;
         var lines = curLines();
         var key = document.getElementById('scenario').value;
 
-        setupStages({ w: hostW, h: hostH, pct: pctSize, inc: inc, yOff: yOff, font: font, weight: weight, barW: barW });
+        setupStages({ w: hostW, h: hostH, pct: pctSize, inc: inc, yOff: yOff, xOff: xOff, font: font, weight: weight, barW: barW });
         state.events = L.parseCaptionJson({ events: SCENARIOS[key].events });
         state.blocks = L.buildCaptionBlocks(state.events, OPTS);
         state.runs = L.buildCaptionRuns(L.buildCaptionWords(state.events), OPTS.silenceGap);
@@ -721,8 +790,9 @@
         var v = document.getElementById('verdict');
         v.textContent = SCENARIOS[key].label + ' @ ' + lines + ' regels / ' + pctSize + '% op ' + hostW + 'x' + hostH +
           ' | y-offset: ' + (yOff > 0 ? '+' : '') + yOff + '% (onderrand op ' + L.captionBottomPct(yOff) + '%)' +
+          ' | x-offset: ' + (xOff > 0 ? '+' : '') + xOff + '%' +
           ' | font: ' + font + ' / dikte ' + L.captionFontWeight(weight) +
-          ' / balk ' + L.captionBarWidthPct(barW) + '% (video links+rechts ' + ((100 - L.captionBarWidthPct(barW)) / 2).toFixed(2) + '%)' +
+          ' / tekstvlak ' + L.captionBarWidthPct(barW) + '% (video links+rechts ' + ((100 - L.captionBarWidthPct(barW)) / 2).toFixed(2) + '%)' +
           ' - blokken: ' + state.blocks.length +
           ' | met 2 volle zinnen: ' + withTwo +
           ' | grens midden in een zin: ' + midCut +
@@ -752,7 +822,7 @@
         });
       })();
 
-      ['hostW', 'hostH', 'sizePct', 'increment', 'maxLines', 'yOffset', 'fontKey', 'fontWeight', 'barWidth', 'scenario'].forEach(function (id) {
+      ['hostW', 'hostH', 'sizePct', 'increment', 'maxLines', 'yOffset', 'xOffset', 'fontKey', 'fontWeight', 'barWidth', 'scenario'].forEach(function (id) {
         document.getElementById(id).addEventListener('input', run);
         document.getElementById(id).addEventListener('change', run);
       });

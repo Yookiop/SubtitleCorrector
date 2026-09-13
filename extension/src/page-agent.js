@@ -512,7 +512,6 @@
     rafActive: false,
     rafHandle: null,
     overlay: null,
-    bar: null,
     box: null,
     scrollEl: null,
     blockKey: null,       // starttijd van het blok dat nu in de DOM staat
@@ -639,11 +638,13 @@
      percentage bovenop YouTube's size-stand. */
   var BOOST_SIZE_PCT = 175;    // default ondertitelgrootte (%; optie 50-250)
   var BOOST_LINES = 2;         // max. regels in de eigen weergave (1 of 2; optie, default 2)
-  var BOOST_OFFSET_PCT = 7;    // y-offset van de balk in %-punten (optie; + = omlaag, - = omhoog)
+  var BOOST_OFFSET_PCT = 7;    // y-offset in %-punten (optie; + = omlaag, - = omhoog)
+  var BOOST_OFFSET_X_PCT = 0;  // x-offset in %-punten (optie; + = naar rechts, - = naar
+                               // links, 0 = gecentreerd)
   var BOOST_FONT = 'youtube';  // lettertype (optie; sleutel uit L.CAPTION_FONTS)
   var BOOST_WEIGHT = 500;      // letterdikte (optie; 400/500/600/700)
-  var BOOST_BAR_WIDTH_PCT = 70; // breedte van de ondertitelbalk in % van de spelerbreedte
-                                // (optie 30-100; de balk staat gecentreerd, dus links en
+  var BOOST_BAR_WIDTH_PCT = 50; // breedte van het ondertitelvlak in % van de spelerbreedte
+                                // (optie 30-100; het vlak staat gecentreerd, dus links en
                                 // rechts blijft video zichtbaar)
   var SUBTITLES_OFF = false;   // per-tab kill switch (knop in de controlbar)
   var boostStyle = { at: 0, textColor: 'rgba(255,255,255,1)', bgColor: 'rgba(0,0,0,1)', increment: 0, applied: '' };
@@ -673,19 +674,30 @@
     // direct goed staan.
     el.style.fontFamily = L.captionFontStack(BOOST_FONT);
     el.style.fontWeight = String(L.captionFontWeight(BOOST_WEIGHT));
-    // Verticale positie (optie *Y-offset*): de balk hangt standaard 10,5% boven
-    // de onderrand van de speler; de offset verschuift hem in %-punten van de
-    // spelerhoogte (positief = omlaag).
+    // Kleur van de zwarte blokjes achter elk woord. Elk woord is een eigen
+    // element met een eigen achtergrond; in de woord-voor-woord-weergave komen
+    // die elementen er één voor één bij. Via deze CSS-variabele krijgt een
+    // nieuw blokje meteen de juiste kleur en volgt een kleurwissel in YouTube's
+    // ondertitelinstellingen alle blokjes die al in beeld staan.
+    el.style.setProperty('--sc-caption-bg', boostStyle.bgColor);
+    // Verticale positie (optie *Y-offset*): de ondertiteling hangt standaard
+    // 10,5% boven de onderrand van de speler; de offset verschuift hem in
+    // %-punten van de spelerhoogte (positief = omlaag).
     var bottom = L.captionBottomPct(BOOST_OFFSET_PCT) + '%';
     if (el.style.bottom !== bottom) el.style.bottom = bottom;
-    // Breedte van de balk (optie *Ondertitelbreedte*): de balk staat gecentreerd
-    // en de box is precies zo breed als de balk.
+    // Horizontale positie (optie *X-offset*): de overlay loopt van links naar
+    // rechts over de speler en de tekst wordt daarbinnen gecentreerd. De offset
+    // schuift alles in %-punten van de spelerbreedte op (positief = naar
+    // rechts); `left` en `right` gaan even hard de andere kant op, zodat de
+    // breedte gelijk blijft.
+    var side = L.captionSidePcts(BOOST_OFFSET_X_PCT);
+    var leftCss = side.left + '%';
+    var rightCss = side.right + '%';
+    if (el.style.left !== leftCss) el.style.left = leftCss;
+    if (el.style.right !== rightCss) el.style.right = rightCss;
+    // Breedte van het ondertitelvlak (optie *Ondertitelbreedte*): het vlak staat
+    // gecentreerd in de overlay en bepaalt waar de tekst mag afbreken.
     var wPct = L.captionBarWidthPct(BOOST_BAR_WIDTH_PCT);
-    var sidePct = ((100 - wPct) / 2).toFixed(2) + '%';
-    if (boost.bar) {
-      if (boost.bar.style.left !== sidePct) boost.bar.style.left = sidePct;
-      if (boost.bar.style.right !== sidePct) boost.bar.style.right = sidePct;
-    }
     if (boost.box) {
       var widthCss = wPct + '%';
       if (boost.box.style.width !== widthCss) boost.box.style.width = widthCss;
@@ -695,10 +707,9 @@
     boostStyle.applied = key;
     invalidateBoostText(); // stijl/grootte gewijzigd -> tekst opnieuw opbouwen
     el.style.fontSize = (Math.round(px * 10) / 10) + 'px';
-    if (boost.bar) boost.bar.style.background = boostStyle.bgColor;
     if (boost.box) {
       boost.box.style.color = boostStyle.textColor;
-      boost.box.style.background = ''; // achtergrond zit op de balk (ook na een extensie-herlaadbeurt op een open pagina)
+      boost.box.style.background = ''; // de achtergrond zit op de woordblokjes (ook na een extensie-herlaadbeurt op een open pagina)
     }
   }
 
@@ -716,43 +727,64 @@
         st.textContent =
           '.sc-boost-on .ytp-caption-window-container{display:none!important}' +
           '#sc-caption-overlay{position:absolute;left:0;right:0;bottom:3.5%;text-align:center;pointer-events:none;z-index:45;display:none;' +
-          'font-weight:500;line-height:1.4;font-family:"YouTube Sans","Roboto",Arial,sans-serif}' +
+          'font-weight:500;line-height:1.4;font-family:Roboto,Arial,sans-serif;' +
+          '--sc-caption-bg:rgba(8,8,8,.75)}' +
           '#sc-caption-overlay.sc-on{display:block}' +
-          // De breedte van de balk is een optie (BOOST_BAR_WIDTH_PCT, 30-100%);
-          // de inline left/right op de balk en de inline width op de box komen
-          // uit applyBoostStyle(). De waarden hier zijn de terugval (70%). De
-          // box is precies zo breed als de balk (border-box) en heeft een
-          // VASTE hoogte van BOOST_LINES regels (inline, in em); de tekst
-          // begint linksboven, links uitgelijnd. In de blokweergave staat het
-          // hele blok er in één keer in (wat niet past wordt afgekapt); in de
-          // woord-voor-woord-weergave wordt elk woord op zijn tijd toegevoegd
-          // en schuift `.sc-caption-scroll` per HELE regel omhoog (`top`), zodat
-          // altijd precies de laatste regels zichtbaar zijn.
+          // De achtergrond zit NIET meer op één balk achter het hele venster,
+          // maar op elk woord apart (`.sc-caption-word`, net als YouTube's
+          // auto-ondertitels): een woord komt binnen met zijn eigen zwarte
+          // blokje en de blokjes van een regel groeien aan elkaar vast. De
+          // kleur komt uit de CSS-variabele `--sc-caption-bg` (gezet in
+          // applyBoostStyle op de overlay), zodat een nieuw woord meteen de
+          // juiste kleur heeft.
+          //
+          // De verticale padding van een blokje valt bij een inline-element
+          // BUITEN de regelbox: daardoor raken de blokjes van twee regels elkaar
+          // en blijft er geen streep video tussen de regels staan. De
+          // horizontale padding wordt door een even grote NEGATIEVE marge
+          // gecompenseerd, zodat de woordafstand en de regelafbreking exact
+          // gelijk blijven: het zwart loopt alleen door over de spaties (die
+          // zitten in het blokje) en steekt een beetje voorbij de eerste en de
+          // laatste letter van elke regel uit. Beide maten staan in
+          // lang-utils (L.CAPTION_WORD_PAD_*_EM), zodat de checkpagina met
+          // dezelfde waarden werkt.
+          //
+          // De breedte van het tekstvlak is een optie (BOOST_BAR_WIDTH_PCT,
+          // 30-100%); de inline width op de box komt uit applyBoostStyle(). De
+          // waarde hier is de terugval (50%). De box heeft een VASTE hoogte van
+          // BOOST_LINES regels (inline, in em); de tekst begint linksboven,
+          // links uitgelijnd. In de blokweergave staat het hele blok er in één
+          // keer in (wat niet past wordt afgekapt); in de woord-voor-woord-
+          // weergave wordt elk woord op zijn tijd toegevoegd en schuift
+          // `.sc-caption-scroll` per HELE regel omhoog (`top`), zodat altijd
+          // precies de laatste regels zichtbaar zijn.
           //
           // `display:block` + `margin:0 auto` (niet inline-block): een
           // inline-block met `overflow:hidden` heeft zijn ONDERrand als
           // baseline, waardoor de regelbox van de overlay onder de box nog de
-          // descender van de strut toevoegde — de zwarte balk stak daardoor
+          // descender van de strut toevoegde — de zwarte blokjes staken daardoor
           // ~15px verder door onder de tekst dan erboven. Als block is de
-          // overlay precies zo hoog als de box en zit de balk dus strak om de
-          // tekst. De verticale padding is bewust asymmetrisch: onder minder
-          // dan boven, want de regelbox heeft onder de baseline al meer ruimte.
-          // De som moet exact gelijk zijn aan L.captionBoxHeightEm().
+          // overlay precies zo hoog als de box. De verticale padding is bewust
+          // asymmetrisch: onder minder dan boven, want de regelbox heeft onder
+          // de baseline al meer ruimte. De som moet exact gelijk zijn aan
+          // L.captionBoxHeightEm().
           //
           // `clip-path:inset(0)` is een extra vangnet naast `overflow:hidden`:
           // het klipt ook eventueel gecompositeerde lagen op de rand van het
-          // venster af, zodat er nooit tekst buiten het zwarte blok valt als
-          // de tekst omhoog schuift (zie setWordShift()).
-          '#sc-caption-overlay .sc-caption-bar{position:absolute;top:0;bottom:0;left:15%;right:15%}' +
+          // venster af, zodat er nooit tekst buiten het venster valt als de
+          // tekst omhoog schuift (zie setWordShift()).
           '#sc-caption-overlay .sc-caption-box{position:relative;display:block;margin:0 auto;overflow:hidden;clip-path:inset(0);' +
-          'box-sizing:border-box;width:70%;text-align:left;white-space:pre-wrap;' +
+          'box-sizing:border-box;width:50%;text-align:left;white-space:pre-wrap;' +
           'padding:' + L.CAPTION_PAD_TOP_EM + 'em ' + L.CAPTION_PAD_X_EM + 'em ' + L.CAPTION_PAD_BOTTOM_EM + 'em;' +
           'text-shadow:0 0 2px rgba(0,0,0,.8)}' +
           // De tekst schuift met een korte overgang op `top` (en niet met
           // `transform`: dat zet de tekst op een eigen compositing-laag, want
           // dan kan hij tijdens het schuiven buiten het venster getekend
           // worden — "regel 1 komt boven het blok uit").
-          '#sc-caption-overlay .sc-caption-scroll{position:relative;transition:top .2s ease-out}';
+          '#sc-caption-overlay .sc-caption-scroll{position:relative;transition:top .2s ease-out}' +
+          '#sc-caption-overlay .sc-caption-word{background:var(--sc-caption-bg);' +
+          'padding:' + L.CAPTION_WORD_PAD_Y_EM + 'em ' + L.CAPTION_WORD_PAD_X_EM + 'em;' +
+          'margin:0 -' + L.CAPTION_WORD_PAD_X_EM + 'em}';
         (document.head || document.documentElement).appendChild(st);
         boost.styleReady = true;
       } catch (e) { /* ignore */ }
@@ -763,12 +795,11 @@
       el = document.createElement('div');
       el.id = 'sc-caption-overlay';
     }
-    var bar = el.querySelector('.sc-caption-bar');
-    if (!bar) {
-      bar = document.createElement('div');
-      bar.className = 'sc-caption-bar';
-      el.insertBefore(bar, el.firstChild);
-    }
+    // Een oudere versie zette één zwarte balk achter het hele venster; die moet
+    // weg, anders staat de achtergrond er na een extensie-herlaadbeurt op een
+    // open pagina alsnog als één blok in.
+    var oldBar = el.querySelector('.sc-caption-bar');
+    if (oldBar && oldBar.parentNode) oldBar.parentNode.removeChild(oldBar);
     var box = el.querySelector('.sc-caption-box');
     if (!box) {
       box = document.createElement('div');
@@ -789,7 +820,6 @@
     }
     if (el.parentNode !== p) p.appendChild(el);
     boost.overlay = el;
-    boost.bar = bar;
     boost.box = box;
     boost.scrollEl = scrollEl;
     applyBoostStyle();
@@ -905,7 +935,7 @@
     if (!box || !wrap) return;
     // Elke sprekerswissel (">>") begint op een nieuwe regel; de markering zelf
     // blijft staan (die toont YouTube ook).
-    wrap.textContent = L.captionSpeakerBreaks(blk.text);
+    buildBoostText(wrap, blk.text);
     wrap.style.transform = '';
     setWordShift(0, false);
     box.style.fontSize = '';
@@ -976,6 +1006,45 @@
   }
 
   /**
+   * Eén woord als eigen element met een eigen zwarte achtergrond (net als
+   * YouTube's auto-ondertitels): het blokje komt er samen met het woord bij en
+   * de blokjes van een regel groeien aan elkaar vast.
+   *
+   * De spatie NA het woord zit in hetzelfde element, zodat er tussen twee
+   * woorden nooit een kier in het zwart kan vallen. De padding links/rechts
+   * daarvan wordt door een even grote NEGATIEVE marge gecompenseerd (zie de CSS
+   * in ensureBoostDom), dus de woordafstand en de regelafbreking blijven exact
+   * gelijk aan voorheen.
+   */
+  function appendBoostWord(wrap, text) {
+    if (!wrap) return null;
+    var el = document.createElement('span');
+    el.className = 'sc-caption-word';
+    el.textContent = text + ' ';
+    wrap.appendChild(el);
+    return el;
+  }
+
+  /**
+   * Een hele tekst (blokweergave) in woordblokjes zetten. Elke sprekerswissel
+   * (">>") begint op een nieuwe regel: `L.captionSpeakerBreaks()` zet daar een
+   * regeleinde, en startCaptionLine() begint hier de nieuwe regel — precies
+   * zoals in de woord-voor-woord-weergave.
+   */
+  function buildBoostText(wrap, text) {
+    if (!wrap) return;
+    wrap.textContent = '';
+    var lines = L.captionSpeakerBreaks(text).split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      if (i) startCaptionLine(wrap);
+      var words = lines[i].split(' ');
+      for (var j = 0; j < words.length; j++) {
+        if (words[j]) appendBoostWord(wrap, words[j]);
+      }
+    }
+  }
+
+  /**
    * Een nieuwe regel beginnen in het rollende venster (sprekerswissel ">>"):
    * eerst de losse spatie van het vorige woord weghalen — anders blijft die
    * als hangende witruimte aan het regeleinde staan — en dan een echte
@@ -987,7 +1056,11 @@
     var last = wrap.lastChild;
     if (!last) return;
     if (last.nodeType === 1 && last.tagName === 'BR') return; // al een nieuwe regel
-    if (last.nodeType === 3) last.data = last.data.replace(/\s+$/, '');
+    // De spatie hangt aan het laatste woordblokje (een tekstknoop erin); een
+    // ouder DOM had hem als losse tekstknoop in het venster.
+    var node = last.firstChild;
+    if (node && node.nodeType === 3) node.data = node.data.replace(/\s+$/, '');
+    else if (last.nodeType === 3) last.data = last.data.replace(/\s+$/, '');
     wrap.appendChild(document.createElement('br'));
   }
 
@@ -1018,9 +1091,11 @@
       // Sprekerswissel (">>") begint op een nieuwe regel, net als bij YouTube's
       // auto-ondertitels.
       if (L.isSpeakerChange(word.text)) startCaptionLine(wrap);
-      // Elk woord is een eigen tekstknoop: hij komt er op zijn tijd bij, de
-      // rest van de regelafbreking blijft daardoor staan (greedy wrap).
-      wrap.appendChild(document.createTextNode(word.text + ' '));
+      // Elk woord komt er als eigen element bij — met zijn eigen zwarte
+      // achtergrond, die dus ook pas met dat woord verschijnt. De rest van de
+      // regelafbreking blijft daardoor staan (de browser wikkelt nog steeds
+      // zelf, greedy).
+      appendBoostWord(wrap, word.text);
       boost.wordCount++;
       grew = true;
     }
@@ -1249,6 +1324,13 @@
       applyBoostStyle(); // zet de nieuwe bottom op de overlay (en herrekent niets onnodig)
       dbg('captionOffset', BOOST_OFFSET_PCT);
     }
+    if (opts && Object.prototype.hasOwnProperty.call(opts, 'captionOffsetX')) {
+      var offX = Number(opts.captionOffsetX);
+      var maxX = L.CAPTION_OFFSET_X_MAX;
+      BOOST_OFFSET_X_PCT = isFinite(offX) ? Math.max(-maxX, Math.min(maxX, offX)) : 0;
+      applyBoostStyle(); // zet de nieuwe left/right op de overlay
+      dbg('captionOffsetX', BOOST_OFFSET_X_PCT);
+    }
     if (opts && Object.prototype.hasOwnProperty.call(opts, 'captionWidth')) {
       BOOST_BAR_WIDTH_PCT = L.captionBarWidthPct(Number(opts.captionWidth));
       applyBoostStyle(); // balk en box krijgen meteen de nieuwe breedte
@@ -1277,6 +1359,7 @@
       captionSize: BOOST_SIZE_PCT,
       captionLines: BOOST_LINES,
       captionOffset: BOOST_OFFSET_PCT,
+      captionOffsetX: BOOST_OFFSET_X_PCT,
       captionWidth: BOOST_BAR_WIDTH_PCT,
       captionFont: BOOST_FONT,
       captionWeight: BOOST_WEIGHT,

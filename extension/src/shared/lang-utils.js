@@ -415,6 +415,27 @@
                                      // onder de baseline al meer lege ruimte (descender)
   var CAPTION_PAD_X_EM = 0.32;       // horizontale padding (links/rechts, in de CSS)
 
+  /*
+   * De zwarte achtergrond zit in de eigen weergave NIET meer op één balk achter
+   * het hele venster, maar op elk woord apart (net als YouTube's
+   * auto-ondertitels): een woord komt binnen met zijn eigen zwarte blokje en de
+   * blokjes van een regel groeien aan elkaar vast. Deze twee maten horen bij die
+   * woordblokjes (`.sc-caption-word` in page-agent.js); de checkpagina
+   * `tools/check-caption-lines.html` gebruikt dezelfde constanten.
+   */
+  var CAPTION_WORD_PAD_Y_EM = 0.16;  // verticale padding van een woordblokje (boven én
+                                     // onder). Die padding valt bij een inline-element
+                                     // buiten de regelbox: daardoor raken de blokjes van
+                                     // twee regels elkaar en blijft er geen streep video
+                                     // tussen de regels staan.
+  var CAPTION_WORD_PAD_X_EM = 0.15;  // horizontale padding van een woordblokje (links en
+                                     // rechts). Die wordt met een even grote NEGATIEVE
+                                     // marge gecompenseerd, zodat de woordafstand en de
+                                     // regelafbreking exact gelijk blijven: het zwart loopt
+                                     // alleen door over de spaties (die zitten in het
+                                     // blokje) en steekt .15em voorbij de eerste/laatste
+                                     // letter van elke regel uit.
+
   /**
    * Hoogte van het vaste captionvenster in em (1 of 2 regels + padding).
    *
@@ -817,15 +838,38 @@
   var CAPTION_BOTTOM_BASE = 10.5;
 
   /**
-   * Effectieve afstand van de captionbalk tot de onderrand (% van de
+   * Effectieve afstand van de ondertiteling tot de onderrand (% van de
    * spelerhoogte) na de y-offset uit de opties. `offset` is in %-punten:
    * positief schuift de ondertitels **omlaag** (dichter bij de onderrand),
-   * negatief **omhoog**. Geclamped op 0-80%, zodat de balk in de speler blijft.
+   * negatief **omhoog**. Geclamped op 0-80%, zodat de ondertiteling in de
+   * speler blijft.
    */
   function captionBottomPct(offset, base) {
     var b = typeof base === 'number' && isFinite(base) ? base : CAPTION_BOTTOM_BASE;
     var o = typeof offset === 'number' && isFinite(offset) ? Math.max(-80, Math.min(80, offset)) : 0;
     return Math.round(Math.max(0, Math.min(80, b - o)) * 100) / 100;
+  }
+
+  /** Maximale x-offset in %-punten (links én rechts; optie `captionOffsetX`). */
+  var CAPTION_OFFSET_X_MAX = 40;
+
+  /**
+   * Horizontale verschuiving van de ondertiteling als `left`/`right` in
+   * %-punten van de spelerbreedte (optie *X-offset*).
+   *
+   * De overlay staat standaard van links naar rechts over de speler
+   * (`left:0; right:0`) en de tekst wordt daarbinnen gecentreerd. Een positieve
+   * offset schuift de ondertiteling naar **rechts**: dan komt er links ruimte
+   * bij (`left` = offset) en gaat er rechts evenveel af (`right` = -offset),
+   * zodat de breedte gelijk blijft en alles precies `offset` %-punten opschuift.
+   * Een negatieve offset doet het omgekeerde (`left` negatief, `right`
+   * positief). Geclamped op ±40%; ontbrekend of onbruikbaar = 0 (gecentreerd).
+   */
+  function captionSidePcts(offset, max) {
+    var m = typeof max === 'number' && isFinite(max) ? Math.abs(max) : CAPTION_OFFSET_X_MAX;
+    var o = typeof offset === 'number' && isFinite(offset) ? Math.max(-m, Math.min(m, offset)) : 0;
+    o = Math.round(o * 100) / 100;
+    return { left: o, right: o === 0 ? 0 : -o };
   }
 
   /* ------------------------------------------------------------------ *
@@ -835,8 +879,12 @@
   /**
    * Beschikbare lettertypes voor de eigen ondertitelweergave.
    *
-   * `youtube` is YouTube's eigen "proportionele sans-serif" (het font waarin de
-   * speler zijn auto-ondertitels tekent, en de standaard van de extensie). De
+   * `youtube` is YouTube's eigen "proportionele sans-serif": **Roboto**, het
+   * font waarin de speler zijn (auto-)ondertitels tekent — dat is dus ook het
+   * font op de ondertitels die je zonder deze extensie ziet. Let op: YouTube
+   * Sans (het rondige merkfont van de site, o.a. de videotitel) staat er
+   * bewust NIET meer in; dat is een ander font dan YouTube's caption-font en
+   * viel daardoor zichtbaar uit de toon (vervolgvraag 2026-09-13). De
    * rest zijn fonts die juist bij leesteksten veel gebruikt worden: eerst de
    * sans-serif-achtigen (Arial, Verdana, Segoe UI, Tahoma) en daarna de
    * serif-leesfonts (Cambria, Georgia, Times New Roman, Palatino). Elke stack
@@ -844,7 +892,7 @@
    * leesbaars staat.
    */
   var CAPTION_FONTS = [
-    { key: 'youtube', label: "Proportionele sans-serif (YouTube's eigen)", stack: '"YouTube Sans","Roboto",Arial,sans-serif' },
+    { key: 'youtube', label: "Proportionele sans-serif (YouTube's eigen: Roboto)", stack: 'Roboto,Arial,sans-serif' },
     { key: 'arial', label: 'Arial', stack: 'Arial,Helvetica,sans-serif' },
     { key: 'verdana', label: 'Verdana', stack: 'Verdana,Geneva,sans-serif' },
     { key: 'segoe', label: 'Segoe UI', stack: '"Segoe UI",Tahoma,sans-serif' },
@@ -888,12 +936,13 @@
   }
 
   /**
-   * Breedte van de ondertitelbalk in % van de spelerbreedte. De balk staat
+   * Breedte van het tekstvlak in % van de spelerbreedte. Het vlak staat
    * gecentreerd (links en rechts evenveel video zichtbaar), dus hoe kleiner
-   * deze waarde, hoe smaller de balk. Geclamped op 30-100%; ontbrekend = 70.
+   * deze waarde, hoe smaller het vlak en hoe eerder de tekst afbreekt.
+   * Geclamped op 30-100%; ontbrekend = 50.
    */
   function captionBarWidthPct(pct) {
-    var p = typeof pct === 'number' && isFinite(pct) ? pct : 70;
+    var p = typeof pct === 'number' && isFinite(pct) ? pct : 50;
     return Math.round(Math.max(30, Math.min(100, p)) * 10) / 10;
   }
 
@@ -1089,6 +1138,8 @@
     CAPTION_PAD_TOP_EM: CAPTION_PAD_TOP_EM,
     CAPTION_PAD_BOTTOM_EM: CAPTION_PAD_BOTTOM_EM,
     CAPTION_PAD_X_EM: CAPTION_PAD_X_EM,
+    CAPTION_WORD_PAD_Y_EM: CAPTION_WORD_PAD_Y_EM,
+    CAPTION_WORD_PAD_X_EM: CAPTION_WORD_PAD_X_EM,
     splitSentences: splitSentences,
     buildCaptionBlocks: buildCaptionBlocks,
     captionBlockIndex: captionBlockIndex,
@@ -1105,6 +1156,8 @@
     captionFontPx: captionFontPx,
     captionBottomPct: captionBottomPct,
     CAPTION_BOTTOM_BASE: CAPTION_BOTTOM_BASE,
+    captionSidePcts: captionSidePcts,
+    CAPTION_OFFSET_X_MAX: CAPTION_OFFSET_X_MAX,
     CAPTION_FONTS: CAPTION_FONTS,
     captionFontKey: captionFontKey,
     captionFontStack: captionFontStack,

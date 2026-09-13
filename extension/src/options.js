@@ -20,7 +20,8 @@ const DEFAULTS = {
   captionSize: 175,
   captionLines: 2,
   captionOffset: 7,
-  captionWidth: 70,
+  captionOffsetX: 0,
+  captionWidth: 50,
   captionFont: 'youtube',
   captionWeight: 500,
   captionWordByWord: true,
@@ -39,7 +40,7 @@ const BOOL_FIELDS = [
   'captionWordByWord', 'keepAudioDuringCapture', 'showToast', 'debug'
 ];
 const TEXT_FIELDS = ['hotkey', 'bridgeUrl', 'captionFont'];
-const NUM_FIELDS = ['audioSeconds', 'minConfidence', 'captionSize', 'captionLines', 'captionOffset', 'captionWidth', 'captionWeight'];
+const NUM_FIELDS = ['audioSeconds', 'minConfidence', 'captionSize', 'captionLines', 'captionOffset', 'captionOffsetX', 'captionWidth', 'captionWeight'];
 
 // Gedeelde logica (lang-utils.js) voor de lettertypestacks en de clamping.
 const L = window.SCLang || null;
@@ -82,6 +83,7 @@ function collect() {
   out.captionSize = Math.max(50, Math.min(250, Math.round(out.captionSize || 175)));
   out.captionLines = Number(out.captionLines) === 1 ? 1 : 2;
   out.captionOffset = Math.max(-40, Math.min(30, Math.round(isFinite(out.captionOffset) ? out.captionOffset : 0)));
+  out.captionOffsetX = Math.max(-40, Math.min(40, Math.round(isFinite(out.captionOffsetX) ? out.captionOffsetX : 0)));
   if (L) {
     out.captionWidth = L.captionBarWidthPct(out.captionWidth);
     out.captionFont = L.captionFontKey(out.captionFont);

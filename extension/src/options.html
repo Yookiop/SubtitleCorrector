@@ -117,7 +117,7 @@
       <h2>Prestaties (caption-prioriteit)</h2>
       <div class="field">
         <label>Eigen ondertitelweergave (Caption Boost)
-          <span class="hint">Toont de ondertitel in blokken van 2 volle zinnen, in één keer: het hele blok staat direct in beeld en blijft staan tot het volgende blok begint. Zo blijven zinnen bij elkaar en komt er geen halfgevuld blok meer waarin de rest van de zin pas later verschijnt. Zet <b>Word-for-Word</b> aan voor woord-voor-woord, zoals YouTube's auto-gegenereerde ondertitels. Een sprekerswissel (<b>&gt;&gt;</b>) begint altijd op een nieuwe regel. Verbergt YouTube's eigen caption-venster zolang dat lukt; lost het "loopt 1-2 seconden achter en plopt dan in blokken"-probleem op — ook als dat zonder deze extensie gebeurt.</span>
+          <span class="hint">Toont de ondertitel in blokken van 2 volle zinnen, in één keer: het hele blok staat direct in beeld en blijft staan tot het volgende blok begint. Zo blijven zinnen bij elkaar en komt er geen halfgevuld blok meer waarin de rest van de zin pas later verschijnt. Zet <b>Word-for-Word</b> aan voor woord-voor-woord, zoals YouTube's auto-gegenereerde ondertitels. Een sprekerswissel (<b>&gt;&gt;</b>) begint altijd op een nieuwe regel. Elk woord krijgt zijn <b>eigen zwarte achtergrond die samen met dat woord verschijnt</b> (de blokjes van een regel groeien aan elkaar vast), in plaats van één zwarte balk achter het hele venster — net als bij YouTube's auto-ondertitels. Verbergt YouTube's eigen caption-venster zolang dat lukt; lost het "loopt 1-2 seconden achter en plopt dan in blokken"-probleem op — ook als dat zonder deze extensie gebeurt.</span>
         </label>
         <input type="checkbox" id="captionBoost">
       </div>
@@ -137,7 +137,7 @@
       </div>
       <div class="field">
         <label>Lettertype
-          <span class="hint">Het font van de eigen ondertitelweergave. "Proportionele sans-serif" is YouTube's eigen caption-font (waar de speler zijn auto-ondertitels in tekent); daaronder staan veelgebruikte leesfonts als Arial, Verdana, Segoe UI, Cambria, Georgia, Times New Roman en Palatino. Kies je voor een serif-leesfont, zet dan <b>Letterdikte</b> op <b>Normaal</b> — dat leest prettiger en is wat YouTube bij zo'n font doet.</span>
+          <span class="hint">Het font van de eigen ondertitelweergave. "Proportionele sans-serif" is YouTube's eigen caption-font — <b>Roboto</b>, precies het font van de ondertitels die je zonder deze extensie ziet (niet YouTube Sans: dat is het rondere merkfont van de site). Daaronder staan veelgebruikte leesfonts als Arial, Verdana, Segoe UI, Cambria, Georgia, Times New Roman en Palatino. Kies je voor een serif-leesfont, zet dan <b>Letterdikte</b> op <b>Normaal</b> — dat leest prettiger en is wat YouTube bij zo'n font doet.</span>
         </label>
         <select id="captionFont">
           <option value="youtube">Proportionele sans-serif (YouTube's eigen)</option>
@@ -156,7 +156,7 @@
       </div>
       <div class="field">
         <label>Ondertitelbreedte (%)
-          <span class="hint">Breedte van de ondertitelbalk als percentage van de spelerbreedte: 30 - 100%. De balk staat gecentreerd, dus je houdt links en rechts altijd video zichtbaar. Standaard 70%; lager = smaller.</span>
+          <span class="hint">Breedte van het ondertitelvlak als percentage van de spelerbreedte: 30 - 100%. Het vlak staat gecentreerd, dus je houdt links en rechts altijd video zichtbaar. Standaard 50%; lager = smaller. De zwarte achtergrond zelf is per woord en dus zo breed als de tekst; deze instelling bepaalt hoe breed de tekst mag worden voordat hij naar de volgende regel wikkelt. Let op: in een smaller vlak past een blok van 2 volle zinnen minder vaak in het venster van 2 regels (wat niet past wordt onderaan afgekapt); met <b>Word-for-Word</b> speelt dat niet, want daar rolt het venster mee.</span>
         </label>
         <input type="number" id="captionWidth" min="30" max="100" step="1">
       </div>
@@ -171,13 +171,19 @@
       </div>
       <div class="field">
         <label>Y-offset (%)
-          <span class="hint">Verticale positie van de ondertitelbalk, in procentpunten van de spelerhoogte. <b>Positief = omlaag</b> (dichter bij de onderrand), <b>negatief = omhoog</b>. De standaard is 7 (iets hoger dan het uitgangspunt); 0 = geen verschuiving. Bereik −40 tot +30. De balk blijft altijd binnen de speler.</span>
+          <span class="hint">Verticale positie van de ondertiteling, in procentpunten van de spelerhoogte. <b>Positief = omlaag</b> (dichter bij de onderrand), <b>negatief = omhoog</b>. De standaard is 7 (iets hoger dan het uitgangspunt); 0 = geen verschuiving. Bereik −40 tot +30. De ondertiteling blijft altijd binnen de speler.</span>
         </label>
         <input type="number" id="captionOffset" min="-40" max="30" step="1">
       </div>
       <div class="field">
+        <label>X-offset (%)
+          <span class="hint">Horizontale positie van de ondertiteling, in procentpunten van de spelerbreedte. <b>Positief = naar rechts</b>, <b>negatief = naar links</b>; 0 (standaard) = gecentreerd. Bereik −40 tot +40. Met een positieve waarde schuift de ondertiteling dus naar rechts en blijft er links meer video zichtbaar (en andersom).</span>
+        </label>
+        <input type="number" id="captionOffsetX" min="-40" max="40" step="1">
+      </div>
+      <div class="field">
         <label>Word-for-Word
-          <span class="hint">Toont de ondertiteling woord voor woord, zoals YouTube's auto-gegenereerde ondertitels: elk woord verschijnt op zijn eigen tijd en zodra de onderste regel vol is schuift het venster één regel omhoog (regel 1 verdwijnt, regel 2 wordt regel 1 en de nieuwe woorden gaan verder op regel 2). Heeft een cue geen per-woordtijden (één tijd voor de hele zin), dan worden de woorden over de cue verdeeld — er plopt dus nooit ineens een hele zin in beeld. Een stilte begint weer met een leeg venster. <b>Aan is de standaard</b>; uit = de hele blokken van 2 volle zinnen in één keer.</span>
+          <span class="hint">Toont de ondertiteling woord voor woord, zoals YouTube's auto-gegenereerde ondertitels: elk woord verschijnt op zijn eigen tijd — <b>met zijn eigen zwarte achtergrond</b> — en zodra de onderste regel vol is schuift het venster één regel omhoog (regel 1 verdwijnt, regel 2 wordt regel 1 en de nieuwe woorden gaan verder op regel 2). Heeft een cue geen per-woordtijden (één tijd voor de hele zin), dan worden de woorden over de cue verdeeld — er plopt dus nooit ineens een hele zin in beeld. Een stilte begint weer met een leeg venster. <b>Aan is de standaard</b>; uit = de hele blokken van 2 volle zinnen in één keer.</span>
         </label>
         <input type="checkbox" id="captionWordByWord">
       </div>

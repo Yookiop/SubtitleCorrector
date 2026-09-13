@@ -471,7 +471,7 @@
   });
 
   /* ------------------------------------------------------------------ *
-   * Sprekerswissel (">>") en de y-offset van de ondertitelbalk
+   * Sprekerswissel (">>") en de positie van de ondertiteling (x- en y-offset)
    * ------------------------------------------------------------------ */
 
   test('isSpeakerChange herkent de sprekersmarkering ">>"', function (L) {
@@ -493,7 +493,7 @@
     eq(L.captionSpeakerBreaks(null), '');
   });
 
-  test('captionBottomPct: y-offset schuift de balk omlaag/omhoog', function (L) {
+  test('captionBottomPct: y-offset schuift de ondertiteling omlaag/omhoog', function (L) {
     eq(L.captionBottomPct(0), 10.5);      // standaard
     eq(L.captionBottomPct(10), 0.5);      // positief = omlaag (dichter bij de rand)
     eq(L.captionBottomPct(-10), 20.5);    // negatief = omhoog
@@ -503,8 +503,33 @@
     eq(L.captionBottomPct(5, 20), 15);    // eigen basispositie
   });
 
+  test('captionSidePcts: x-offset schuift de ondertiteling opzij (left/right)', function (L) {
+    // 0 = gecentreerd: de overlay loopt van links naar rechts over de speler.
+    eq(L.captionSidePcts(0).left, 0);
+    eq(L.captionSidePcts(0).right, 0);
+    // Positief = naar rechts: links komt er ruimte bij, rechts gaat er evenveel
+    // af, dus de breedte blijft gelijk.
+    eq(L.captionSidePcts(10).left, 10);
+    eq(L.captionSidePcts(10).right, -10);
+    // Negatief = naar links: precies omgekeerd.
+    eq(L.captionSidePcts(-10).left, -10);
+    eq(L.captionSidePcts(-10).right, 10);
+    // In elke stand tellen left en right op tot 0 (breedte blijft 100%).
+    [0, 7, -7, 40, -40].forEach(function (o) {
+      var s = L.captionSidePcts(o);
+      eq(s.left + s.right, 0);
+    });
+    eq(L.captionSidePcts(500).left, L.CAPTION_OFFSET_X_MAX);    // geclamped
+    eq(L.captionSidePcts(-500).right, L.CAPTION_OFFSET_X_MAX);
+    eq(L.captionSidePcts(10, 5).left, 5);                       // eigen maximum
+    eq(L.captionSidePcts(7.129).left, 7.13);                    // afgerond op 2 decimalen
+    eq(L.captionSidePcts('x').left, 0);                         // onbruikbaar = gecentreerd
+    eq(L.captionSidePcts(undefined).left, 0);
+    eq(L.captionSidePcts(-0).right, 0);                         // nooit -0 in de CSS-waarde
+  });
+
   /* ------------------------------------------------------------------ *
-   * Lettertype, dikte en balkbreedte (opties)
+   * Lettertype, dikte en breedte van het tekstvlak (opties)
    * ------------------------------------------------------------------ */
 
   test('captionFontKey en captionFontStack: alle lettertypes, onbekend = YouTube', function (L) {
@@ -520,6 +545,12 @@
         'de stack moet een generieke fallback hebben: ' + f.stack);
     });
     eq(L.CAPTION_FONTS[0].key, 'youtube');  // standaard = YouTube's eigen font
+    // De standaard is YouTube's echte caption-font (Roboto — het font waarin de
+    // speler zijn auto-ondertitels tekent), NIET YouTube Sans: dat is het rondige
+    // merkfont van de site en viel zichtbaar uit de toon (vervolgvraag 2026-09-13).
+    ok(/^Roboto\s*,/.test(L.CAPTION_FONTS[0].stack), 'standaard moet Roboto als eerste kiezen: ' + L.CAPTION_FONTS[0].stack);
+    ok(L.CAPTION_FONTS[0].stack.indexOf('YouTube Sans') < 0,
+      'YouTube Sans hoort niet in de standaardstack: ' + L.CAPTION_FONTS[0].stack);
     eq(L.captionFontKey('bestaat-niet'), 'youtube');
     eq(L.captionFontKey(''), 'youtube');
     eq(L.captionFontKey(null), 'youtube');
@@ -539,16 +570,16 @@
     eq(L.captionFontWeight('vet'), 500);
   });
 
-  test('captionBarWidthPct: balkbreedte 30-100%, standaard 70', function (L) {
+  test('captionBarWidthPct: breedte van het tekstvlak 30-100%, standaard 50', function (L) {
     eq(L.captionBarWidthPct(80), 80);
-    eq(L.captionBarWidthPct(70), 70);      // de standaard
+    eq(L.captionBarWidthPct(50), 50);      // de standaard
     eq(L.captionBarWidthPct(100), 100);
     eq(L.captionBarWidthPct(30), 30);
     eq(L.captionBarWidthPct(10), 30);      // geclamped onder
     eq(L.captionBarWidthPct(200), 100);    // geclamped boven
     eq(L.captionBarWidthPct(72.5), 72.5);
-    eq(L.captionBarWidthPct(undefined), 70);
-    eq(L.captionBarWidthPct('x'), 70);
+    eq(L.captionBarWidthPct(undefined), 50);
+    eq(L.captionBarWidthPct('x'), 50);
   });
 
   test('rgbaFromHex maakt rgba met opacity', function (L) {
