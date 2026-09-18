@@ -482,6 +482,74 @@
     eq(L.captionWindowShift(102, 0, 2), 0);       // geen line-height bekend
   });
 
+  test('captionWindowShiftLines: hele regels, uit het gemeten aantal regels', function (L) {
+    eq(L.captionWindowShiftLines(1, 34, 2), 0);
+    eq(L.captionWindowShiftLines(2, 34, 2), 0);
+    eq(L.captionWindowShiftLines(3, 34, 2), 34);     // 1 regel eruit
+    eq(L.captionWindowShiftLines(5, 34, 2), 102);
+    eq(L.captionWindowShiftLines(4, 66, 2), 132);    // gemeten afstand, niet 1,4em
+    eq(L.captionWindowShiftLines(3, 34, 1), 68);
+    eq(L.captionWindowShiftLines(3, 0, 2), 0);       // geen afstand bekend
+    eq(L.captionWindowShiftLines(0, 34, 2), 0);
+    eq(L.captionWindowShiftLines(2.4, 10, 2), 0);    // wordt afgerond naar 2
+  });
+
+  test('captionLinesFromHeight: aantal regels uit de gemeten hoogte', function (L) {
+    eq(L.captionLinesFromHeight(0, 34), 0);
+    eq(L.captionLinesFromHeight(34, 0), 0);
+    eq(L.captionLinesFromHeight(68, 34), 2);
+    eq(L.captionLinesFromHeight(101, 34), 3);        // 2,97 -> 3
+    eq(L.captionLinesFromHeight(594, 66), 9);        // gemeten afstand 2,2em
+  });
+
+  test('captionLineMetrics: regels en de ECHTE regelafstand meten', function (L) {
+    // Twee regels van 42px: de woordblokjes van regel 1 staan op 100/101,
+    // die van regel 2 op 142 (de tolerantie is 0,4 x 42 = 16,8px).
+    var two = L.captionLineMetrics([
+      { top: 100, bottom: 150 }, { top: 101, bottom: 151 }, { top: 142, bottom: 192 }
+    ], 42);
+    eq(two.lines, 2);
+    eq(two.advance, 42);                             // 142 - 100
+    eq(two.tops.length, 2);
+
+    // Zelfde vorm, maar de regels staan 66px uit elkaar (pagina-overschrijving):
+    var wide = L.captionLineMetrics([
+      { top: 100, bottom: 166 }, { top: 166, bottom: 232 }, { top: 232, bottom: 298 }
+    ], 42);
+    eq(wide.lines, 3);
+    eq(wide.advance, 66);                            // niet 42 (de line-height van de wrapper)
+
+    // Eén rare regel (fontval) mag de maat niet verpesten: de mediaan wint.
+    var mixed = L.captionLineMetrics([
+      { top: 0, bottom: 40 }, { top: 42, bottom: 82 }, { top: 84, bottom: 124 }, { top: 168, bottom: 208 }
+    ], 42);
+    eq(mixed.lines, 4);
+    eq(mixed.advance, 42);
+
+    // Eén regel of niets: geen afstand te meten.
+    eq(L.captionLineMetrics([{ top: 10, bottom: 50 }], 42).lines, 1);
+    eq(L.captionLineMetrics([{ top: 10, bottom: 50 }], 42).advance, 0);
+    eq(L.captionLineMetrics([], 42).lines, 0);
+    eq(L.captionLineMetrics(null, 42).advance, 0);
+    eq(L.captionLineMetrics([{ top: 'x' }], 42).lines, 0);   // onbruikbare rect
+  });
+
+  test('captionBoxHeightEmForAdvance: venster volgt de gemeten regelafstand', function (L) {
+    // Zonder (of met de standaard) regelafstand exact hetzelfde als voorheen.
+    eq(L.captionBoxHeightEmForAdvance(2, L.CAPTION_LINE_HEIGHT), L.captionBoxHeightEm(2));
+    eq(L.captionBoxHeightEmForAdvance(2, 0), 2.89);
+    eq(L.captionBoxHeightEmForAdvance(2, undefined), 2.89);
+    eq(L.captionBoxHeightEmForAdvance(1, 1.4), 1.49);
+    // Gemeten afstand 2,2em -> twee hele regels van 2,2em + padding.
+    eq(L.captionBoxHeightEmForAdvance(2, 2.2), 4.49);
+    eq(L.captionBoxHeightEmForAdvance(1, 2.2), 2.29);
+    ok(L.captionBoxHeightEmForAdvance(2, 2.2) > L.captionBoxHeightEm(2),
+      'een grotere regelafstand moet een hoger venster geven');
+    // Regels blijven op 1-2 geclamped (de optie kent niet meer).
+    eq(L.captionBoxHeightEmForAdvance(7, 1.4), 2.89);
+    eq(L.captionBoxHeightEmForAdvance(0, 1.4), 1.49);
+  });
+
   /* ------------------------------------------------------------------ *
    * Sprekerswissel (">>") en de positie van de ondertiteling (x- en y-offset)
    * ------------------------------------------------------------------ */

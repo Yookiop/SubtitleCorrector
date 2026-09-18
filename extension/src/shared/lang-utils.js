@@ -447,19 +447,40 @@
                                      // Dat is een geteste invariant (lang-utils-tests.js).
 
   /**
-   * Hoogte van het vaste captionvenster in em (1 of 2 regels + padding).
+   * Hoogte van het vaste captionvenster in em (1 of 2 regels + padding) bij de
+   * standaard regelafstand (`CAPTION_LINE_HEIGHT`, 1,4em).
    *
    * Dit is tegelijk de hoogte waarop de overlay klipt (`overflow:hidden` in
    * page-agent.js), dus deze waarde moet exact bij de CSS-padding horen. De
    * bovenste padding is bewust kleiner dan de halve regelafstand (≈0,13em),
    * zodat een regel die het venster uit schuift gegarandeerd volledig buiten
    * het venster valt: de regelbox onder de baseline is dan al leeg.
+   *
+   * De page agent gebruikt `captionBoxHeightEmForAdvance()` met de gemeten
+   * regelafstand; deze functie blijft de eenvoudige/verwachte variant (en is
+   * wat de checkpagina's en de tests gebruiken).
    */
   function captionBoxHeightEm(lines) {
+    return captionBoxHeightEmForAdvance(lines, CAPTION_LINE_HEIGHT);
+  }
+
+  /**
+   * Hoogte (em) van het vaste captionvenster bij een **gemeten** regelafstand:
+   * `lines` regels van `advanceEm` em plus de boven- en onderpadding. Zonder
+   * bruikbare meting valt hij terug op `CAPTION_LINE_HEIGHT` (1,4em), zodat de
+   * hoogte in de normale situatie exact hetzelfde blijft als
+   * `captionBoxHeightEm(lines)`.
+   *
+   * Nodig omdat de echte regelafstand in de pagina groter kan zijn dan de
+   * line-height van de wrapper (zie `captionLineMetrics`): dan is een venster
+   * van 2 x 1,4em te laag en zou de onderste regel onderaan afgekapt worden.
+   */
+  function captionBoxHeightEmForAdvance(lines, advanceEm) {
+    var a = typeof advanceEm === 'number' && isFinite(advanceEm) && advanceEm > 0 ? advanceEm : CAPTION_LINE_HEIGHT;
     var n = typeof lines === 'number' && isFinite(lines) ? Math.round(lines) : 2;
     if (n < 1) n = 1;
     if (n > 2) n = 2;
-    return Math.round((n * CAPTION_LINE_HEIGHT + CAPTION_PAD_TOP_EM + CAPTION_PAD_BOTTOM_EM) * 1000) / 1000;
+    return Math.round((n * a + CAPTION_PAD_TOP_EM + CAPTION_PAD_BOTTOM_EM) * 1000) / 1000;
   }
 
   /** Eindposities (index ná het leesteken) van alle zinseinden in `text`. */
@@ -794,6 +815,26 @@
   }
 
   /**
+   * Verschuiving (px) van het rollende venster op basis van het **gemeten**
+   * aantal regels en de **gemeten** regelafstand: alles boven de laatste
+   * `visibleLines` regels schuift omhoog, in stapjes van hele regels (nooit een
+   * halve regel). Past alles binnen het venster, dan 0.
+   *
+   * Dit is de kern van `captionWindowShift()`; de page agent gebruikt hem met de
+   * gemeten waarden uit `captionLineMetrics()`, zodat de verschuiving ook klopt
+   * als de regels in de pagina verder uit elkaar staan dan de line-height van de
+   * wrapper (zie daar).
+   */
+  function captionWindowShiftLines(lineCount, advancePx, visibleLines) {
+    var n = typeof lineCount === 'number' && isFinite(lineCount) ? Math.round(lineCount) : 0;
+    var lh = typeof advancePx === 'number' && isFinite(advancePx) && advancePx > 0 ? advancePx : 0;
+    var vis = typeof visibleLines === 'number' && isFinite(visibleLines) ? Math.round(visibleLines) : 2;
+    if (vis < 1) vis = 1;
+    if (n <= vis || !lh) return 0;
+    return Math.round((n - vis) * lh * 100) / 100;
+  }
+
+  /**
    * Verschuiving (px) van het rollende venster: alles boven de laatste
    * `visibleLines` regels schuift omhoog, in stapjes van hele regels (nooit
    * een halve regel). `totalPx` = hoogte van alle gezette tekst,
@@ -803,12 +844,93 @@
   function captionWindowShift(totalPx, lineHeightPx, visibleLines) {
     var total = typeof totalPx === 'number' && isFinite(totalPx) && totalPx > 0 ? totalPx : 0;
     var lh = typeof lineHeightPx === 'number' && isFinite(lineHeightPx) && lineHeightPx > 0 ? lineHeightPx : 0;
-    var vis = typeof visibleLines === 'number' && isFinite(visibleLines) ? Math.round(visibleLines) : 2;
-    if (vis < 1) vis = 1;
     if (!total || !lh) return 0;
-    var lines = Math.round(total / lh);
-    if (lines <= vis) return 0;
-    return Math.round((lines - vis) * lh * 100) / 100;
+    return captionWindowShiftLines(Math.round(total / lh), lh, visibleLines);
+  }
+
+  /** Aantal regels in een tekst van `totalPx` hoog bij regelafstand `lineHeightPx`. */
+  function captionLinesFromHeight(totalPx, lineHeightPx) {
+    var total = typeof totalPx === 'number' && isFinite(totalPx) && totalPx > 0 ? totalPx : 0;
+    var lh = typeof lineHeightPx === 'number' && isFinite(lineHeightPx) && lineHeightPx > 0 ? lineHeightPx : 0;
+    if (!total || !lh) return 0;
+    var n = Math.round(total / lh);
+    return n > 0 ? n : 0;
+  }
+
+  /** Tolerantie (fractie van de regelafstand) om rechthoeken bij één regel te tellen. */
+  var CAPTION_LINE_GROUP_TOL = 0.4;
+
+  /**
+   * Regels **meten** uit de rechthoeken van de woorden: hoeveel regels er staan
+   * en wat de echte afstand tussen twee regels is (px). `rects` is een lijst met
+   * `{top, bottom}` (het woordblokje of de tekst erin), `fallbackLineHeight` is
+   * de verwachte regelafstand (px).
+   *
+   * Waarom meten: de verschuiving van het rollende venster (`captionWindowShiftLines`)
+   * en de hoogte van het venster (`captionBoxHeightEmForAdvance`) mogen niet
+   * alleen van `getComputedStyle(...).lineHeight` afhangen. Zet de pagina
+   * (of een andere extensie) een grotere `line-height` op de woordblokjes, dan
+   * houdt de wrapper zijn eigen 1,4 terwijl de regels verder uit elkaar staan:
+   * rekenen met 1,4 laat de bovenste regel dan uit het venster lopen, waardoor
+   * de letters bovenaan afgekapt worden (klacht 2026-09-18). De afstand tussen
+   * de regels is de bron van waarheid; die meten we hier.
+   *
+   * Retour: `{lines, advance, tops}`. `advance` is de mediaan van de afstanden
+   * tussen de gevonden regels (0 bij één regel of niets te meten), zodat één
+   * rare regel (fontval) de maat niet verpest. De tolerantie om rechthoeken bij
+   * dezelfde regel te tellen is 0,4 x de verwachte regelafstand: ruim groter
+   * dan de verticale woordpadding (0,16em ≈ 0,11 x de regelafstand) en ruim
+   * kleiner dan de afstand tussen twee regels.
+   */
+  function captionLineMetrics(rects, fallbackLineHeight) {
+    var items = [];
+    if (rects && rects.length) {
+      for (var i = 0; i < rects.length; i++) {
+        var r = rects[i];
+        if (!r) continue;
+        var top = Number(r.top);
+        if (!isFinite(top)) continue;
+        var bottom = Number(r.bottom);
+        items.push({ top: top, bottom: isFinite(bottom) ? bottom : top });
+      }
+    }
+    var fb = typeof fallbackLineHeight === 'number' && isFinite(fallbackLineHeight) && fallbackLineHeight > 0 ? fallbackLineHeight : 0;
+    var tol = fb ? fb * CAPTION_LINE_GROUP_TOL : 4;
+    var lines = [];
+    for (var j = 0; j < items.length; j++) {
+      var it = items[j];
+      var hit = null;
+      for (var k = 0; k < lines.length; k++) {
+        if (Math.abs(lines[k].top - it.top) <= tol) { hit = lines[k]; break; }
+      }
+      if (hit) {
+        if (it.top < hit.top) hit.top = it.top;
+        if (it.bottom > hit.bottom) hit.bottom = it.bottom;
+      } else {
+        lines.push({ top: it.top, bottom: it.bottom });
+      }
+    }
+    lines.sort(function (a, b) { return a.top - b.top; });
+    var gaps = [];
+    for (var m = 1; m < lines.length; m++) {
+      var d = lines[m].top - lines[m - 1].top;
+      if (d > 0.01) gaps.push(d);
+    }
+    var advance = 0;
+    if (gaps.length) {
+      // Mediaan: één regel met een andere (fontval-)hoogte mag de maat niet
+      // verpesten; bij een even aantal het gemiddelde van de twee middelsten.
+      gaps.sort(function (a, b) { return a - b; });
+      var mid = Math.floor(gaps.length / 2);
+      advance = gaps.length % 2 ? gaps[mid] : (gaps[mid - 1] + gaps[mid]) / 2;
+    }
+    var tops = [];
+    for (var t = 0; t < lines.length; t++) tops.push(lines[t].top);
+    return {
+      lines: lines.length,
+      advance: Math.round(advance * 100) / 100,
+      tops: tops
+    };
   }
 
   /* ------------------------------------------------------------------ *
@@ -1167,6 +1289,7 @@
     captionEventIndex: captionEventIndex,
     captionRevealCount: captionRevealCount,
     captionBoxHeightEm: captionBoxHeightEm,
+    captionBoxHeightEmForAdvance: captionBoxHeightEmForAdvance,
     CAPTION_LINE_HEIGHT: CAPTION_LINE_HEIGHT,
     CAPTION_PAD_TOP_EM: CAPTION_PAD_TOP_EM,
     CAPTION_PAD_BOTTOM_EM: CAPTION_PAD_BOTTOM_EM,
@@ -1182,6 +1305,10 @@
     captionRunAt: captionRunAt,
     captionWordIndex: captionWordIndex,
     captionWindowShift: captionWindowShift,
+    captionWindowShiftLines: captionWindowShiftLines,
+    captionLinesFromHeight: captionLinesFromHeight,
+    captionLineMetrics: captionLineMetrics,
+    CAPTION_LINE_GROUP_TOL: CAPTION_LINE_GROUP_TOL,
     isSpeakerChange: isSpeakerChange,
     captionSpeakerBreaks: captionSpeakerBreaks,
     rgbaFromHex: rgbaFromHex,

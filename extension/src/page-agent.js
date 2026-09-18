@@ -773,16 +773,31 @@
           // het klipt ook eventueel gecompositeerde lagen op de rand van het
           // venster af, zodat er nooit tekst buiten het venster valt als de
           // tekst omhoog schuift (zie setWordShift()).
+          //
+          // De regelafstand en de fontgrootte van de wrapper en van de
+          // woordblokjes worden hier met `!important` VASTGEZET. Dat is geen
+          // overbodige luxe: de mutatie (de verschuiving en de hoogte van het
+          // venster) hangt aan de echte regelafstand, en een regel in de pagina
+          // (of een andere extensie) die alleen `span`/`div` raakt kan de
+          // overgeërfde 1,4em overschrijven. Dan staan de regels verder uit
+          // elkaar dan de wrapper zegt en liep de bovenste regel uit het venster
+          // (klacht 2026-09-18: "de tekst op de 1e regel kruipt omhoog en de
+          // letters worden afgekapt"). De page agent meet de afstand nu ook
+          // zelf (zie boostLineMetrics()), maar het ontwerp hoort 1,4em te zijn
+          // en dat mag de pagina niet veranderen.
           '#sc-caption-overlay .sc-caption-box{position:relative;display:block;margin:0 auto;overflow:hidden;clip-path:inset(0);' +
           'box-sizing:border-box;width:50%;text-align:left;white-space:pre-wrap;' +
+          'font-size:1em!important;' +
           'padding:' + L.CAPTION_PAD_TOP_EM + 'em ' + L.CAPTION_PAD_X_EM + 'em ' + L.CAPTION_PAD_BOTTOM_EM + 'em;' +
           'text-shadow:0 0 2px rgba(0,0,0,.8)}' +
           // De tekst schuift met een korte overgang op `top` (en niet met
           // `transform`: dat zet de tekst op een eigen compositing-laag, want
           // dan kan hij tijdens het schuiven buiten het venster getekend
           // worden — "regel 1 komt boven het blok uit").
-          '#sc-caption-overlay .sc-caption-scroll{position:relative;transition:top .2s ease-out}' +
+          '#sc-caption-overlay .sc-caption-scroll{position:relative;transition:top .2s ease-out;' +
+          'line-height:' + L.CAPTION_LINE_HEIGHT + '!important;font-size:1em!important}' +
           '#sc-caption-overlay .sc-caption-word{background:var(--sc-caption-bg);' +
+          'line-height:' + L.CAPTION_LINE_HEIGHT + '!important;font-size:1em!important;' +
           'padding:' + L.CAPTION_WORD_PAD_Y_EM + 'em ' + L.CAPTION_WORD_PAD_X_EM + 'em;' +
           'margin:0 -' + L.CAPTION_WORD_PAD_X_EM + 'em}';
         (document.head || document.documentElement).appendChild(st);
@@ -941,6 +956,11 @@
     box.style.fontSize = '';
     box.style.maxWidth = '';
     box.style.height = L.captionBoxHeightEm(BOOST_LINES) + 'em';
+    // Staan de regels in de pagina verder uit elkaar dan 1,4em, dan is de
+    // em-hoogte hierboven te laag en zou de onderste regel van het blok
+    // wegvallen; de meting zet de hoogte dan goed (en laat hem in de normale
+    // situatie exact gelijk).
+    applyBoostBoxHeight();
   }
 
   /**
@@ -967,19 +987,85 @@
   }
 
   /**
-   * Hoogte van één regel (px) in het captionvenster. De CSS zet
-   * `line-height:1.4`; `getComputedStyle` geeft die (via de overlay
-   * overgeërfd) als px terug. Komt er geen bruikbare waarde uit, dan rekenen
-   * we met dezelfde verhouding als de CSS.
+   * Hoogte van één regel (px) in het captionvenster volgens de CSS. De CSS zet
+   * `line-height:1.4` (met `!important`, zie ensureBoostDom);
+   * `getComputedStyle` geeft die (via de overlay overgeërfd) als px terug. Komt
+   * er geen bruikbare waarde uit, dan rekenen we met dezelfde verhouding als de
+   * CSS.
+   *
+   * Dit is de VERWACHTE regelafstand; de echte afstand tussen de regels wordt
+   * gemeten met boostLineMetrics() (die kan groter zijn als de pagina de
+   * woordblokjes toch een andere line-height geeft).
    */
   function boostLineHeightPx() {
     var px = 0;
     try { px = parseFloat(getComputedStyle(boost.scrollEl).lineHeight); } catch (e) { px = 0; }
+    if (!isFinite(px) || px <= 0) px = boostFontPx() * L.CAPTION_LINE_HEIGHT;
+    return isFinite(px) && px > 0 ? px : 0;
+  }
+
+  /** Fontgrootte (px) van de overlay: inline gezet door applyBoostStyle(). */
+  function boostFontPx() {
+    var el = boost.overlay;
+    var px = 0;
+    try { px = parseFloat(el && el.style ? el.style.fontSize : ''); } catch (e) { px = 0; }
     if (!isFinite(px) || px <= 0) {
-      var fs = parseFloat((boost.overlay && boost.overlay.style.fontSize) || '') || 0;
-      px = fs * 1.4;
+      try { px = parseFloat(getComputedStyle(el).fontSize); } catch (e) { px = 0; }
     }
     return isFinite(px) && px > 0 ? px : 0;
+  }
+
+  /**
+   * De regels van de eigen weergave METEN in plaats van ze uit de line-height
+   * van de wrapper af te leiden: `{lines, advance}` uit de bovenkanten van de
+   * woordblokjes (via L.captionLineMetrics()). `advance` = de echte afstand
+   * tussen twee regels in px (0 als er maar één regel staat).
+   *
+   * Nodig omdat de pagina de woordblokjes een andere line-height kan geven dan
+   * de wrapper (de wrapper houdt dan 1,4em terwijl de regels verder uit elkaar
+   * staan). Rekenen met de verkeerde regelafstand laat de bovenste regel uit het
+   * venster lopen: de letters bovenaan worden dan afgekapt (klacht 2026-09-18).
+   * De verschuiving en de vensterhoogte gebruiken daarom deze meting; alleen als
+   * meten niet lukt (geen woorden, geen layout) valt de aanroeper terug op de
+   * verwachte regelafstand.
+   */
+  function boostLineMetrics(expectedLineHeightPx) {
+    var wrap = boost.scrollEl;
+    var empty = { lines: 0, advance: 0, tops: [] };
+    if (!wrap) return empty;
+    var spans = null;
+    try { spans = wrap.querySelectorAll('.sc-caption-word'); } catch (e) { spans = null; }
+    if (!spans || !spans.length) return empty;
+    var rects = [];
+    for (var i = 0; i < spans.length; i++) {
+      var r = null;
+      try { r = spans[i].getBoundingClientRect(); } catch (e) { r = null; }
+      if (!r || !(r.width > 0) || !(r.height > 0)) continue;
+      rects.push({ top: r.top, bottom: r.bottom });
+    }
+    if (!rects.length) return empty;
+    return L.captionLineMetrics(rects, expectedLineHeightPx);
+  }
+
+  /**
+   * Hoogte van het vaste venster bijstellen op basis van de GEMETEN
+   * regelafstand. Staan de regels in de pagina verder uit elkaar dan de
+   * standaard 1,4em, dan is een venster van `BOOST_LINES` x 1,4em te laag en
+   * zou de onderste regel onderaan wegvallen (en de bovenste regel er
+   * bovenaan uitlopen). Zonder bruikbare meting blijft de em-hoogte staan —
+   * dan is het resultaat exact hetzelfde als voorheen.
+   *
+   * `metrics` mag een al gemeten `{lines, advance}` zijn (dan wordt er niet
+   * nog een keer gemeten; zie updateWordWindow()).
+   */
+  function applyBoostBoxHeight(metrics) {
+    var box = boost.box;
+    if (!box) return;
+    var fontPx = boostFontPx();
+    var m = metrics || boostLineMetrics(boostLineHeightPx());
+    var advanceEm = (m.advance > 0 && fontPx > 0) ? m.advance / fontPx : L.CAPTION_LINE_HEIGHT;
+    var css = L.captionBoxHeightEmForAdvance(BOOST_LINES, advanceEm) + 'em';
+    if (box.style.height !== css) box.style.height = css;
   }
 
   /**
@@ -987,6 +1073,14 @@
    * regels past gebeurt er niets; daarboven schuift de tekst per HELE regel
    * omhoog zodat altijd de laatste regels zichtbaar zijn. De box zelf blijft
    * even hoog (het font krimpt nooit).
+   *
+   * De verschuiving komt uit de GEMETEN regels (`boostLineMetrics`): het aantal
+   * regels en de echte afstand ertussen. In de normale situatie is dat precies
+   * `L.captionWindowShift(hoogte, line-height, BOOST_LINES)`; wijkt de echte
+   * afstand af (pagina-CSS), dan blijft de bovenste regel nu toch precies onder
+   * de bovenrand van het venster staan in plaats van erboven (afgekapte
+   * letters). Het venster zelf wordt met dezelfde meting op hoogte gebracht
+   * (applyBoostBoxHeight), zodat er altijd BOOST_LINES hele regels in passen.
    *
    * Het schuiven gebeurt met `top` op een `position:relative`-wrapper (via
    * setWordShift), met een korte CSS-overgang zodat je de slide-up ziet. Bewust
@@ -997,9 +1091,14 @@
   function updateWordWindow() {
     var wrap = boost.scrollEl;
     if (!wrap) return;
+    var lh = boostLineHeightPx();
     var h = 0;
     try { h = wrap.getBoundingClientRect().height; } catch (e) { h = 0; }
-    var shift = L.captionWindowShift(h, boostLineHeightPx(), BOOST_LINES);
+    var m = boostLineMetrics(lh);
+    var lines = m.lines > 0 ? m.lines : L.captionLinesFromHeight(h, lh);
+    var step = m.advance > 0 ? m.advance : lh;
+    applyBoostBoxHeight(m);
+    var shift = L.captionWindowShiftLines(lines, step, BOOST_LINES);
     if (shift === boost.windowShift) return;
     boost.windowShift = shift;
     setWordShift(shift, true);
@@ -1084,7 +1183,9 @@
     var n = L.captionWordIndex(run.words, t, BOOST_WORD_LEAD);
     if (boost.runKey !== run.start || n < boost.wordCount) invalidateBoostText();
     boost.runKey = run.start;
-    box.style.height = L.captionBoxHeightEm(BOOST_LINES) + 'em';
+    // De hoogte van het venster wordt NIET elke frame opnieuw gezet (dat zou de
+    // gemeten hoogte steeds terugzetten): hij volgt de woorden, via
+    // updateWordWindow() -> applyBoostBoxHeight() zodra er iets verandert.
     var grew = false;
     while (boost.wordCount < n && boost.wordCount < run.words.length) {
       var word = run.words[boost.wordCount];

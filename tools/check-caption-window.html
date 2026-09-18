@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<title>Caption Boost - rollend venster: blijft de bovenste regel heel?</title>
+<style>
+  body { margin: 0; padding: 20px; font: 14px/1.5 "Segoe UI", system-ui, sans-serif; background: #14161c; color: #e8eef7; }
+  h1 { font-size: 18px; margin: 0 0 6px; }
+  h2 { font-size: 15px; margin: 20px 0 4px; }
+  .sub { color: #93a1b5; max-width: 1150px; margin-bottom: 10px; }
+  .verdict { font-size: 15px; font-weight: 600; padding: 10px 14px; border-radius: 8px; margin: 8px 0 14px; display: inline-block; max-width: 1200px; }
+  .pass { background: #12331f; color: #56e39f; border: 1px solid #1e5a37; }
+  .fail { background: #3a1414; color: #ff9a9a; border: 1px solid #6a2020; }
+  .stageWrap { overflow: hidden; position: relative; margin: 10px 0 6px; }
+  /* Exact de stijlen van de eigen captionweergave (page-agent.js), inclusief de
+     !important-pins op de regelafstand/fontgrootte van de wrapper en de
+     woordblokjes. */
+  .sc-player { position: relative; background: linear-gradient(135deg, #45566b, #8a9aab); overflow: hidden; }
+  .sc-player #sc-caption-overlay { position: absolute; left: 0; right: 0; bottom: 3.5%; text-align: center; pointer-events: none; z-index: 45; display: block;
+    font-weight: 400; line-height: 1.4; font-family: Roboto, Arial, sans-serif; --sc-caption-bg: rgba(8,8,8,.75); }
+  .sc-player #sc-caption-overlay .sc-caption-box { position: relative; display: block; margin: 0 auto; overflow: hidden; clip-path: inset(0); box-sizing: border-box; width: 50%; text-align: left; white-space: pre-wrap;
+    font-size: 1em !important; padding: .06em .32em .03em; text-shadow: 0 0 2px rgba(0,0,0,.8); color: rgba(255,255,255,1); }
+  .sc-player #sc-caption-overlay .sc-caption-scroll { position: relative; transition: top .2s ease-out; line-height: 1.4 !important; font-size: 1em !important; }
+  .sc-player #sc-caption-overlay .sc-caption-word { background: var(--sc-caption-bg); line-height: 1.4 !important; font-size: 1em !important;
+    padding: var(--sc-word-pad-y, .16em) var(--sc-word-pad-x, .28em); margin: 0 calc(-1 * var(--sc-word-pad-x, .28em)); }
+  /* Scenario B: een hardnekkige pagina zet de woordblokjes een grotere
+     line-height (inline + !important — dat wint van onze stylesheet-pin). */
+  table { border-collapse: collapse; font: 12px Consolas, monospace; margin-bottom: 6px; }
+  th, td { border-bottom: 1px solid #232936; padding: 3px 7px; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  .bad { color: #ff9a9a; font-weight: 700; }
+  .warn { color: #ffd166; }
+  .good { color: #56e39f; }
+  code { font-family: Consolas, monospace; background: #232936; padding: 1px 5px; border-radius: 4px; }
+  .note { color: #93a1b5; font-size: 12.5px; max-width: 1150px; margin-top: 16px; }
+</style>
+</head>
+<body>
+  <h1>Caption Boost &mdash; rollend venster: blijft de bovenste regel heel?</h1>
+  <div class="sub">
+    Simuleert <code>renderWordFrame()</code> + <code>updateWordWindow()</code> uit
+    <code>page-agent.js</code> met de echte overlay-CSS, per woord, over de hele run.
+    <b>gapText</b> = de afstand tussen de bovenrand van het venster (de clipgrens) en de bovenkant
+    van de bovenste zichtbare tekstregel: die hoort positief te zijn (≈0,2em = een stukje zwart
+    boven regel 1) &mdash; negatief betekent dat de letters bovenaan worden afgekapt.
+    <b>Oude berekening</b> = rekenen met <code>getComputedStyle(wrap).lineHeight</code> en de
+    em-hoogte (<code>captionWindowShift</code> + <code>captionBoxHeightEm</code>);
+    <b>nu</b> = meten (<code>captionLineMetrics</code> + <code>captionWindowShiftLines</code> +
+    <code>captionBoxHeightEmForAdvance</code>).
+  </div>
+  <div id="verdict" class="verdict">bezig...</div>
+  <div id="out"></div>
+  <div id="stageHost" style="position:absolute;left:-4000px;top:0"></div>
+  <div class="note">
+    Scenario A = normale CSS (de pagina raakt de overlay niet aan). Scenario B = een pagina die de
+    woordblokjes <em>inline</em> een grotere <code>line-height</code> geeft (<code>!important</code>);
+    onze stylesheet-pin kan dat niet tegenhouden, dus dan moet de <em>meting</em> het venster
+    kloppend houden: het venster wordt dan hoger (twee hele regels) en de verschuiving volgt de
+    echte regelafstand, zodat de bovenste regel niet meer uit het venster loopt.
+    De meting gebeurt per woord op een echte layout (1280x720, 130% grootte), met de woorden uit
+    een lange doorlopende spraak (zoals een debatvideo zonder stiltes).
+  </div>
+  <script src="../extension/src/shared/lang-utils.js"></script>
+  <script>
+    (function () {
+      var L = window.SCLang;
+      var LINES = 2;
+      var SILENCE = 'Kijk , als mevrouw Bikker ook het bredere punt wil maken dan zou ik daar graag ' +
+                    'eerst nog even iets over willen zeggen in deze vergadering want dat is namelijk ' +
+                    'precies het punt waar het hier vandaag over gaat en daarom wil ik dat graag ' +
+                    'eerst even goed met elkaar bespreken voordat we verder gaan met de rest van de ' +
+                    'agenda van deze vergadering vandaag hier in de zaal en daarbuiten';
+      var WORDS = SILENCE.split(' ');
+
+      var host = document.getElementById('stageHost');
+      var stage, overlay, box, wrap, FS;
+
+      function buildStage() {
+        host.textContent = '';
+        stage = document.createElement('div');
+        stage.className = 'sc-player';
+        stage.style.width = '1280px';
+        stage.style.height = '720px';
+        overlay = document.createElement('div');
+        overlay.id = 'sc-caption-overlay';
+        box = document.createElement('div');
+        box.className = 'sc-caption-box';
+        wrap = document.createElement('div');
+        wrap.className = 'sc-caption-scroll';
+        box.appendChild(wrap);
+        overlay.appendChild(box);
+        stage.appendChild(overlay);
+        host.appendChild(stage);
+        stage.style.position = 'relative';
+        overlay.style.display = 'block';
+        FS = L.captionFontPx(stage.clientHeight, 0, 130);
+        overlay.style.fontSize = (Math.round(FS * 10) / 10) + 'px';
+        wrap.style.transition = 'none';
+      }
+
+      function appendWord(text, hostile) {
+        var el = document.createElement('span');
+        el.className = 'sc-caption-word';
+        el.textContent = text + ' ';
+        if (hostile) {
+          // Inline !important: wint van onze stylesheet-pin (zoals een pagina of
+          // een andere extensie die de woordblokjes zelf een line-height geeft).
+          el.style.setProperty('line-height', '2.2em', 'important');
+        }
+        wrap.appendChild(el);
+      }
+
+      /** Per woord het woordblokje (border box) en de tekst erin (glyph-vak). */
+      function wordRects() {
+        var blocks = [], texts = [];
+        var spans = wrap.querySelectorAll('.sc-caption-word');
+        for (var i = 0; i < spans.length; i++) {
+          var range = document.createRange();
+          range.selectNodeContents(spans[i]);
+          var rects = range.getClientRects();
+          var block = null, text = null;
+          for (var j = 0; j < rects.length; j++) {
+            var r = rects[j];
+            if (r.width <= 0 || r.height <= 0) continue;
+            if (!block || r.height > block.height) block = { top: r.top, bottom: r.bottom, height: r.height };
+            if (!text || r.height < text.height) text = { top: r.top, bottom: r.bottom, height: r.height };
+          }
+          if (block) { blocks.push({ top: block.top, bottom: block.bottom }); texts.push(text || block); }
+        }
+        return { blocks: blocks, texts: texts };
+      }
+
+      function setShift(px) {
+        wrap.style.top = (px ? -px : 0) + 'px';
+      }
+
+      /** Eén tijdpad (run) doorlopen; `mode` = 'old' | 'new'. */
+      function walk(hostile, mode) {
+        buildStage();
+        var lh = parseFloat(getComputedStyle(wrap).lineHeight) || 0;
+        var res = { minGapText: null, minGapBlock: null, worstAt: 0, advance: 0, lines: 0, cutSteps: 0, bottomCut: 0, heightEm: '', rows: [] };
+        var lastBoxBottom = 0;
+        for (var n = 1; n <= WORDS.length; n++) {
+          appendWord(WORDS[n - 1], hostile);
+          var h = wrap.getBoundingClientRect().height;
+          if (mode === 'old') {
+            box.style.height = L.captionBoxHeightEm(LINES) + 'em';
+            setShift(L.captionWindowShift(h, lh, LINES));
+          } else {
+            var m = boostMetrics(h, lh);
+            var fontPx = parseFloat(overlay.style.fontSize) || FS;
+            var advanceEm = m.advance > 0 && fontPx > 0 ? m.advance / fontPx : L.CAPTION_LINE_HEIGHT;
+            box.style.height = L.captionBoxHeightEmForAdvance(LINES, advanceEm) + 'em';
+            setShift(L.captionWindowShiftLines(m.lines, m.advance > 0 ? m.advance : lh, LINES));
+            if (m.lines) res.lines = m.lines;
+            if (m.advance > 0) res.advance = m.advance;
+          }
+          void wrap.offsetHeight;
+
+          var rects = wordRects();
+          var boxRect = box.getBoundingClientRect();
+          var blockLines = L.captionLineMetrics(rects.blocks, lh);
+          var textLines = L.captionLineMetrics(rects.texts, lh);
+          var gapBlock = gapOf(blockLines, rects.blocks, boxRect.top);
+          var gapText = gapOf(textLines, rects.texts, boxRect.top);
+          if (isFinite(gapText) && (res.minGapText === null || gapText < res.minGapText)) { res.minGapText = gapText; res.worstAt = n; }
+          if (isFinite(gapBlock) && (res.minGapBlock === null || gapBlock < res.minGapBlock)) res.minGapBlock = gapBlock;
+          if (isFinite(gapText) && gapText <= 0) res.cutSteps++;
+          // Nieuwste regel moet onderaan helemaal in het venster passen.
+          var lastText = rects.texts.length ? rects.texts[rects.texts.length - 1] : null;
+          if (lastText && lastText.bottom > boxRect.bottom + 0.5) res.bottomCut++;
+          lastBoxBottom = boxRect.bottom;
+          if (n <= 2 || n === WORDS.length || isFinite(gapText) && gapText <= 0 && res.rows.length < 10) {
+            res.rows.push({ n: n, lines: blockLines.lines, h: h, lh: lh, advance: blockLines.advance, shift: parseFloat(wrap.style.top) * -1, gapText: gapText });
+          }
+        }
+        res.heightEm = box.style.height;
+        return res;
+      }
+
+      /** Dezelfde meting als boostLineMetrics() in page-agent.js. */
+      function boostMetrics(h, lh) {
+        var rects = wordRects().blocks;
+        var m = L.captionLineMetrics(rects, lh);
+        if (!m.lines) m.lines = L.captionLinesFromHeight(h, lh);
+        return m;
+      }
+
+      /** gap van de bovenste regel die in het venster valt. */
+      function gapOf(metrics, rects, boxTop) {
+        var byTop = [];
+        for (var i = 0; i < rects.length; i++) byTop.push(rects[i]);
+        byTop.sort(function (a, b) { return a.top - b.top; });
+        for (var j = 0; j < byTop.length; j++) {
+          if (byTop[j].bottom > boxTop + 0.5) return byTop[j].top - boxTop;
+        }
+        return NaN;
+      }
+
+      function fmt(v, d) { return v === null || !isFinite(v) ? '-' : v.toFixed(d === undefined ? 2 : d); }
+
+      var results = [];
+      var out = document.getElementById('out');
+      for (var s = 0; s < 2; s++) {
+        var hostile = s === 1;
+        var oldRes = walk(hostile, 'old');
+        var newRes = walk(hostile, 'new');
+        results.push({ hostile: hostile, oldRes: oldRes, newRes: newRes });
+
+        var h2 = document.createElement('h2');
+        h2.textContent = hostile
+          ? 'B. Pagina geeft de woordblokjes inline line-height 2,2em (bugscenario)'
+          : 'A. Normale CSS';
+        out.appendChild(h2);
+        var sum = document.createElement('div');
+        sum.className = 'verdict ' + (!(newRes.minGapText > 0) || newRes.cutSteps || newRes.bottomCut ? 'fail' : 'pass');
+        sum.innerHTML =
+          (hostile ? 'pagina-override actief &middot; ' : '') +
+          'gemeten regelafstand = ' + fmt(newRes.advance) + 'px (' + fmt(newRes.advance / FS, 3) + 'em), ' +
+          'lh(wrapper) = ' + fmt(parseFloat(getComputedStyle(wrap).lineHeight)) + 'px, font = ' + fmt(FS) + 'px, venster = ' + newRes.heightEm +
+          '<br>oud: kleinste gapText = ' + fmt(oldRes.minGapText) + 'px (' + fmt(oldRes.minGapText / FS, 3) + 'em), afgekapte stappen = ' + oldRes.cutSteps + ', onderaan afgekapt = ' + oldRes.bottomCut +
+          ' &nbsp;→&nbsp; <b>nu: kleinste gapText = ' + fmt(newRes.minGapText) + 'px (' + fmt(newRes.minGapText / FS, 3) + 'em)</b>, afgekapte stappen = ' + newRes.cutSteps + ', onderaan afgekapt = ' + newRes.bottomCut;
+        out.appendChild(sum);
+
+        var t = document.createElement('table');
+        var html = '<thead><tr><th>n</th><th>regels</th><th>wrap-h</th><th>lh</th><th>advance (gemeten)</th><th>shift</th><th>gapText (oud → nu)</th></tr></thead><tbody>';
+        for (var i = 0; i < newRes.rows.length; i++) {
+          var rn = newRes.rows[i];
+          var ro = null;
+          for (var k = 0; k < oldRes.rows.length; k++) if (oldRes.rows[k].n === rn.n) { ro = oldRes.rows[k]; break; }
+          var g = rn.gapText;
+          html += '<tr class="' + (g <= 0 ? 'bad' : (g < 0.1 * FS ? 'warn' : 'good')) + '">' +
+            '<td>' + rn.n + '</td><td>' + rn.lines + '</td><td>' + fmt(rn.h, 1) + '</td><td>' + fmt(rn.lh) + '</td>' +
+            '<td>' + fmt(rn.advance) + '</td><td>' + fmt(rn.shift) + '</td>' +
+            '<td>' + (ro ? fmt(ro.gapText) : '-') + ' → ' + fmt(rn.gapText) + '</td></tr>';
+        }
+        t.innerHTML = html + '</tbody>';
+        out.appendChild(t);
+      }
+
+      var ok = true;
+      var parts = [];
+      for (var q = 0; q < results.length; q++) {
+        var r = results[q];
+        var good = r.newRes.minGapText > 0 && r.newRes.cutSteps === 0 && r.newRes.bottomCut === 0;
+        if (!good) ok = false;
+        parts.push((r.hostile ? 'B' : 'A') + ': ' + (good ? 'OK' : 'FOUT') +
+          ' (kleinste gapText ' + fmt(r.newRes.minGapText) + 'px, afgekapt ' + r.newRes.cutSteps +
+          ', onderaan ' + r.newRes.bottomCut + '; oud: ' + fmt(r.oldRes.minGapText) + 'px / ' + r.oldRes.cutSteps + ')');
+      }
+      var v = document.getElementById('verdict');
+      v.className = 'verdict ' + (ok ? 'pass' : 'fail');
+      v.innerHTML = (ok ? 'PASS' : 'FAIL') + ' &mdash; ' + parts.join(' &middot; ') +
+        '<br><span style="font-weight:400">De oude berekening kapt in scenario B de bovenste regel af; de meting houdt de tekst in beide scenario\'s heel.</span>';
+    })();
+  </script>
+</body>
+</html>
