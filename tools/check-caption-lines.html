@@ -42,7 +42,7 @@
        regelafbreking gelijk blijven. De maten komen uit dezelfde constanten als de
        app (L.CAPTION_WORD_PAD_*_EM, gezet in setupStages). */
     #sc-caption-overlay .sc-caption-word { background: var(--sc-caption-bg);
-      padding: var(--sc-word-pad-y, .16em) var(--sc-word-pad-x, .28em);
+      padding: var(--sc-word-pad-top, .16em) var(--sc-word-pad-x, .28em) var(--sc-word-pad-bottom, .16em);
       margin: 0 calc(-1 * var(--sc-word-pad-x, .28em));
       line-height: 1.4 !important; font-size: 1em !important; }
     /* display:block + margin:0 auto (geen inline-block): anders wordt de
@@ -483,34 +483,81 @@
         return out;
       }
 
+      /** De tekstvakken (fontvakken) van de woordblokjes, per stuk. */
+      function wordTextRects(els) {
+        var out = [];
+        var spans = els.wrap.querySelectorAll('.sc-caption-word');
+        for (var i = 0; i < spans.length; i++) {
+          var range = document.createRange();
+          range.selectNodeContents(spans[i]);
+          var rects = range.getClientRects();
+          var best = null;
+          for (var j = 0; j < rects.length; j++) {
+            var r = rects[j];
+            if (r.width <= 0 || r.height <= 0) continue;
+            if (!best || r.height < best.height) best = { top: r.top, bottom: r.bottom, height: r.height };
+          }
+          if (best) out.push(best);
+        }
+        return out;
+      }
+
+      /** De fontmaten zoals boostInkMetrics() in de page agent (via een canvas). */
+      function inkMetrics(els) {
+        var options = els || wordEls();
+        var cs = window.getComputedStyle(options.overlay);
+        var fontPx = parseFloat(cs.fontSize) || 0;
+        var ctx = document.createElement('canvas').getContext('2d');
+        ctx.font = (cs.fontWeight ? cs.fontWeight + ' ' : '') + fontPx + 'px ' + cs.fontFamily;
+        var m = ctx.measureText('Hxdpgjq');
+        var ascent = m.fontBoundingBoxAscent || 0;
+        var descent = m.fontBoundingBoxDescent || 0;
+        var inkAsc = m.actualBoundingBoxAscent || 0;
+        var inkDesc = m.actualBoundingBoxDescent || 0;
+        return {
+          fontPx: fontPx,
+          fontBoxPx: ascent + descent,
+          inkAbovePx: Math.max(0, ascent - inkAsc),
+          inkBelowPx: Math.max(0, descent - inkDesc)
+        };
+      }
+
       /**
-       * Het venster zetten zoals de page agent dat doet: de verschuiving komt uit
-       * de GEMETEN regels (`L.captionLineMetrics` -> `L.captionWindowShiftLines`,
-       * hele regels) en wordt met `top` op de `position:relative`-wrapper gezet
-       * (geen transform: dat zet de tekst op een eigen laag en dan kan hij buiten
-       * het `overflow:hidden`-venster vallen); de hoogte van de box volgt de
-       * gemeten regelafstand (`L.captionBoxHeightEmForAdvance`), zodat er altijd
-       * `lines` hele regels in passen.
+       * Het venster zetten zoals de page agent dat doet: de layout komt uit de
+       * ECHTE font- en inktmaten (`L.captionVerticalLayout`): de hoogte van het
+       * venster, de verticale padding van de woordblokjes en de verschuiving (het
+       * aantal GEMETEN regels in hele stappen, plus de marge waardoor de inkt van
+       * de bovenste regel precies `margin` onder de bovenrand komt te staan).
        *
-       * In de normale situatie (de pagina raakt de overlay niet aan) is dat
-       * exact hetzelfde als rekenen met `getComputedStyle(wrap).lineHeight`;
-       * staat er wel een andere regelafstand op de woordblokjes, dan blijft de
-       * bovenste regel nu binnen het venster in plaats van erboven — zie
+       * Daardoor staat de tekst optisch midden in het zwart (evenveel zwart boven
+       * als onder) en blijft de bovenste regel heel, ook als de pagina de
+       * woordblokjes een andere line-height geeft — zie
        * `tools/check-caption-window.html`.
        */
       function applyWordWindow(els, lines) {
         var lh = wordLineHeight(els);
-        var fontPx = parseFloat(window.getComputedStyle(els.overlay).fontSize) || 0;
         var h = els.wrap.getBoundingClientRect().height;
         var m = L.captionLineMetrics(wordBlockRects(els), lh);
-        var lineCount = m.lines > 0 ? m.lines : L.captionLinesFromHeight(h, lh);
         var step = m.advance > 0 ? m.advance : lh;
-        var advanceEm = (m.advance > 0 && fontPx > 0) ? m.advance / fontPx : L.CAPTION_LINE_HEIGHT;
-        els.box.style.height = L.captionBoxHeightEmForAdvance(lines, advanceEm) + 'em';
-        var shift = L.captionWindowShiftLines(lineCount, step, lines);
+        var ink = inkMetrics(els);
+        var layout = L.captionVerticalLayout({
+          advancePx: step,
+          fontPx: ink.fontPx,
+          fontBoxPx: ink.fontBoxPx,
+          inkAbovePx: ink.inkAbovePx,
+          inkBelowPx: ink.inkBelowPx,
+          padTopPx: parseFloat(window.getComputedStyle(els.box).paddingTop) || 0,
+          padBottomPx: parseFloat(window.getComputedStyle(els.box).paddingBottom) || 0,
+          lines: lines
+        });
+        els.box.style.height = layout.heightEm + 'em';
+        els.overlay.style.setProperty('--sc-word-pad-top', layout.wordPadTopEm + 'em');
+        els.overlay.style.setProperty('--sc-word-pad-bottom', layout.wordPadBottomEm + 'em');
+        var lineCount = m.lines > 0 ? m.lines : L.captionLinesFromHeight(h, lh);
+        var shift = L.captionWindowShiftLines(lineCount, step, lines) + layout.shiftPx;
         setWordShift(els, shift, true);
         els.wrap.style.transform = '';
-        return { lineHeight: lh, advance: step, lines: lineCount, height: h, shift: shift };
+        return { lineHeight: lh, advance: step, lines: lineCount, height: h, shift: shift, layout: layout, ink: ink };
       }
 
       /**
@@ -546,15 +593,37 @@
         }
       }
 
+      /** De regels waarvan de tekst in het venster valt: `{top, bottom}` per regel. */
+      function visibleTextLines(els, boxRect) {
+        var tol = Math.max(2, wordLineHeight(els) * 0.4);
+        var lines = [];
+        var rects = wordTextRects(els);
+        for (var i = 0; i < rects.length; i++) {
+          var r = rects[i];
+          if (r.bottom <= boxRect.top + 0.5 || r.top >= boxRect.bottom - 0.5) continue;
+          var hit = null;
+          for (var k = 0; k < lines.length; k++) {
+            if (Math.abs(lines[k].top - r.top) <= tol) { hit = lines[k]; break; }
+          }
+          if (hit) { hit.top = Math.min(hit.top, r.top); hit.bottom = Math.max(hit.bottom, r.bottom); }
+          else lines.push({ top: r.top, bottom: r.bottom });
+        }
+        lines.sort(function (a, b) { return a.top - b.top; });
+        return lines;
+      }
+
       /**
        * Validatie van het rollende venster: loop per run ALLE woorden af en
        * meet na elk woord (met de echte CSS) of het venster doet wat de
        * gebruiker wil:
-       *   (a) de gemeten hoogte hoort bij het aantal regels,
-       *   (b) de verschuiving valt op hele regels en toont precies de laatste
-       *       BOOST_LINES regels (regel 1 eruit zodra regel 3 vol is),
-       *   (c) het nieuwste woord staat altijd in het venster,
-       *   (d) er verdwijnt geen tekst.
+       *   (a) de verschuiving valt op hele regels (de marge-offset uit de
+       *       inktlayout even buiten beschouwing gelaten) en toont precies de
+       *       laatste BOOST_LINES regels (regel 1 eruit zodra regel 3 vol is),
+       *   (b) het venster toont precies het aantal regels dat erin past,
+       *   (c) er blijft boven én onder evenveel zwart rond de tekst over
+       *       (optisch gecentreerd) en nooit bijna niets,
+       *   (d) het nieuwste woord staat altijd in het venster,
+       *   (e) er verdwijnt geen tekst.
        */
       function validateWordWindow(lines) {
         var els = wordEls();
@@ -562,7 +631,7 @@
         els.box.style.height = L.captionBoxHeightEm(lines) + 'em';
         // Meten zonder overgang: anders meet je de tussenstand van de slide-up.
         els.wrap.style.transition = 'none';
-        var out = { runs: [], stepOk: true, windowOk: true, heightOk: true, newestOk: true, textOk: true, maxLines: 0 };
+        var out = { runs: [], stepOk: true, windowOk: true, visibleOk: true, marginsOk: true, newestOk: true, textOk: true, maxLines: 0 };
         for (var r = 0; r < state.runs.length; r++) {
           var run = state.runs[r];
           var info = { start: run.start, end: run.end, count: run.words.length, maxLines: 0, steps: 0, text: '' };
@@ -573,15 +642,30 @@
             var total = measureLineInfo(els.box, els.wrap).lines;
             if (total > info.maxLines) info.maxLines = total;
             if (total > out.maxLines) out.maxLines = total;
-            if (win.lineHeight && Math.abs(win.height - total * win.lineHeight) > 1.5) out.heightOk = false;
-            var rem = win.lineHeight ? win.shift % win.lineHeight : 0;
-            if (win.lineHeight && rem > 0.75 && win.lineHeight - rem > 0.75) out.stepOk = false;
-            var want = Math.max(0, total - lines) * win.lineHeight;
-            if (Math.abs(win.shift - want) > 1.5) out.windowOk = false;
+            // (a) hele regels: de verschuiving min de marge-offset is een veelvoud
+            // van de gemeten regelafstand.
+            var stepped = win.shift - (win.layout ? win.layout.shiftPx : 0);
+            var rem = win.advance ? stepped % win.advance : 0;
+            if (win.advance && rem > 0.75 && win.advance - rem > 0.75) out.stepOk = false;
+            var want = Math.max(0, total - lines) * win.advance;
+            if (Math.abs(stepped - want) > 1.5) out.windowOk = false;
             if (win.shift > 0 && win.shift !== lastShift) info.steps++;
             lastShift = win.shift;
-            var lastLineTop = (total - 1) * win.lineHeight - win.shift;
-            if (lastLineTop + win.lineHeight > lines * win.lineHeight + 1.5) out.newestOk = false;
+            // (b) het venster toont precies min(total, lines) regels tekst.
+            var boxRect = els.box.getBoundingClientRect();
+            var vis = visibleTextLines(els, boxRect);
+            if (vis.length !== Math.min(total, lines)) out.visibleOk = false;
+            // (c) zwart boven/onder de inkt even groot (en nooit bijna niets).
+            if (win.ink && vis.length) {
+              var marginTop = vis[0].top + win.ink.inkAbovePx - boxRect.top;
+              var marginBottom = boxRect.bottom - (vis[vis.length - 1].bottom - win.ink.inkBelowPx);
+              if (marginTop < 0.2 * win.ink.fontPx) out.marginsOk = false;
+              if (vis.length >= lines && marginBottom < 0.2 * win.ink.fontPx) out.marginsOk = false;
+              if (vis.length >= lines && Math.abs(marginTop - marginBottom) > 1.5) out.marginsOk = false;
+            }
+            // (d) de nieuwste regel past helemaal in het venster.
+            var lastText = wordTextRects(els);
+            if (lastText.length && lastText[lastText.length - 1].bottom > boxRect.bottom + 1.5) out.newestOk = false;
             var joined = '';
             for (var i = 0; i < n; i++) joined += (i ? ' ' : '') + run.words[i].text;
             if (txt.replace(/\s+/g, ' ').trim() !== joined) out.textOk = false;
@@ -822,7 +906,7 @@
             '<td class="num ' + (r.maxLines > lines ? 'good' : '') + '">' + r.steps + '</td>';
           rowsR.appendChild(tr);
         });
-        var wordOk = wordRes.stepOk && wordRes.windowOk && wordRes.heightOk && wordRes.textOk && wordRes.newestOk;
+        var wordOk = wordRes.stepOk && wordRes.windowOk && wordRes.visibleOk && wordRes.marginsOk && wordRes.textOk && wordRes.newestOk;
 
         var v = document.getElementById('verdict');
         v.textContent = SCENARIOS[key].label + ' @ ' + lines + ' regels / ' + pctSize + '% op ' + hostW + 'x' + hostH +
@@ -840,6 +924,8 @@
           ' | woord-voor-woord: ' + wordRes.runs.length + ' runs, max ' + wordRes.maxLines + ' regels, ' +
           'venster altijd de laatste regels: ' + (wordRes.windowOk ? 'ja' : 'NEE') +
           ', stapjes van hele regels: ' + (wordRes.stepOk ? 'ja' : 'NEE') +
+          ', precies ' + lines + ' regels zichtbaar: ' + (wordRes.visibleOk ? 'ja' : 'NEE') +
+          ', tekst optisch gecentreerd in het zwart: ' + (wordRes.marginsOk ? 'ja' : 'NEE') +
           ', nieuwste woord zichtbaar: ' + (wordRes.newestOk ? 'ja' : 'NEE') +
           ', tekst compleet: ' + (wordRes.textOk ? 'ja' : 'NEE');
         v.className = 'verdict ' + (preserved && midCut === 0 && clipped === 0 && wordOk ? 'pass' : (preserved && wordOk ? 'warnbox' : 'fail'));

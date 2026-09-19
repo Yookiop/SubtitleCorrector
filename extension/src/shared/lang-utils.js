@@ -446,6 +446,21 @@
                                      // dan wordt het zwart aan de zijkant hard afgeknipt.
                                      // Dat is een geteste invariant (lang-utils-tests.js).
 
+  /*
+   * Verticale marge (boven én onder) tussen de INKT van de zichtbare regels en
+   * de rand van het captionvenster. Dit is het stukje zwart dat altijd
+   * overblijft; de tekst hoort er optisch midden in te staan (bugmelding
+   * 2026-09-19: de letters kwamen tegen de bovenrand van het zwarte vlak, omdat
+   * het venster op de *regelbox* was gebaseerd en de inkt binnen die regelbox
+   * scheef staat: een font reserveert boven de letters meer ruimte dan eronder).
+   *
+   * De marge schaalt met de echte regelafstand (0,25 x de afstand, dus 0,35em bij
+   * de standaard 1,4em) met een minimum, zodat er ook bij een kleine
+   * regelafstand een randje zwart blijft.
+   */
+  var CAPTION_MARGIN_RATIO = 0.3;
+  var CAPTION_MARGIN_MIN_EM = 0.2;
+
   /**
    * Hoogte van het vaste captionvenster in em (1 of 2 regels + padding) bij de
    * standaard regelafstand (`CAPTION_LINE_HEIGHT`, 1,4em).
@@ -481,6 +496,93 @@
     if (n < 1) n = 1;
     if (n > 2) n = 2;
     return Math.round((n * a + CAPTION_PAD_TOP_EM + CAPTION_PAD_BOTTOM_EM) * 1000) / 1000;
+  }
+
+  /**
+   * Verticale layout van het vaste captionvenster op basis van de **echte
+   * font- en inktmaten**, zodat de tekst optisch midden in het zwart staat en
+   * er boven én onder evenveel zwart overblijft.
+   *
+   * Waarom niet gewoon de regelbox: een font reserveert in zijn fontvak boven de
+   * letters meer ruimte (ascent minus de hoogte van de inkt: bij Roboto/Arial
+   * ~0,20em) dan eronder (descent minus de diepte van de inkt: ~0,03em). Zet je
+   * het venster symmetrisch om de *regelbox*, dan staat de *tekst* dus scheef in
+   * het zwart (de letters dicht bij de bovenrand; bugmelding 2026-09-19). Deze
+   * functie rekent daarom met de inkt: het venster is precies zo hoog als de
+   * inkt van de zichtbare regels plus twee keer de marge, de tekst wordt met de
+   * marge onder de bovenrand gezet en de woordblokjes krijgen zoveel padding dat
+   * het zwart tot de rand van het venster komt.
+   *
+   * `opts` (px, alles wat de page agent kan meten):
+   *   advancePx   gemeten afstand tussen twee regels
+   *   fontPx      fontgrootte van de overlay
+   *   fontBoxPx   hoogte van het fontvak (ascent + descent van het font)
+   *   inkAbovePx  ruimte in dat fontvak boven de inkt (ascent - inktascent)
+   *   inkBelowPx  ruimte in dat fontvak onder de inkt (descent - inktdiepte)
+   *   padTopPx    padding-top van de box (de clipgrens)
+   *   padBottomPx padding-bottom van de box
+   *   lines       aantal zichtbare regels (1 of 2)
+   *
+   * Geeft `{ok, marginEm, marginPx, halfLeadingPx, shiftPx, heightEm,
+   * wordPadTopEm, wordPadBottomEm}`. Zonder bruikbare meting (`ok: false`) blijft
+   * `shiftPx` 0 en valt de hoogte terug op `captionBoxHeightEmForAdvance()` en de
+   * padding op `CAPTION_WORD_PAD_Y_EM`: dan is het resultaat exact het oude
+   * gedrag.
+   */
+  function captionVerticalLayout(opts) {
+    var o = opts || {};
+    var num = function (v) { return typeof v === 'number' && isFinite(v) && v > 0 ? v : 0; };
+    var fontPx = num(o.fontPx);
+    var advancePx = num(o.advancePx);
+    var fontBoxPx = num(o.fontBoxPx);
+    var lines = typeof o.lines === 'number' && isFinite(o.lines) ? Math.round(o.lines) : 2;
+    if (lines < 1) lines = 1;
+    if (lines > 2) lines = 2;
+    var padTop = num(o.padTopPx);
+    var padBottom = num(o.padBottomPx);
+    var advanceEm = fontPx > 0 ? advancePx / fontPx : 0;
+    var fallback = {
+      ok: false,
+      marginEm: 0,
+      marginPx: 0,
+      halfLeadingPx: 0,
+      shiftPx: 0,
+      heightEm: captionBoxHeightEmForAdvance(lines, advanceEm || CAPTION_LINE_HEIGHT),
+      wordPadTopEm: CAPTION_WORD_PAD_Y_EM,
+      wordPadBottomEm: CAPTION_WORD_PAD_Y_EM
+    };
+    if (!fontPx || !advancePx || !fontBoxPx) return fallback;
+    // Inktonbekende maten: ontbrekende/rare waarden tellen als 0 (dan is de
+    // correctie 0 en blijft alleen het effect van de boxpadding over).
+    var inkAbove = typeof o.inkAbovePx === 'number' && isFinite(o.inkAbovePx) ? Math.max(0, o.inkAbovePx) : 0;
+    var inkBelow = typeof o.inkBelowPx === 'number' && isFinite(o.inkBelowPx) ? Math.max(0, o.inkBelowPx) : 0;
+    var halfLeading = (advancePx - fontBoxPx) / 2;
+    var marginEm = Math.max(CAPTION_MARGIN_MIN_EM, CAPTION_MARGIN_RATIO * advanceEm);
+    var marginPx = marginEm * fontPx;
+    // De inkt van de bovenste zichtbare regel staat `marginPx` onder de bovenrand
+    // van het venster (de rest van het venster volgt uit de hoogte hieronder).
+    var shiftPx = padTop + halfLeading + inkAbove - marginPx;
+    // De hoogte: de inkt van de zichtbare regels (van de bovenkant van de inkt
+    // van de eerste regel tot de onderkant van de inkt van de laatste, dus
+    // (lines - 1) regelafstanden plus de hoogte van één inkt) plus aan beide
+    // kanten de marge.
+    var inkHeightPx = fontBoxPx - inkAbove - inkBelow;
+    if (!(inkHeightPx > 0)) inkHeightPx = fontBoxPx;
+    var heightPx = (lines - 1) * advancePx + inkHeightPx + 2 * marginPx;
+    var round3 = function (v) { return Math.round(v * 1000) / 1000; };
+    return {
+      ok: true,
+      marginEm: round3(marginEm),
+      marginPx: Math.round(marginPx * 100) / 100,
+      halfLeadingPx: Math.round(halfLeading * 100) / 100,
+      shiftPx: Math.round(shiftPx * 100) / 100,
+      heightEm: round3(heightPx / fontPx),
+      // Zoveel padding heeft een woordblokje nodig om het zwart tot de rand van
+      // het venster te laten komen; nooit dunner dan de ontworpen maat, zodat de
+      // blokjes van twee regels elkaar blijven raken.
+      wordPadTopEm: round3(Math.max(CAPTION_WORD_PAD_Y_EM, (marginPx - inkAbove) / fontPx)),
+      wordPadBottomEm: round3(Math.max(CAPTION_WORD_PAD_Y_EM, (marginPx - inkBelow) / fontPx))
+    };
   }
 
   /** Eindposities (index ná het leesteken) van alle zinseinden in `text`. */
@@ -1290,6 +1392,9 @@
     captionRevealCount: captionRevealCount,
     captionBoxHeightEm: captionBoxHeightEm,
     captionBoxHeightEmForAdvance: captionBoxHeightEmForAdvance,
+    captionVerticalLayout: captionVerticalLayout,
+    CAPTION_MARGIN_RATIO: CAPTION_MARGIN_RATIO,
+    CAPTION_MARGIN_MIN_EM: CAPTION_MARGIN_MIN_EM,
     CAPTION_LINE_HEIGHT: CAPTION_LINE_HEIGHT,
     CAPTION_PAD_TOP_EM: CAPTION_PAD_TOP_EM,
     CAPTION_PAD_BOTTOM_EM: CAPTION_PAD_BOTTOM_EM,

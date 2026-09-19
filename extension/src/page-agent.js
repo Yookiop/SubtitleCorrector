@@ -798,7 +798,13 @@
           'line-height:' + L.CAPTION_LINE_HEIGHT + '!important;font-size:1em!important}' +
           '#sc-caption-overlay .sc-caption-word{background:var(--sc-caption-bg);' +
           'line-height:' + L.CAPTION_LINE_HEIGHT + '!important;font-size:1em!important;' +
-          'padding:' + L.CAPTION_WORD_PAD_Y_EM + 'em ' + L.CAPTION_WORD_PAD_X_EM + 'em;' +
+          // De verticale padding staat in CSS-variabelen (met de ontworpen maat
+          // als terugval): de page agent zet ze op basis van de ECHTE inktmaten
+          // van het font, zodat het zwart even ver boven als onder de letters
+          // doorloopt en tot de rand van het venster komt (zie
+          // applyBoostVerticalLayout() en L.captionVerticalLayout()).
+          'padding:var(--sc-word-pad-top,' + L.CAPTION_WORD_PAD_Y_EM + 'em) ' + L.CAPTION_WORD_PAD_X_EM + 'em ' +
+          'var(--sc-word-pad-bottom,' + L.CAPTION_WORD_PAD_Y_EM + 'em);' +
           'margin:0 -' + L.CAPTION_WORD_PAD_X_EM + 'em}';
         (document.head || document.documentElement).appendChild(st);
         boost.styleReady = true;
@@ -952,15 +958,19 @@
     // blijft staan (die toont YouTube ook).
     buildBoostText(wrap, blk.text);
     wrap.style.transform = '';
-    setWordShift(0, false);
     box.style.fontSize = '';
     box.style.maxWidth = '';
     box.style.height = L.captionBoxHeightEm(BOOST_LINES) + 'em';
-    // Staan de regels in de pagina verder uit elkaar dan 1,4em, dan is de
-    // em-hoogte hierboven te laag en zou de onderste regel van het blok
-    // wegvallen; de meting zet de hoogte dan goed (en laat hem in de normale
-    // situatie exact gelijk).
-    applyBoostBoxHeight();
+    // Daarna de echte regels meten en de verticale layout daarop zetten: de
+    // hoogte van het venster, de verticale padding van de blokjes en de marge
+    // boven de tekst (dezelfde layout als het rollende venster; zie
+    // L.captionVerticalLayout()). In de blokweergave schuift er niets, dus de
+    // verschuiving is alleen die marge.
+    var lh = boostLineHeightPx();
+    var m = boostLineMetrics(lh);
+    var layout = boostVerticalLayout(m.advance > 0 ? m.advance : lh, BOOST_LINES);
+    applyBoostVerticalLayout(layout);
+    setWordShift(layout.shiftPx, false);
   }
 
   /**
@@ -1048,24 +1058,102 @@
   }
 
   /**
-   * Hoogte van het vaste venster bijstellen op basis van de GEMETEN
-   * regelafstand. Staan de regels in de pagina verder uit elkaar dan de
-   * standaard 1,4em, dan is een venster van `BOOST_LINES` x 1,4em te laag en
-   * zou de onderste regel onderaan wegvallen (en de bovenste regel er
-   * bovenaan uitlopen). Zonder bruikbare meting blijft de em-hoogte staan —
-   * dan is het resultaat exact hetzelfde als voorheen.
+   * De fontmaten die de verticale layout bepalen, één keer per fontgrootte/
+   * -familie gemeten met een canvas (`measureText`):
+   *   fontBoxPx   = ascent + descent van het font (het vak van een inline-element),
+   *   inkAbovePx  = ruimte in dat vak BOVEN de inkt (ascent - inktascent),
+   *   inkBelowPx  = ruimte ONDER de inkt (descent - inktdiepte).
    *
-   * `metrics` mag een al gemeten `{lines, advance}` zijn (dan wordt er niet
-   * nog een keer gemeten; zie updateWordWindow()).
+   * De inktmaten komen uit een probe met een kapitaal, lange letters en
+   * staartletters (`Hxdpgjq`), dus de hoogste en diepste letters van een gewone
+   * regel. Waarom dit nodig is: een font reserveert boven de letters meer ruimte
+   * dan eronder (bij Roboto/Arial ~0,20em tegen ~0,03em), waardoor de tekst in
+   * een symmetrisch venster scheef staat — de letters tegen de bovenrand
+   * (bugmelding 2026-09-19). Ontbreekt de API of gaat er iets mis, dan blijven de
+   * waarden 0 en valt de layout terug op het oude gedrag.
    */
-  function applyBoostBoxHeight(metrics) {
+  var boostInk = { key: '', fontBoxPx: 0, inkAbovePx: 0, inkBelowPx: 0 };
+
+  function boostInkMetrics() {
+    var fs = boostFontPx();
+    var family = '';
+    var weight = '';
+    try {
+      var cs = getComputedStyle(boost.overlay);
+      family = cs.fontFamily || '';
+      weight = cs.fontWeight || '';
+    } catch (e) { /* ignore */ }
+    var key = Math.round(fs * 10) + '|' + weight + '|' + family;
+    if (key === boostInk.key) return boostInk;
+    var next = { key: key, fontBoxPx: 0, inkAbovePx: 0, inkBelowPx: 0 };
+    try {
+      if (fs > 0 && family) {
+        var ctx = document.createElement('canvas').getContext('2d');
+        if (ctx) {
+          ctx.font = (weight ? weight + ' ' : '') + fs + 'px ' + family;
+          var m = ctx.measureText('Hxdpgjq');
+          var ascent = m.fontBoundingBoxAscent || 0;
+          var descent = m.fontBoundingBoxDescent || 0;
+          var inkAsc = m.actualBoundingBoxAscent || 0;
+          var inkDesc = m.actualBoundingBoxDescent || 0;
+          if (ascent + descent > 0 && inkAsc + inkDesc > 0) {
+            next.fontBoxPx = ascent + descent;
+            next.inkAbovePx = Math.max(0, ascent - inkAsc);
+            next.inkBelowPx = Math.max(0, descent - inkDesc);
+          }
+        }
+      }
+    } catch (e) { /* ignore */ }
+    boostInk = next;
+    return boostInk;
+  }
+
+  /**
+   * De layout voor het huidige venster: de gemeten regelafstand + de fontmaten
+   * van het gebruikte font + de padding van de box. Geeft het resultaat van
+   * `L.captionVerticalLayout()` (hoogte in em, verschuiving in px en de
+   * verticale padding van de woordblokjes).
+   */
+  function boostVerticalLayout(advancePx, lines) {
+    var padTop = 0;
+    var padBottom = 0;
+    try {
+      var cs = getComputedStyle(boost.box);
+      padTop = parseFloat(cs.paddingTop) || 0;
+      padBottom = parseFloat(cs.paddingBottom) || 0;
+    } catch (e) { /* ignore */ }
+    var ink = boostInkMetrics();
+    return L.captionVerticalLayout({
+      advancePx: advancePx,
+      fontPx: boostFontPx(),
+      fontBoxPx: ink.fontBoxPx,
+      inkAbovePx: ink.inkAbovePx,
+      inkBelowPx: ink.inkBelowPx,
+      padTopPx: padTop,
+      padBottomPx: padBottom,
+      lines: lines
+    });
+  }
+
+  /**
+   * De verticale layout toepassen: de hoogte van de box (in em, dus hij volgt de
+   * ondertitelgrootte) en de verticale padding van de woordblokjes (via de
+   * CSS-variabelen `--sc-word-pad-top/-bottom`, zie de CSS in ensureBoostDom).
+   * De *verschuiving* hoort bij de aanroeper: die weet hoeveel regels er zijn en
+   * hoe groot de gemeten regelafstand is (updateWordWindow() / buildBlock()).
+   */
+  function applyBoostVerticalLayout(layout) {
     var box = boost.box;
-    if (!box) return;
-    var fontPx = boostFontPx();
-    var m = metrics || boostLineMetrics(boostLineHeightPx());
-    var advanceEm = (m.advance > 0 && fontPx > 0) ? m.advance / fontPx : L.CAPTION_LINE_HEIGHT;
-    var css = L.captionBoxHeightEmForAdvance(BOOST_LINES, advanceEm) + 'em';
-    if (box.style.height !== css) box.style.height = css;
+    if (!box || !layout) return;
+    if (layout.heightEm > 0) {
+      var css = layout.heightEm + 'em';
+      if (box.style.height !== css) box.style.height = css;
+    }
+    var el = boost.overlay;
+    if (el && el.style && el.style.setProperty) {
+      el.style.setProperty('--sc-word-pad-top', layout.wordPadTopEm + 'em');
+      el.style.setProperty('--sc-word-pad-bottom', layout.wordPadBottomEm + 'em');
+    }
   }
 
   /**
@@ -1074,13 +1162,17 @@
    * omhoog zodat altijd de laatste regels zichtbaar zijn. De box zelf blijft
    * even hoog (het font krimpt nooit).
    *
-   * De verschuiving komt uit de GEMETEN regels (`boostLineMetrics`): het aantal
-   * regels en de echte afstand ertussen. In de normale situatie is dat precies
-   * `L.captionWindowShift(hoogte, line-height, BOOST_LINES)`; wijkt de echte
-   * afstand af (pagina-CSS), dan blijft de bovenste regel nu toch precies onder
-   * de bovenrand van het venster staan in plaats van erboven (afgekapte
-   * letters). Het venster zelf wordt met dezelfde meting op hoogte gebracht
-   * (applyBoostBoxHeight), zodat er altijd BOOST_LINES hele regels in passen.
+   * De verschuiving komt uit de GEMETEN regels (`boostLineMetrics`: het aantal
+   * regels en de echte afstand ertussen) plus de marge uit de verticale layout
+   * (`boostVerticalLayout` / `L.captionVerticalLayout()`). Die layout zet de inkt
+   * van de bovenste zichtbare regel precies `L.CAPTION_MARGIN_RATIO` x de
+   * regelafstand onder de bovenrand, maakt het venster zo hoog als de inkt van
+   * BOOST_LINES regels plus twee keer die marge, en geeft de woordblokjes zoveel
+   * verticale padding dat het zwart tot de rand van het venster komt. Daardoor
+   * staat de tekst optisch midden in het zwart in plaats van tegen de bovenrand
+   * (bugmelding 2026-09-19) en blijft de bovenste regel ook heel als de echte
+   * regelafstand afwijkt van de line-height van de wrapper (bugmelding
+   * 2026-09-18).
    *
    * Het schuiven gebeurt met `top` op een `position:relative`-wrapper (via
    * setWordShift), met een korte CSS-overgang zodat je de slide-up ziet. Bewust
@@ -1097,8 +1189,12 @@
     var m = boostLineMetrics(lh);
     var lines = m.lines > 0 ? m.lines : L.captionLinesFromHeight(h, lh);
     var step = m.advance > 0 ? m.advance : lh;
-    applyBoostBoxHeight(m);
-    var shift = L.captionWindowShiftLines(lines, step, BOOST_LINES);
+    // Hoogte + verticale padding van de blokjes uit de echte fontmaten; de tekst
+    // komt met de marge (L.CAPTION_MARGIN_*) onder de bovenrand, zodat de inkt
+    // optisch midden in het zwart staat en er boven én onder evenveel overblijft.
+    var layout = boostVerticalLayout(step, BOOST_LINES);
+    applyBoostVerticalLayout(layout);
+    var shift = Math.round((L.captionWindowShiftLines(lines, step, BOOST_LINES) + layout.shiftPx) * 100) / 100;
     if (shift === boost.windowShift) return;
     boost.windowShift = shift;
     setWordShift(shift, true);

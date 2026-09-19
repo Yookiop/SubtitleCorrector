@@ -550,6 +550,64 @@
     eq(L.captionBoxHeightEmForAdvance(0, 1.4), 1.49);
   });
 
+  test('captionVerticalLayout: tekst optisch midden in het zwart', function (L) {
+    // Roboto/Arial-achtige maten op 30px: fontvak 35px, inkt 5px van boven en
+    // 0,5px van onder (de letters staan dus laag in het fontvak), regelafstand 42.
+    var out = L.captionVerticalLayout({
+      advancePx: 42, fontPx: 30, fontBoxPx: 35, inkAbovePx: 5, inkBelowPx: 0.5,
+      padTopPx: 1.8, padBottomPx: 0.9, lines: 2
+    });
+    ok(out.ok, 'met een volledige meting hoort de layout bruikbaar te zijn');
+    eq(out.marginEm, 0.42);                    // 0,3 x 1,4em
+    eq(out.marginPx, 12.6);
+    eq(out.halfLeadingPx, 3.5);                // (42 - 35) / 2
+    eq(out.shiftPx, -2.3);                     // 1,8 + 3,5 + 5 - 12,6
+    // Hoogte: één regelafstand + de inkt (35 - 5 - 0,5) + twee keer de marge.
+    eq(out.heightEm, 3.223);
+    // De blokjes: zoveel padding dat het zwart tot de rand van het venster komt.
+    eq(out.wordPadTopEm, 0.253);
+    eq(out.wordPadBottomEm, 0.403);
+    // Het zwart staat optisch om de inkt: boven evenveel als onder.
+    var boven = out.wordPadTopEm * 30 + 5;
+    var onder = out.wordPadBottomEm * 30 + 0.5;
+    ok(Math.abs(boven - onder) < 0.05, 'zwart boven (' + boven + ') en onder (' + onder + ') horen gelijk te zijn');
+    ok(out.wordPadTopEm >= L.CAPTION_WORD_PAD_Y_EM && out.wordPadBottomEm >= L.CAPTION_WORD_PAD_Y_EM,
+      'de padding mag nooit dunner worden dan de ontworpen maat (anders raken de blokjes elkaar niet meer)');
+
+    // Eén regel: de hoogte heeft één inkt + twee marges (geen lege regel erbij).
+    var one = L.captionVerticalLayout({
+      advancePx: 42, fontPx: 30, fontBoxPx: 35, inkAbovePx: 5, inkBelowPx: 0.5,
+      padTopPx: 1.8, padBottomPx: 0.9, lines: 1
+    });
+    eq(one.heightEm, 1.823);                   // (29,5 + 2 x 12,6) / 30
+
+    // Een afwijkende (pagina-)regelafstand: de marge schaalt mee, dus 0,3 x 2,2em.
+    var wide = L.captionVerticalLayout({
+      advancePx: 66, fontPx: 30, fontBoxPx: 35, inkAbovePx: 5, inkBelowPx: 0.5,
+      padTopPx: 1.8, padBottomPx: 0.9, lines: 2
+    });
+    eq(wide.marginEm, 0.66);
+    eq(wide.marginPx, 19.8);
+
+    // Een kleine regelafstand: de marge zakt niet onder het minimum (0,2em).
+    var tight = L.captionVerticalLayout({
+      advancePx: 20, fontPx: 30, fontBoxPx: 35, inkAbovePx: 5, inkBelowPx: 0.5,
+      padTopPx: 1.8, padBottomPx: 0.9, lines: 2
+    });
+    eq(tight.marginEm, L.CAPTION_MARGIN_MIN_EM);
+
+    // Zonder bruikbare meting: exact het oude gedrag (em-hoogte + vaste padding).
+    var none = L.captionVerticalLayout({ lines: 2, advancePx: 42 });
+    eq(none.ok, false);
+    eq(none.shiftPx, 0);
+    eq(none.heightEm, L.captionBoxHeightEm(2));
+    eq(none.wordPadTopEm, L.CAPTION_WORD_PAD_Y_EM);
+    eq(none.wordPadBottomEm, L.CAPTION_WORD_PAD_Y_EM);
+    var partial = L.captionVerticalLayout({ fontPx: 30, advancePx: 42, lines: 2 });  // geen fontvak
+    eq(partial.ok, false);
+    eq(partial.heightEm, L.captionBoxHeightEmForAdvance(2, 1.4));
+  });
+
   /* ------------------------------------------------------------------ *
    * Sprekerswissel (">>") en de positie van de ondertiteling (x- en y-offset)
    * ------------------------------------------------------------------ */
