@@ -599,9 +599,13 @@
     eq(out.marginEm, 0.42);                    // 0,3 x 1,4em
     eq(out.marginPx, 12.6);
     eq(out.halfLeadingPx, 3.5);                // (42 - 35) / 2
-    eq(out.shiftPx, -2.3);                     // 1,8 + 3,5 + 5 - 12,6
-    // Hoogte: één regelafstand + de inkt (35 - 5 - 0,5) + twee keer de marge.
-    eq(out.heightEm, 3.223);
+    // De regel die net boven het venster staat zou er anders 0,6px in schilderen
+    // (12,6 - 2 x 3,5 - 5); die correctie zit in de verschuiving en de hoogte.
+    eq(out.pokePx, 0.6);
+    eq(out.shiftPx, -1.7);                     // 1,8 + 3,5 + 5 - 12,6 + 0,6
+    // Hoogte: één regelafstand + de inkt (35 - 5 - 0,5) + twee keer de marge,
+    // min twee keer de correctie (zodat de inkt boven en onder even ver blijft).
+    eq(out.heightEm, 3.183);
     // De blokjes: zoveel padding dat het zwart tot de rand van het venster komt.
     eq(out.wordPadTopEm, 0.253);
     eq(out.wordPadBottomEm, 0.403);
@@ -617,7 +621,7 @@
       advancePx: 42, fontPx: 30, fontBoxPx: 35, inkAbovePx: 5, inkBelowPx: 0.5,
       padTopPx: 1.8, padBottomPx: 0.9, lines: 1
     });
-    eq(one.heightEm, 1.823);                   // (29,5 + 2 x 12,6) / 30
+    eq(one.heightEm, 1.783);                   // (29,5 + 2 x 12,6 - 1,2) / 30
 
     // Een afwijkende (pagina-)regelafstand: de marge schaalt mee, dus 0,3 x 2,2em.
     var wide = L.captionVerticalLayout({
@@ -626,6 +630,7 @@
     });
     eq(wide.marginEm, 0.66);
     eq(wide.marginPx, 19.8);
+    eq(wide.pokePx, 0);                        // ruime marge: geen correctie nodig
 
     // Een kleine regelafstand: de marge zakt niet onder het minimum (0,2em).
     var tight = L.captionVerticalLayout({
@@ -633,11 +638,14 @@
       padTopPx: 1.8, padBottomPx: 0.9, lines: 2
     });
     eq(tight.marginEm, L.CAPTION_MARGIN_MIN_EM);
+    // De correctie is geclamped op de halve marge: nooit meer dan dat.
+    eq(tight.pokePx, tight.marginPx / 2);
 
     // Zonder bruikbare meting: exact het oude gedrag (em-hoogte + vaste padding).
     var none = L.captionVerticalLayout({ lines: 2, advancePx: 42 });
     eq(none.ok, false);
     eq(none.shiftPx, 0);
+    eq(none.pokePx, 0);
     eq(none.heightEm, L.captionBoxHeightEm(2));
     eq(none.wordPadTopEm, L.CAPTION_WORD_PAD_Y_EM);
     eq(none.wordPadBottomEm, L.CAPTION_WORD_PAD_Y_EM);

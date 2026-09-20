@@ -524,10 +524,13 @@
    *   lines       aantal zichtbare regels (1 of 2)
    *
    * Geeft `{ok, marginEm, marginPx, halfLeadingPx, shiftPx, heightEm,
-   * wordPadTopEm, wordPadBottomEm}`. Zonder bruikbare meting (`ok: false`) blijft
-   * `shiftPx` 0 en valt de hoogte terug op `captionBoxHeightEmForAdvance()` en de
-   * padding op `CAPTION_WORD_PAD_Y_EM`: dan is het resultaat exact het oude
-   * gedrag.
+   * wordPadTopEm, wordPadBottomEm, pokePx}`. Zonder bruikbare meting
+   * (`ok: false`) blijft `shiftPx` 0 en valt de hoogte terug op
+   * `captionBoxHeightEmForAdvance()` en de padding op `CAPTION_WORD_PAD_Y_EM`:
+   * dan is het resultaat exact het oude gedrag.
+   *
+   * `pokePx` is de fractie van een px die de regel *boven* het venster er anders
+   * nog in zou schilderen (zie de toelichting bij de correctie onderaan).
    */
   function captionVerticalLayout(opts) {
     var o = opts || {};
@@ -549,7 +552,8 @@
       shiftPx: 0,
       heightEm: captionBoxHeightEmForAdvance(lines, advanceEm || CAPTION_LINE_HEIGHT),
       wordPadTopEm: CAPTION_WORD_PAD_Y_EM,
-      wordPadBottomEm: CAPTION_WORD_PAD_Y_EM
+      wordPadBottomEm: CAPTION_WORD_PAD_Y_EM,
+      pokePx: 0
     };
     if (!fontPx || !advancePx || !fontBoxPx) return fallback;
     // Inktonbekende maten: ontbrekende/rare waarden tellen als 0 (dan is de
@@ -569,6 +573,19 @@
     var inkHeightPx = fontBoxPx - inkAbove - inkBelow;
     if (!(inkHeightPx > 0)) inkHeightPx = fontBoxPx;
     var heightPx = (lines - 1) * advancePx + inkHeightPx + 2 * marginPx;
+    // De regel die NET boven het venster staat mag er niet in schilderen. Zijn
+    // blokje (zonder de padding aan de kant van het venster, zie applyWordBleed()
+    // in de page agent) eindigt anders een fractie van een px onder de bovenrand:
+    //   poke = padTop - shiftPx - halfLeading = marginPx - 2*halfLeading - inkAbove
+    // Dat randje is op het scherm alsnog een dun zwart streepje naast het laatste
+    // woord van de bovenste regel (bugmelding 2026-09-20, tweede ronde). We
+    // schuiven het venster precies zover op en maken het evenveel korter, zodat
+    // de inkt boven en onder even ver van de rand blijft.
+    var pokePx = marginPx - 2 * halfLeading - inkAbove;
+    if (!(pokePx > 0)) pokePx = 0;
+    if (pokePx > marginPx / 2) pokePx = marginPx / 2; // nooit de halve marge voorbij
+    shiftPx += pokePx;
+    heightPx -= 2 * pokePx;
     var round3 = function (v) { return Math.round(v * 1000) / 1000; };
     return {
       ok: true,
@@ -581,7 +598,8 @@
       // het venster te laten komen; nooit dunner dan de ontworpen maat, zodat de
       // blokjes van twee regels elkaar blijven raken.
       wordPadTopEm: round3(Math.max(CAPTION_WORD_PAD_Y_EM, (marginPx - inkAbove) / fontPx)),
-      wordPadBottomEm: round3(Math.max(CAPTION_WORD_PAD_Y_EM, (marginPx - inkBelow) / fontPx))
+      wordPadBottomEm: round3(Math.max(CAPTION_WORD_PAD_Y_EM, (marginPx - inkBelow) / fontPx)),
+      pokePx: round3(pokePx)
     };
   }
 

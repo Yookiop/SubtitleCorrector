@@ -75,6 +75,10 @@
       // FAIL). Zonder de fix school de onderpadding van de regel die net boven
       // het venster staat als een strook zwart het venster in.
       var NOFIX = /[?&]nofix=1/.test(location.search);
+      // ?nopoke=1 draait de fijne correctie van L.captionVerticalLayout terug
+      // (de regel boven het venster schoof anders een fractie van een px in het
+      // venster); ook dat moet deze pagina kunnen aantonen.
+      var NOPOKE = /[?&]nopoke=1/.test(location.search);
       var SILENCE = 'Kijk , als mevrouw Bikker ook het bredere punt wil maken dan zou ik daar graag ' +
                     'eerst nog even iets over willen zeggen in deze vergadering want dat is namelijk ' +
                     'precies het punt waar het hier vandaag over gaat en daarom wil ik dat graag ' +
@@ -184,6 +188,12 @@
           lines: LINES
         });
         box.style.height = layout.heightEm + 'em';
+        // ?nopoke=1: precies het oude gedrag (zonder de fijne correctie).
+        if (NOPOKE && layout.pokePx) {
+          layout.shiftPx = layout.shiftPx - layout.pokePx;
+          layout.heightEm = layout.heightEm + (2 * layout.pokePx) / fontPx;
+          box.style.height = layout.heightEm + 'em';
+        }
         overlay.style.setProperty('--sc-word-pad-top', layout.wordPadTopEm + 'em');
         overlay.style.setProperty('--sc-word-pad-bottom', layout.wordPadBottomEm + 'em');
         setShift(L.captionWindowShiftLines(lineCount, advance, LINES) + layout.shiftPx);
@@ -195,7 +205,7 @@
         buildStage();
         var lh = parseFloat(getComputedStyle(wrap).lineHeight) || 0;
         var ink = inkMetrics(FS);
-        var res = { minGapText: null, minGapBlock: null, worstAt: 0, advance: 0, lines: 0, cutSteps: 0, bottomCut: 0, heightEm: '', marginPx: 0, minMarginTop: null, minMarginBottom: null, maxMarginDiff: 0, maxBleed: 0, bleedAt: 0, rows: [] };
+        var res = { minGapText: null, minGapBlock: null, worstAt: 0, advance: 0, lines: 0, cutSteps: 0, bottomCut: 0, heightEm: '', marginPx: 0, minMarginTop: null, minMarginBottom: null, maxMarginDiff: 0, maxBleed: 0, bleedAt: 0, maxPoke: 0, pokeAt: 0, rows: [] };
         for (var n = 1; n <= WORDS.length; n++) {
           appendWord(WORDS[n - 1], hostile);
           var h = wrap.getBoundingClientRect().height;
@@ -225,6 +235,8 @@
           var bleed = topBandBleed(rects, boxRect, ink, lh, LINES);
           res.lastBleed = bleed;
           if (bleed > res.maxBleed) { res.maxBleed = bleed; res.bleedAt = n; }
+          var poke = topPoke(rects, boxRect, lh, LINES);
+          if (poke > res.maxPoke) { res.maxPoke = poke; res.pokeAt = n; }
           if (isFinite(gapText) && (res.minGapText === null || gapText < res.minGapText)) { res.minGapText = gapText; res.worstAt = n; }
           if (isFinite(gapBlock) && (res.minGapBlock === null || gapBlock < res.minGapBlock)) res.minGapBlock = gapBlock;
           if (isFinite(gapText) && gapText <= 0) res.cutSteps++;
@@ -363,6 +375,28 @@
 
       function fmt(v, d) { return v === null || !isFinite(v) ? '-' : v.toFixed(d === undefined ? 2 : d); }
 
+      /**
+       * Hoeveel px steekt het blokje van de regel NET boven het venster nog ín het
+       * venster (0 = goed)? De onderpadding van zo'n regel is er al af (zie
+       * applyWordBleed), maar een fractie van een px *inhoud* bleef staan: op het
+       * scherm is dat alsnog een dun zwart streepje naast het laatste woord van de
+       * bovenste regel (bugmelding 2026-09-20, tweede ronde). `captionVerticalLayout`
+       * schuift daarom precies die fractie op; deze meting controleert dat.
+       */
+      function topPoke(rects, boxRect, lh, lines) {
+        if (!rects.painted.length) return 0;
+        var m = L.captionLineMetrics(rects.painted, lh);
+        var range = L.captionVisibleGroupRange(m.lines, lines, true);
+        if (!m.lines) return 0;
+        var worst = 0;
+        for (var i = 0; i < rects.painted.length; i++) {
+          if (m.index[i] >= range.first) continue;   // alleen regels bóven het venster
+          var poke = rects.painted[i].bottom - boxRect.top;
+          if (poke > worst) worst = poke;
+        }
+        return worst;
+      }
+
       var results = [];
       var out = document.getElementById('out');
       for (var s = 0; s < 2; s++) {
@@ -386,7 +420,8 @@
           ' &nbsp;→&nbsp; <b>nu: kleinste gapText = ' + fmt(newRes.minGapText) + 'px (' + fmt(newRes.minGapText / FS, 3) + 'em)</b>, afgekapte stappen = ' + newRes.cutSteps + ', onderaan afgekapt = ' + newRes.bottomCut +
           '<br>zwart boven de inkt: ' + fmt(newRes.minMarginTop) + 'px (' + fmt(newRes.minMarginTop / FS, 3) + 'em), zwart onder de inkt: ' + fmt(newRes.minMarginBottom) + 'px (' + fmt(newRes.minMarginBottom / FS, 3) + 'em)' +
           ', grootste verschil boven/onder = ' + fmt(newRes.maxMarginDiff) + 'px (marge volgens de layout: ' + fmt(newRes.marginPx) + 'px)' +
-          '<br>zwart in de bovenstrook buiten de bovenste regel: max ' + fmt(newRes.maxBleed) + 'px (stap ' + newRes.bleedAt + ', laatste stap ' + fmt(newRes.lastBleed) + 'px), toegestaan ' + fmt(0.28 * FS + 2) + 'px (padding 0,28em + 2px)';
+          '<br>zwart in de bovenstrook buiten de bovenste regel: max ' + fmt(newRes.maxBleed) + 'px (stap ' + newRes.bleedAt + ', laatste stap ' + fmt(newRes.lastBleed) + 'px), toegestaan ' + fmt(0.28 * FS + 2) + 'px (padding 0,28em + 2px)' +
+          ', en de uitstekende fractie van de regel erboven: max ' + fmt(newRes.maxPoke) + 'px (stap ' + newRes.pokeAt + '), toegestaan 0,1px';
         out.appendChild(sum);
 
         var t = document.createElement('table');
@@ -412,11 +447,11 @@
         var r = results[q];
         var good = r.newRes.minGapText > 0 && r.newRes.cutSteps === 0 && r.newRes.bottomCut === 0 &&
           r.newRes.minMarginTop >= 0.2 * FS && r.newRes.minMarginBottom >= 0.2 * FS && r.newRes.maxMarginDiff <= 1.5 &&
-          r.newRes.maxBleed <= 0.28 * FS + 2;
+          r.newRes.maxBleed <= 0.28 * FS + 2 && r.newRes.maxPoke <= 0.1;
         if (!good) ok = false;
         parts.push((r.hostile ? 'B' : 'A') + ': ' + (good ? 'OK' : 'FOUT') +
           ' (kleinste gapText ' + fmt(r.newRes.minGapText) + 'px, zwart boven/onder ' + fmt(r.newRes.minMarginTop) + '/' + fmt(r.newRes.minMarginBottom) +
-          'px, verschil ' + fmt(r.newRes.maxMarginDiff) + 'px, zwart in de bovenstrook ' + fmt(r.newRes.maxBleed) + 'px; oud: ' + fmt(r.oldRes.minGapText) + 'px / ' + r.oldRes.cutSteps + ')');
+          'px, verschil ' + fmt(r.newRes.maxMarginDiff) + 'px, zwart in de bovenstrook ' + fmt(r.newRes.maxBleed) + 'px, uitstek boven de regel ' + fmt(r.newRes.maxPoke) + 'px; oud: ' + fmt(r.oldRes.minGapText) + 'px / ' + r.oldRes.cutSteps + ')');
       }
       var v = document.getElementById('verdict');
       v.className = 'verdict ' + (ok ? 'pass' : 'fail');
