@@ -658,7 +658,15 @@
     try { s = p && p.getSubtitlesUserSettings ? p.getSubtitlesUserSettings() : null; } catch (e) { s = null; }
     if (!s) return; // geen API: witte tekst op zwarte achtergrond (default) aanhouden
     var tc = L.rgbaFromHex(s.color, typeof s.textOpacity === 'number' ? s.textOpacity : 1);
-    var bc = L.rgbaFromHex(s.background, typeof s.backgroundOpacity === 'number' ? s.backgroundOpacity : 1);
+    // De achtergrond van de woordblokjes is altijd ONDOORZICHTIG (alpha 1).
+    // YouTube's captioninstellingen geven standaard een opacity van 0,75 mee en
+    // de blokjes van naast elkaar liggende woorden én van twee regels
+    // OVERLAPPEN elkaar (dat is juist de bedoeling: geen kier in het zwart).
+    // Met een transparante achtergrond wordt zo'n overlap donkerder: dan zie je
+    // per woord en per regel een andere griestint — een gevlekt zwart in plaats
+    // van effen zwart (bugmelding 2026-09-20). De KLEUR komt nog steeds uit
+    // YouTube's instellingen, alleen die opacity wordt genegeerd.
+    var bc = L.rgbaFromHex(s.background, 1);
     if (tc) boostStyle.textColor = tc;
     if (bc) boostStyle.bgColor = bc;
     boostStyle.increment = typeof s.fontSizeIncrement === 'number' ? s.fontSizeIncrement : 0;
@@ -728,7 +736,7 @@
           '.sc-boost-on .ytp-caption-window-container{display:none!important}' +
           '#sc-caption-overlay{position:absolute;left:0;right:0;bottom:3.5%;text-align:center;pointer-events:none;z-index:45;display:none;' +
           'font-weight:500;line-height:1.4;font-family:Roboto,Arial,sans-serif;' +
-          '--sc-caption-bg:rgba(8,8,8,.75)}' +
+          '--sc-caption-bg:rgba(8,8,8,1)}' +
           '#sc-caption-overlay.sc-on{display:block}' +
           // De achtergrond zit NIET meer op één balk achter het hele venster,
           // maar op elk woord apart (`.sc-caption-word`, net als YouTube's

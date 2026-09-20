@@ -101,9 +101,33 @@
       record('host_permissions bevat 127.0.0.1 (bridge)', loopback);
     }
 
+    // De achtergrond van de ondertiteling moet altijd DEKKEND zijn: de blokjes van
+    // naast elkaar liggende woorden en van twee regels overlappen elkaar, en met
+    // een transparante kleur wordt die overlap donkerder (gevlekt zwart, bug 2026-09-20).
+    // YouTube's background-opacity mag daarom niet gebruikt worden.
+    async function checkOpaqueBackground() {
+      const src = await (await fetch('../extension/src/page-agent.js', { cache: 'no-store' })).text();
+      const usesOpacity = /backgroundOpacity/.test(src);
+      record('page-agent.js negeert YouTube\'s background-opacity (geen backgroundOpacity)', !usesOpacity,
+        usesOpacity ? 'backgroundOpacity wordt nog gebruikt; de achtergrond moet altijd dekkend zijn' : undefined);
+
+      const forcedOpaque = /rgbaFromHex\(\s*s\.background\s*,\s*1\s*\)/.test(src);
+      record('page-agent.js: rgbaFromHex(s.background, 1) - kleur volgt YouTube, opacity niet', forcedOpaque,
+        forcedOpaque ? undefined : 'verwacht rgbaFromHex(s.background, 1)');
+
+      const fallbackOpaque = /--sc-caption-bg\s*:\s*rgba\([^)]*,\s*1\s*\)/.test(src);
+      record('page-agent.js: CSS-fallback --sc-caption-bg is dekkend (alpha 1)', fallbackOpaque,
+        fallbackOpaque ? undefined : 'verwacht --sc-caption-bg:rgba(...,1)');
+    }
+
     (async function () {
       for (const rel of SCRIPTS) await checkScript(rel);
       await checkManifest();
+      try {
+        await checkOpaqueBackground();
+      } catch (e) {
+        record('page-agent.js achtergrondcheck', false, String(e.message || e));
+      }
 
       const li = (r) => {
         const el = document.createElement('li');
