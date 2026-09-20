@@ -574,18 +574,25 @@
     if (!(inkHeightPx > 0)) inkHeightPx = fontBoxPx;
     var heightPx = (lines - 1) * advancePx + inkHeightPx + 2 * marginPx;
     // De regel die NET boven het venster staat mag er niet in schilderen. Zijn
-    // blokje (zonder de padding aan de kant van het venster, zie applyWordBleed()
-    // in de page agent) eindigt anders een fractie van een px onder de bovenrand:
-    //   poke = padTop - shiftPx - halfLeading = marginPx - 2*halfLeading - inkAbove
-    // Dat randje is op het scherm alsnog een dun zwart streepje naast het laatste
-    // woord van de bovenste regel (bugmelding 2026-09-20, tweede ronde). We
-    // schuiven het venster precies zover op en maken het evenveel korter, zodat
-    // de inkt boven en onder even ver van de rand blijft.
-    var pokePx = marginPx - 2 * halfLeading - inkAbove;
-    if (!(pokePx > 0)) pokePx = 0;
-    if (pokePx > marginPx / 2) pokePx = marginPx / 2; // nooit de halve marge voorbij
-    shiftPx += pokePx;
-    heightPx -= 2 * pokePx;
+    // inhoud (het fontvak) eindigt anders een fractie van een px onder de
+    // bovenrand van het venster — de clipgrens van de box — en dat is op het
+    // scherm alsnog een dun zwart streepje naast het laatste woord van de
+    // bovenste regel (bugmelding 2026-09-20, tweede ronde; de gemeten afwijking
+    // was daar ~1px, meer dan de marge in de fontmaten).
+    //   poke = padTop - shiftPx - halfLeading   (moet <= 0 zijn)
+    // Daarom schuiven we het venster minimaal naar `padTop - halfLeading` + 1,5px
+    // speling, en maken het evenveel korter zodat de inkt boven en onder even ver
+    // van de rand blijft. `pokePx` = hoeveel extra verschuiving dat was (0 = de
+    // marge was al ruim genoeg); nooit meer dan de halve marge, anders zou de
+    // tekst tegen de bovenrand komen.
+    var keepOut = padTop - halfLeading + 1.5;
+    var pokePx = 0;
+    if (shiftPx < keepOut) {
+      pokePx = keepOut - shiftPx;
+      if (pokePx > marginPx / 2) pokePx = marginPx / 2;
+      shiftPx += pokePx;
+      heightPx -= 2 * pokePx;
+    }
     var round3 = function (v) { return Math.round(v * 1000) / 1000; };
     return {
       ok: true,

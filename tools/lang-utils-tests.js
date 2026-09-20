@@ -599,13 +599,15 @@
     eq(out.marginEm, 0.42);                    // 0,3 x 1,4em
     eq(out.marginPx, 12.6);
     eq(out.halfLeadingPx, 3.5);                // (42 - 35) / 2
-    // De regel die net boven het venster staat zou er anders 0,6px in schilderen
-    // (12,6 - 2 x 3,5 - 5); die correctie zit in de verschuiving en de hoogte.
-    eq(out.pokePx, 0.6);
-    eq(out.shiftPx, -1.7);                     // 1,8 + 3,5 + 5 - 12,6 + 0,6
+    // De regel die net boven het venster staat mag er niet in schilderen: de
+    // verschuiving gaat minimaal naar `padTop - halfLeading + 1,5` (1,8 - 3,5 + 1,5
+    // = -0,2) in plaats van -2,3; dat is 2,1px extra, en de hoogte gaat met het
+    // dubbele mee omlaag zodat de inkt boven en onder even ver blijft.
+    eq(out.pokePx, 2.1);
+    eq(out.shiftPx, -0.2);
     // Hoogte: één regelafstand + de inkt (35 - 5 - 0,5) + twee keer de marge,
-    // min twee keer de correctie (zodat de inkt boven en onder even ver blijft).
-    eq(out.heightEm, 3.183);
+    // min twee keer de extra verschuiving.
+    eq(out.heightEm, 3.083);
     // De blokjes: zoveel padding dat het zwart tot de rand van het venster komt.
     eq(out.wordPadTopEm, 0.253);
     eq(out.wordPadBottomEm, 0.403);
@@ -621,7 +623,7 @@
       advancePx: 42, fontPx: 30, fontBoxPx: 35, inkAbovePx: 5, inkBelowPx: 0.5,
       padTopPx: 1.8, padBottomPx: 0.9, lines: 1
     });
-    eq(one.heightEm, 1.783);                   // (29,5 + 2 x 12,6 - 1,2) / 30
+    eq(one.heightEm, 1.683);                   // (29,5 + 2 x 12,6 - 4,2) / 30
 
     // Een afwijkende (pagina-)regelafstand: de marge schaalt mee, dus 0,3 x 2,2em.
     var wide = L.captionVerticalLayout({
@@ -630,7 +632,7 @@
     });
     eq(wide.marginEm, 0.66);
     eq(wide.marginPx, 19.8);
-    eq(wide.pokePx, 0);                        // ruime marge: geen correctie nodig
+    eq(wide.pokePx, 0);                        // ruime marge: geen extra verschuiving nodig
 
     // Een kleine regelafstand: de marge zakt niet onder het minimum (0,2em).
     var tight = L.captionVerticalLayout({
