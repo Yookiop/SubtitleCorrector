@@ -999,19 +999,31 @@
     var fb = typeof fallbackLineHeight === 'number' && isFinite(fallbackLineHeight) && fallbackLineHeight > 0 ? fallbackLineHeight : 0;
     var tol = fb ? fb * CAPTION_LINE_GROUP_TOL : 4;
     var lines = [];
+    var index = [];
     for (var j = 0; j < items.length; j++) {
       var it = items[j];
       var hit = null;
+      var hitIdx = -1;
       for (var k = 0; k < lines.length; k++) {
-        if (Math.abs(lines[k].top - it.top) <= tol) { hit = lines[k]; break; }
+        if (Math.abs(lines[k].top - it.top) <= tol) { hit = lines[k]; hitIdx = k; break; }
       }
       if (hit) {
         if (it.top < hit.top) hit.top = it.top;
         if (it.bottom > hit.bottom) hit.bottom = it.bottom;
       } else {
         lines.push({ top: it.top, bottom: it.bottom });
+        hitIdx = lines.length - 1;
       }
+      index.push(hitIdx);
     }
+    // De groepen zijn in volgorde van eerste treffer opgebouwd; hieronder wordt
+    // die volgorde gesorteerd, dus de indexen sorteren we mee.
+    var order = [];
+    for (var o = 0; o < lines.length; o++) order.push({ top: lines[o].top, idx: o });
+    order.sort(function (a, b) { return a.top - b.top; });
+    var map = [];
+    for (var q = 0; q < order.length; q++) map[order[q].idx] = q;
+    for (var w = 0; w < index.length; w++) index[w] = map[index[w]];
     lines.sort(function (a, b) { return a.top - b.top; });
     var gaps = [];
     for (var m = 1; m < lines.length; m++) {
@@ -1031,8 +1043,35 @@
     return {
       lines: lines.length,
       advance: Math.round(advance * 100) / 100,
-      tops: tops
+      tops: tops,
+      index: index
     };
+  }
+
+  /**
+   * Welke regelgroepen vallen in het venster? `lineCount` = het aantal gemeten
+   * regels, `visibleLines` = het aantal regels dat het venster toont.
+   *
+   *   fromEnd = true  -> het venster toont de LAATSTE regels (rollend venster:
+   *                      de tekst schuift per hele regel omhoog).
+   *   fromEnd = false -> het venster toont de EERSTE regels (blokweergave: de
+   *                      tekst staat bovenaan en wat niet past valt weg).
+   *
+   * Retour: `{first, last}` — de indexen (0-based, in de volgorde van
+   * `captionLineMetrics`) van de zichtbare regelgroepen. Alles daarbuiten valt
+   * buiten het venster en mag dus geen zwart ín het venster schilderen: de
+   * verticale padding van een inline woordblokje valt buiten de regelbox, dus de
+   * onderpadding van de regel die net boven het venster staat steekt een paar px
+   * onder de bovenrand uit. Omdat zo'n regel bijna altijd verder doorloopt dan de
+   * bovenste zichtbare regel (die breekt af op het volgende woord), zag je daar
+   * een zwarte strook zonder tekst (bugmelding 2026-09-20).
+   */
+  function captionVisibleGroupRange(lineCount, visibleLines, fromEnd) {
+    var n = typeof lineCount === 'number' && isFinite(lineCount) ? Math.max(0, Math.round(lineCount)) : 0;
+    var vis = typeof visibleLines === 'number' && isFinite(visibleLines) ? Math.max(1, Math.round(visibleLines)) : 1;
+    if (!n) return { first: 0, last: -1 };
+    if (fromEnd === false) return { first: 0, last: Math.min(n - 1, vis - 1) };
+    return { first: Math.max(0, n - vis), last: n - 1 };
   }
 
   /* ------------------------------------------------------------------ *
@@ -1413,6 +1452,7 @@
     captionWindowShiftLines: captionWindowShiftLines,
     captionLinesFromHeight: captionLinesFromHeight,
     captionLineMetrics: captionLineMetrics,
+    captionVisibleGroupRange: captionVisibleGroupRange,
     CAPTION_LINE_GROUP_TOL: CAPTION_LINE_GROUP_TOL,
     isSpeakerChange: isSpeakerChange,
     captionSpeakerBreaks: captionSpeakerBreaks,

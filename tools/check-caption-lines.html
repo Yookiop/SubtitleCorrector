@@ -554,6 +554,24 @@
         els.overlay.style.setProperty('--sc-word-pad-top', layout.wordPadTopEm + 'em');
         els.overlay.style.setProperty('--sc-word-pad-bottom', layout.wordPadBottomEm + 'em');
         var lineCount = m.lines > 0 ? m.lines : L.captionLinesFromHeight(h, lh);
+        // Spiegelt applyWordBleed() uit page-agent.js: de verticale padding van
+        // blokjes op regels BUITEN het venster aan de kant van het venster op 0
+        // zetten. Hun onderpadding valt bij een inline-element buiten de regelbox
+        // en school anders als een strook zwart het venster in — precies naast het
+        // laatste woord van de bovenste regel (bugmelding 2026-09-20; de meting
+        // daarvan staat in tools/check-caption-window.html).
+        var visRange = L.captionVisibleGroupRange(lineCount, lines, true);
+        var allSpans = els.wrap.querySelectorAll('.sc-caption-word');
+        var gi = 0;
+        for (var wi = 0; wi < allSpans.length; wi++) {
+          var wr = allSpans[wi].getBoundingClientRect();
+          if (!(wr.width > 0) || !(wr.height > 0)) continue;
+          var wg = m.index[gi++];
+          var pt = wg > visRange.last ? '0px' : '';
+          var pb = wg < visRange.first ? '0px' : '';
+          if (allSpans[wi].style.paddingTop !== pt) allSpans[wi].style.paddingTop = pt;
+          if (allSpans[wi].style.paddingBottom !== pb) allSpans[wi].style.paddingBottom = pb;
+        }
         var shift = L.captionWindowShiftLines(lineCount, step, lines) + layout.shiftPx;
         setWordShift(els, shift, true);
         els.wrap.style.transform = '';

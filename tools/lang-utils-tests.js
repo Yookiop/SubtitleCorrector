@@ -534,6 +534,44 @@
     eq(L.captionLineMetrics([{ top: 'x' }], 42).lines, 0);   // onbruikbare rect
   });
 
+  test('captionLineMetrics: index per rect (welk blokje hoort bij welke regel)', function (L) {
+    var m = L.captionLineMetrics([
+      { top: 100, bottom: 150 },   // regel 0
+      { top: 142, bottom: 192 },   // regel 1 (42 hoger)
+      { top: 101, bottom: 151 },   // weer regel 0
+      { top: 184, bottom: 234 }    // regel 2 (weer 42 hoger)
+    ], 42);
+    eq(m.lines, 3);
+    eq(m.tops.length, 3);
+    eq(m.index.join(','), '0,1,0,2');
+    eq(L.captionLineMetrics([], 42).index.length, 0);
+    eq(L.captionLineMetrics([{ top: 5, bottom: 45 }], 42).index.join(','), '0');
+  });
+
+  test('captionVisibleGroupRange: welke regels vallen in het venster?', function (L) {
+    // Rollend venster (fromEnd): de LAATSTE `visibleLines` regels zijn zichtbaar.
+    var a = L.captionVisibleGroupRange(9, 2, true);
+    eq(a.first, 7); eq(a.last, 8);
+    var b = L.captionVisibleGroupRange(2, 2, true);
+    eq(b.first, 0); eq(b.last, 1);
+    var c = L.captionVisibleGroupRange(1, 2, true);
+    eq(c.first, 0); eq(c.last, 0);
+    // Blokweergave: de EERSTE regels.
+    var d = L.captionVisibleGroupRange(9, 2, false);
+    eq(d.first, 0); eq(d.last, 1);
+    var e = L.captionVisibleGroupRange(1, 2, false);
+    eq(e.first, 0); eq(e.last, 0);
+    // Niets gemeten -> niets zichtbaar (dan kan de aanroeper niets verbergen).
+    eq(L.captionVisibleGroupRange(0, 2, true).last, -1);
+    eq(L.captionVisibleGroupRange(null, 2, true).first, 0);
+    eq(L.captionVisibleGroupRange(undefined, 2, false).last, -1);
+    // Onbruikbaar aantal zichtbare regels -> minstens één regel.
+    var f = L.captionVisibleGroupRange(3, 0, true);
+    eq(f.first, 2); eq(f.last, 2);
+    var g = L.captionVisibleGroupRange(3, NaN, true);
+    eq(g.first, 2); eq(g.last, 2);
+  });
+
   test('captionBoxHeightEmForAdvance: venster volgt de gemeten regelafstand', function (L) {
     // Zonder (of met de standaard) regelafstand exact hetzelfde als voorheen.
     eq(L.captionBoxHeightEmForAdvance(2, L.CAPTION_LINE_HEIGHT), L.captionBoxHeightEm(2));

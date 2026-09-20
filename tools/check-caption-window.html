@@ -44,7 +44,12 @@
     van de bovenste zichtbare tekstregel: die hoort positief te zijn — negatief betekent dat de
     letters bovenaan worden afgekapt. <b>zwart boven/onder de inkt</b> = hoeveel zwart er tussen de
     letters (de inkt) en de rand van het venster overblijft: dat hoort aan beide kanten evenveel te
-    zijn en nooit (bijna) nul (bugmelding 2026-09-19: de letters stonden tegen de bovenrand).<br>
+    zijn en nooit (bijna) nul (bugmelding 2026-09-19: de letters stonden tegen de bovenrand).
+    <b>zwart in de bovenstrook</b> = zwart in de strook tussen de bovenrand van het venster en de
+    inkt van de bovenste zichtbare regel dat verder doorloopt dan de letters van die regel: het
+    blokje van een regel die net boven het venster staat school met zijn onderpadding het venster in,
+    waardoor je naast het laatste woord van de bovenste regel een strook zwart zonder tekst zag
+    (bugmelding 2026-09-20). Daar hoort maximaal de eigen padding (0,28em) te staan.<br>
     <b>Oude berekening</b> = rekenen met <code>getComputedStyle(wrap).lineHeight</code> en de
     em-hoogte; <b>nu</b> = meten (<code>captionLineMetrics</code> + <code>captionVerticalLayout</code>).
   </div>
@@ -65,6 +70,11 @@
     (function () {
       var L = window.SCLang;
       var LINES = 2;
+      // ?nofix=1 slaat de fix voor het zwart van regels BUITEN het venster over,
+      // zodat deze pagina aantoont dat die fix echt iets doet (verdict wordt dan
+      // FAIL). Zonder de fix school de onderpadding van de regel die net boven
+      // het venster staat als een strook zwart het venster in.
+      var NOFIX = /[?&]nofix=1/.test(location.search);
       var SILENCE = 'Kijk , als mevrouw Bikker ook het bredere punt wil maken dan zou ik daar graag ' +
                     'eerst nog even iets over willen zeggen in deze vergadering want dat is namelijk ' +
                     'precies het punt waar het hier vandaag over gaat en daarom wil ik dat graag ' +
@@ -112,9 +122,10 @@
 
       /** Per woord het woordblokje (border box) en de tekst erin (glyph-vak). */
       function wordRects() {
-        var blocks = [], texts = [];
+        var blocks = [], texts = [], painted = [];
         var spans = wrap.querySelectorAll('.sc-caption-word');
         for (var i = 0; i < spans.length; i++) {
+          var own = spans[i].getBoundingClientRect(); // wat de achtergrond schildert (incl. padding)
           var range = document.createRange();
           range.selectNodeContents(spans[i]);
           var rects = range.getClientRects();
@@ -125,9 +136,13 @@
             if (!block || r.height > block.height) block = { top: r.top, bottom: r.bottom, height: r.height };
             if (!text || r.height < text.height) text = { top: r.top, bottom: r.bottom, height: r.height };
           }
-          if (block) { blocks.push({ top: block.top, bottom: block.bottom }); texts.push(text || block); }
+          if (block) {
+            blocks.push({ top: block.top, bottom: block.bottom });
+            texts.push(text || block);
+            painted.push({ top: own.top, bottom: own.bottom, left: own.left, right: own.right });
+          }
         }
-        return { blocks: blocks, texts: texts };
+        return { blocks: blocks, texts: texts, painted: painted };
       }
 
       function setShift(px) {
@@ -180,7 +195,7 @@
         buildStage();
         var lh = parseFloat(getComputedStyle(wrap).lineHeight) || 0;
         var ink = inkMetrics(FS);
-        var res = { minGapText: null, minGapBlock: null, worstAt: 0, advance: 0, lines: 0, cutSteps: 0, bottomCut: 0, heightEm: '', marginPx: 0, minMarginTop: null, minMarginBottom: null, maxMarginDiff: 0, rows: [] };
+        var res = { minGapText: null, minGapBlock: null, worstAt: 0, advance: 0, lines: 0, cutSteps: 0, bottomCut: 0, heightEm: '', marginPx: 0, minMarginTop: null, minMarginBottom: null, maxMarginDiff: 0, maxBleed: 0, bleedAt: 0, rows: [] };
         for (var n = 1; n <= WORDS.length; n++) {
           appendWord(WORDS[n - 1], hostile);
           var h = wrap.getBoundingClientRect().height;
@@ -192,6 +207,7 @@
           } else {
             var m = boostMetrics(h, lh);
             var layout = applyVerticalLayout(m.lines, m.advance > 0 ? m.advance : lh, ink);
+            if (!NOFIX) applyWordBleed(m, true);
             res.marginPx = layout.marginPx;
             if (m.lines) res.lines = m.lines;
             if (m.advance > 0) res.advance = m.advance;
@@ -205,6 +221,10 @@
           var gapBlock = gapOf(blockLines, rects.blocks, boxRect.top);
           var gapText = gapOf(textLines, rects.texts, boxRect.top);
           var margins = inkMargins(rects.texts, boxRect, ink);
+          // Zwart in de bovenstrook dat niet bij de bovenste zichtbare regel hoort.
+          var bleed = topBandBleed(rects, boxRect, ink, lh, LINES);
+          res.lastBleed = bleed;
+          if (bleed > res.maxBleed) { res.maxBleed = bleed; res.bleedAt = n; }
           if (isFinite(gapText) && (res.minGapText === null || gapText < res.minGapText)) { res.minGapText = gapText; res.worstAt = n; }
           if (isFinite(gapBlock) && (res.minGapBlock === null || gapBlock < res.minGapBlock)) res.minGapBlock = gapBlock;
           if (isFinite(gapText) && gapText <= 0) res.cutSteps++;
@@ -254,12 +274,80 @@
         };
       }
 
-      /** Dezelfde meting als boostLineMetrics() in page-agent.js. */
+      /** Dezelfde meting als boostLineMetrics() in page-agent.js (incl. de elementen). */
       function boostMetrics(h, lh) {
-        var rects = wordRects().blocks;
+        var spans = wrap.querySelectorAll('.sc-caption-word');
+        var rects = [], els = [];
+        for (var i = 0; i < spans.length; i++) {
+          var r = spans[i].getBoundingClientRect();
+          if (!(r.width > 0) || !(r.height > 0)) continue;
+          rects.push({ top: r.top, bottom: r.bottom });
+          els.push(spans[i]);
+        }
         var m = L.captionLineMetrics(rects, lh);
+        m.items = els;
         if (!m.lines) m.lines = L.captionLinesFromHeight(h, lh);
         return m;
+      }
+
+      /**
+       * Spiegelt applyWordBleed() uit page-agent.js: de verticale padding van
+       * woordblokjes op regels BUITEN het venster aan de kant van het venster op
+       * 0 zetten. Hun blokje valt bij een inline-element buiten de regelbox, dus
+       * de onderpadding van de regel die net boven het venster staat stak een
+       * strook zwart het venster in — naast het laatste woord van de bovenste
+       * zichtbare regel (bugmelding 2026-09-20).
+       */
+      function applyWordBleed(m, fromEnd) {
+        if (!m || !m.items || !m.items.length) return;
+        var range = L.captionVisibleGroupRange(m.lines, LINES, fromEnd);
+        for (var j = 0; j < m.items.length; j++) {
+          var g = m.index[j];
+          var pt = g > range.last ? '0px' : '';
+          var pb = g < range.first ? '0px' : '';
+          if (m.items[j].style.paddingTop !== pt) m.items[j].style.paddingTop = pt;
+          if (m.items[j].style.paddingBottom !== pb) m.items[j].style.paddingBottom = pb;
+        }
+      }
+
+      /**
+       * Zwart in de BOVENSTROOK van het venster (van de bovenrand tot de inkt van
+       * de bovenste zichtbare regel) dat niet bij die regel hoort. Retour = het
+       * aantal px dat het zwart daar verder naar rechts loopt dan de letters van
+       * de bovenste zichtbare regel; die regel zelf mag daar zijn eigen padding
+       * (0,28em) schilderen, dus alles boven `padX + marge` is een bug.
+       */
+      function topBandBleed(rects, boxRect, ink, lh, lines) {
+        if (!rects.painted.length) return 0;
+        // Groeperen op de GESCHILDERDE blokken (exact zoals boostLineMetrics() in
+        // de page agent), zodat de regelindexen hetzelfde betekenen.
+        var m = L.captionLineMetrics(rects.painted, lh);
+        var range = L.captionVisibleGroupRange(m.lines, lines, true);
+        if (!m.lines || range.last < 0) return 0;
+        var i, own = -Infinity, textTop = Infinity;
+        for (i = 0; i < m.index.length; i++) {
+          if (m.index[i] !== range.first) continue;
+          // `own` = het verst naar rechts dat de bovenste zichtbare regel ZELF mag
+          // schilderen (zijn eigen blokjes, incl. padding). Dat vergelijken we met
+          // wat er in de strook geschilderd wordt; de letters vergelijken zou
+          // mank lopen op de hangende spatie aan het regeleinde.
+          if (rects.painted[i].right > own) own = rects.painted[i].right;
+          var t = rects.texts[i];
+          if (t && t.top < textTop) textTop = t.top;
+        }
+        if (!isFinite(own) || !isFinite(textTop)) return 0;
+        var inkTop = textTop + ink.inkAbovePx;
+        if (!(inkTop > boxRect.top + 0.5)) return 0;
+        // Elk blok dat de strook raakt schildert daar zijn achtergrond; het verst
+        // naar rechts wint.
+        var right = -Infinity;
+        for (i = 0; i < rects.painted.length; i++) {
+          var b = rects.painted[i];
+          if (b.bottom < boxRect.top + 0.5) continue;
+          if (b.top > inkTop - 0.5) continue;
+          if (b.right > right) right = b.right;
+        }
+        return isFinite(right) ? right - own : 0;
       }
 
       /** gap van de bovenste regel die in het venster valt. */
@@ -297,7 +385,8 @@
           '<br>oud: kleinste gapText = ' + fmt(oldRes.minGapText) + 'px (' + fmt(oldRes.minGapText / FS, 3) + 'em), afgekapte stappen = ' + oldRes.cutSteps + ', onderaan afgekapt = ' + oldRes.bottomCut +
           ' &nbsp;→&nbsp; <b>nu: kleinste gapText = ' + fmt(newRes.minGapText) + 'px (' + fmt(newRes.minGapText / FS, 3) + 'em)</b>, afgekapte stappen = ' + newRes.cutSteps + ', onderaan afgekapt = ' + newRes.bottomCut +
           '<br>zwart boven de inkt: ' + fmt(newRes.minMarginTop) + 'px (' + fmt(newRes.minMarginTop / FS, 3) + 'em), zwart onder de inkt: ' + fmt(newRes.minMarginBottom) + 'px (' + fmt(newRes.minMarginBottom / FS, 3) + 'em)' +
-          ', grootste verschil boven/onder = ' + fmt(newRes.maxMarginDiff) + 'px (marge volgens de layout: ' + fmt(newRes.marginPx) + 'px)';
+          ', grootste verschil boven/onder = ' + fmt(newRes.maxMarginDiff) + 'px (marge volgens de layout: ' + fmt(newRes.marginPx) + 'px)' +
+          '<br>zwart in de bovenstrook buiten de bovenste regel: max ' + fmt(newRes.maxBleed) + 'px (stap ' + newRes.bleedAt + ', laatste stap ' + fmt(newRes.lastBleed) + 'px), toegestaan ' + fmt(0.28 * FS + 2) + 'px (padding 0,28em + 2px)';
         out.appendChild(sum);
 
         var t = document.createElement('table');
@@ -322,11 +411,12 @@
       for (var q = 0; q < results.length; q++) {
         var r = results[q];
         var good = r.newRes.minGapText > 0 && r.newRes.cutSteps === 0 && r.newRes.bottomCut === 0 &&
-          r.newRes.minMarginTop >= 0.2 * FS && r.newRes.minMarginBottom >= 0.2 * FS && r.newRes.maxMarginDiff <= 1.5;
+          r.newRes.minMarginTop >= 0.2 * FS && r.newRes.minMarginBottom >= 0.2 * FS && r.newRes.maxMarginDiff <= 1.5 &&
+          r.newRes.maxBleed <= 0.28 * FS + 2;
         if (!good) ok = false;
         parts.push((r.hostile ? 'B' : 'A') + ': ' + (good ? 'OK' : 'FOUT') +
           ' (kleinste gapText ' + fmt(r.newRes.minGapText) + 'px, zwart boven/onder ' + fmt(r.newRes.minMarginTop) + '/' + fmt(r.newRes.minMarginBottom) +
-          'px, verschil ' + fmt(r.newRes.maxMarginDiff) + 'px; oud: ' + fmt(r.oldRes.minGapText) + 'px / ' + r.oldRes.cutSteps + ')');
+          'px, verschil ' + fmt(r.newRes.maxMarginDiff) + 'px, zwart in de bovenstrook ' + fmt(r.newRes.maxBleed) + 'px; oud: ' + fmt(r.oldRes.minGapText) + 'px / ' + r.oldRes.cutSteps + ')');
       }
       var v = document.getElementById('verdict');
       v.className = 'verdict ' + (ok ? 'pass' : 'fail');

@@ -976,6 +976,9 @@
     // verschuiving is alleen die marge.
     var lh = boostLineHeightPx();
     var m = boostLineMetrics(lh);
+    // In de blokweergave staat de tekst bovenaan: de regels die onder het
+    // venster vallen mogen er ook geen zwart in schuiven.
+    applyWordBleed(m, false);
     var layout = boostVerticalLayout(m.advance > 0 ? m.advance : lh, BOOST_LINES);
     applyBoostVerticalLayout(layout);
     setWordShift(layout.shiftPx, false);
@@ -1049,20 +1052,54 @@
    */
   function boostLineMetrics(expectedLineHeightPx) {
     var wrap = boost.scrollEl;
-    var empty = { lines: 0, advance: 0, tops: [] };
+    var empty = { lines: 0, advance: 0, tops: [], index: [], items: [] };
     if (!wrap) return empty;
     var spans = null;
     try { spans = wrap.querySelectorAll('.sc-caption-word'); } catch (e) { spans = null; }
     if (!spans || !spans.length) return empty;
     var rects = [];
+    var items = [];
     for (var i = 0; i < spans.length; i++) {
       var r = null;
       try { r = spans[i].getBoundingClientRect(); } catch (e) { r = null; }
       if (!r || !(r.width > 0) || !(r.height > 0)) continue;
       rects.push({ top: r.top, bottom: r.bottom });
+      items.push({ el: spans[i], top: r.top });
     }
     if (!rects.length) return empty;
-    return L.captionLineMetrics(rects, expectedLineHeightPx);
+    var m = L.captionLineMetrics(rects, expectedLineHeightPx);
+    m.items = items; // parallel aan m.index: per woordblokje zijn regelgroep
+    return m;
+  }
+
+  /**
+   * De woordblokjes van regels die BUITEN het venster vallen mogen geen zwart
+   * ín het venster schilderen. De verticale padding van een inline-element valt
+   * namelijk buiten zijn regelbox: de onderpadding van de regel die net boven
+   * het venster staat steekt een paar px onder de bovenrand uit. Zo'n regel
+   * loopt bijna altijd verder door dan de bovenste zichtbare regel (die breekt af
+   * op het volgende woord), dus zag je daar een zwarte strook zonder tekst —
+   * precies naast het laatste woord van de bovenste regel (bugmelding
+   * 2026-09-20). We zetten daarom alleen de padding aan de kant van het venster
+   * op 0 (boven het venster de onderpadding, eronder de bovenpadding). De andere
+   * kant blijft staan, zodat de hartlijn van de blokjes — en daarmee de gemeten
+   * regelafstand in de volgende frame — niet verschuift. De horizontale padding
+   * en de letters zelf blijven ongemoeid, dus de slide-up en de regelafbreking
+   * veranderen niet.
+   */
+  function applyWordBleed(m, fromEnd) {
+    if (!m || !m.items || !m.items.length) return;
+    var range = L.captionVisibleGroupRange(m.lines, BOOST_LINES, fromEnd);
+    var idx = m.index || [];
+    for (var i = 0; i < m.items.length; i++) {
+      var el = m.items[i].el;
+      if (!el || !el.style) continue;
+      var g = typeof idx[i] === 'number' ? idx[i] : 0;
+      var pt = g > range.last ? '0px' : '';  // regel onder het venster
+      var pb = g < range.first ? '0px' : ''; // regel boven het venster
+      if (el.style.paddingTop !== pt) el.style.paddingTop = pt;
+      if (el.style.paddingBottom !== pb) el.style.paddingBottom = pb;
+    }
   }
 
   /**
@@ -1202,6 +1239,10 @@
     // optisch midden in het zwart staat en er boven én onder evenveel overblijft.
     var layout = boostVerticalLayout(step, BOOST_LINES);
     applyBoostVerticalLayout(layout);
+    // Het zwart van regels die buiten het venster vallen mag niet in het venster
+    // doorlopen (bugmelding 2026-09-20: een strook zwart naast het laatste woord
+    // van de bovenste regel).
+    applyWordBleed(m, true);
     var shift = Math.round((L.captionWindowShiftLines(lines, step, BOOST_LINES) + layout.shiftPx) * 100) / 100;
     if (shift === boost.windowShift) return;
     boost.windowShift = shift;
