@@ -974,6 +974,68 @@
   });
 
   /* ------------------------------------------------------------------ *
+   * Sync-offset en de woord-voor-woord-tik (sinds 2026-10-12)
+   * ------------------------------------------------------------------ */
+  test('captionSyncMs: standaard 120 ms, clamping en afronding', function (L) {
+    eq(L.CAPTION_SYNC_DEFAULT_MS, 120);
+    eq(L.captionSyncMs(undefined), 120, 'onbekend');
+    eq(L.captionSyncMs(''), 120, 'leeg');
+    eq(L.captionSyncMs('abc'), 120, 'geen getal');
+    eq(L.captionSyncMs(0), 0, 'nul is geldig (geen voorsprong)');
+    eq(L.captionSyncMs(250), 250);
+    eq(L.captionSyncMs(119.6), 120, 'afronden op hele ms');
+    eq(L.captionSyncMs(9999), L.CAPTION_SYNC_MAX_MS, 'clamp hoog');
+    eq(L.captionSyncMs(-9999), L.CAPTION_SYNC_MIN_MS, 'clamp laag');
+    eq(L.wordLeadSeconds(120), 0.12);
+    eq(L.wordLeadSeconds(-300), -0.3);
+  });
+
+  test('captionWordIndex: de sync-offset verschuift het moment van verschijnen', function (L) {
+    var words = [{ t: 1.0, end: 1.4, text: 'een' }, { t: 1.4, end: 1.8, text: 'twee' }];
+    eq(L.captionWordIndex(words, 0.95, L.wordLeadSeconds(120)), 1, 'met 120 ms voorsprong al in beeld');
+    eq(L.captionWordIndex(words, 0.95, L.wordLeadSeconds(0)), 0, 'zonder voorsprong nog niet');
+    eq(L.captionWordIndex(words, 1.25, L.wordLeadSeconds(-300)), 0, 'met vertraging pas later');
+    eq(L.captionWordIndex(words, 1.35, L.wordLeadSeconds(-300)), 1, 'en dan alsnog in beeld');
+  });
+
+  test('captionRevealPace: één woord per frame, en een sprong bij echte stilstand', function (L) {
+    eq(L.captionRevealPace(0), 0, 'niets te doen');
+    eq(L.captionRevealPace(-2), 0, 'achterstand kan niet negatief zijn');
+    eq(L.captionRevealPace(1), 1);
+    eq(L.captionRevealPace(4), 1, 'kleine hapering: hooguit 1 per frame');
+    eq(L.captionRevealPace(5), 5, 'grote achterstand: in één keer naar nu');
+    eq(L.captionRevealPace(8, 2, 10), 2, 'eigen limiet per frame');
+    eq(L.captionRevealPace(12, 2, 10), 12, 'boven de eigen spronggrens alles in één keer');
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Dubbelcheck van de taalkeuze (sinds 2026-10-12)
+   * ------------------------------------------------------------------ */
+  test('languageCheck: de audio bevestigt de gekozen taal', function (L) {
+    var v = L.languageCheck({ expected: 'nl', detected: 'nl', confidence: 0.9 });
+    eq(v.action, 'confirm');
+    eq(v.lang, 'nl');
+    eq(L.languageCheck({ expected: 'en-US', detected: 'en', confidence: 0.7 }).action, 'confirm', 'regiovariant');
+    eq(L.languageCheck({ expected: 'nl', detected: 'NL', confidence: 0.2 }).action, 'confirm', 'bevestigen mag ook met lage zekerheid');
+  });
+
+  test('languageCheck: de audio klinkt als de andere taal -> omzetten', function (L) {
+    var v = L.languageCheck({ expected: 'en', detected: 'nl', confidence: 0.91 });
+    eq(v.action, 'switch');
+    eq(v.lang, 'nl');
+    eq(v.reason, 'audio-language-differs');
+  });
+
+  test('languageCheck: te onzeker, buiten scope of geen uitslag -> niets doen', function (L) {
+    eq(L.languageCheck({ expected: 'en', detected: 'nl', confidence: 0.4, minConfidence: 0.6 }).action, 'low-confidence');
+    eq(L.languageCheck({ expected: 'en', detected: 'nl' }).action, 'low-confidence', 'zonder zekerheid');
+    eq(L.languageCheck({ expected: 'en', detected: 'de', confidence: 0.99 }).action, 'out-of-scope', 'Duits is buiten scope');
+    eq(L.languageCheck({ expected: 'en', detected: null, confidence: 0.9 }).action, 'no-data');
+    eq(L.languageCheck({ expected: 'en', detected: 'unknown', confidence: 0.9 }).action, 'no-data');
+    eq(L.languageCheck({ expected: null, detected: 'nl', confidence: 0.9 }).action, 'invalid');
+  });
+
+  /* ------------------------------------------------------------------ *
    * UI-tekst
    * ------------------------------------------------------------------ */
   test('toastText vertelt wat er is gebeurd', function (L) {

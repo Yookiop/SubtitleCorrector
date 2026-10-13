@@ -592,7 +592,7 @@
           return;
         }
         var run = state.runs[idx];
-        var n = L.captionWordIndex(run.words, t, 0.05);
+        var n = L.captionWordIndex(run.words, t, L.wordLeadSeconds(L.CAPTION_SYNC_DEFAULT_MS));
         els.overlay.style.display = 'block';
         els.box.style.height = L.captionBoxHeightEm(lines) + 'em';
         if (state.word.run !== idx || n < state.word.count) {
@@ -771,7 +771,7 @@
         var wi = L.captionRunAt(state.runs, t, LINGER);
         if (wi >= 0) {
           txt += ' | woord-voor-woord: run ' + (wi + 1) + '/' + state.runs.length +
-            ', ' + L.captionWordIndex(state.runs[wi].words, t, 0.05) + '/' + state.runs[wi].words.length + ' woorden';
+            ', ' + L.captionWordIndex(state.runs[wi].words, t, L.wordLeadSeconds(L.CAPTION_SYNC_DEFAULT_MS)) + '/' + state.runs[wi].words.length + ' woorden';
         }
         document.getElementById('clockText').textContent = txt;
         document.getElementById('scrub').value = t;

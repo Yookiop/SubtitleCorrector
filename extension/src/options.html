@@ -180,9 +180,15 @@
       </div>
       <div class="field">
         <label>Word-for-Word
-          <span class="hint">Toont de ondertiteling woord voor woord, zoals YouTube's auto-gegenereerde ondertitels: elk woord verschijnt op zijn eigen tijd — <b>met zijn eigen zwarte achtergrond</b> — en zodra de onderste regel vol is schuift het venster één regel omhoog (regel 1 verdwijnt, regel 2 wordt regel 1 en de nieuwe woorden gaan verder op regel 2). Heeft een cue geen per-woordtijden (één tijd voor de hele zin), dan worden de woorden over de cue verdeeld — er plopt dus nooit ineens een hele zin in beeld. Een stilte begint weer met een leeg venster. <b>Aan is de standaard</b>; uit = de hele blokken van 2 volle zinnen in één keer.</span>
+          <span class="hint">Toont de ondertiteling woord voor woord, zoals YouTube's auto-gegenereerde ondertitels: elk woord verschijnt op zijn eigen tijd — <b>met zijn eigen zwarte achtergrond</b> — en zodra de onderste regel vol is schuift het venster één regel omhoog (regel 1 verdwijnt, regel 2 wordt regel 1 en de nieuwe woorden gaan verder op regel 2). Heeft een cue geen per-woordtijden (één tijd voor de hele zin), dan worden de woorden over de cue verdeeld — er plopt dus nooit ineens een hele zin in beeld. Loopt de weergave even vast, dan tikken de woorden één voor één na in plaats van dat de hele rest van de zin in één keer verschijnt. Een stilte begint weer met een leeg venster. <b>Aan is de standaard</b>; uit = de hele blokken van 2 volle zinnen in één keer.</span>
         </label>
         <input type="checkbox" id="captionWordByWord">
+      </div>
+      <div class="field">
+        <label>Sync-offset (ms)
+          <span class="hint">Hoeveel <b>eerder</b> een woord in beeld komt dan YouTube's gemeten woordtijd (−300 tot +500, standaard <b>120</b>). Die tijd is het moment waarop de herkenning het woord hoorde; met een kleine voorsprong loopt de ondertiteling niet achter op het geluid. Positief = eerder (gebruik dit als de ondertiteling achterloopt), negatief = later (als de ondertiteling vóór het geluid is). Alleen de eigen weergave (Caption Boost) gebruikt deze waarde.</span>
+        </label>
+        <input type="number" id="captionSyncMs" min="-300" max="500" step="10">
       </div>
       <div class="field">
         <label>Caption-prioriteit
@@ -205,6 +211,12 @@
           <span class="hint">Fallback: een paar seconden tab-audio opnemen en lokaal de taal herkennen.</span>
         </label>
         <input type="checkbox" id="audioFallback">
+      </div>
+      <div class="field">
+        <label>Dubbelcheck van de taalkeuze
+          <span class="hint">Standaard <b>aan</b>. Nadat de extensie de ondertitel op de metadata heeft gezet (dat is meestal goed, maar niet altijd — zeker met meerdere tabbladen open, bij auto-dubs of een video die net laadt), luistert ze één keer naar de audio en vergelijkt die uitslag met de gekozen taal. Klopt het, dan is de keuze bevestigd (zie de popup); klopt het niet <b>twee keer</b>, dan wordt de ondertitel alsnog omgezet naar de taal die echt te horen is. Eén opname per video, nooit vaker dan één per 45 s; in playlists draait dit alleen als "Audio-analyse ook automatisch in playlists" aan staat (anders alleen via de hotkey). Werkt alleen met de bridge: staat "Bridge gebruiken als metadata onduidelijk is" uit, dan is er geen audio-analyse en dus ook geen dubbelcheck.</span>
+        </label>
+        <input type="checkbox" id="doubleCheckLanguage">
       </div>
       <div class="field">
         <label>Bridge-URL

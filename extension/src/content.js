@@ -35,6 +35,8 @@
     captionFont: 'youtube',
     captionWeight: 400,
     captionWordByWord: true,
+    captionSyncMs: 120,
+    doubleCheckLanguage: true,
     audioSeconds: 5,
     minConfidence: 0.5,
     keepAudioDuringCapture: true,
@@ -49,6 +51,9 @@
     busy: false,
     fixed: Object.create(null),     // videoId -> {sig, at, lang}
     optedOut: Object.create(null),  // videoId -> true (gebruiker zette subs zelf uit)
+    verify: Object.create(null),    // videoId -> {lang, status, attempts, found, at}
+    verifyTimer: null,
+    waitingVerify: null,
     lastProbe: null,
     lastResult: null,
     autoTimer: null,
@@ -62,6 +67,13 @@
 
   // Laag 4 (audio-analyse) is zwaar; nooit vaker dan één keer per 45 s automatisch.
   var CAPTURE_COOLDOWN_MS = 45000;
+
+  // Dubbelcheck (sinds 2026-10-12): één opname per video, een seconde of vijf
+  // na de correctie, om de metadata-taal met de audio te controleren.
+  var VERIFY_DELAY_MS = 5000;
+  var VERIFY_MAX_ATTEMPTS = 2;
+  var VERIFY_RETRY_MS = 20000;
+  var VERIFY_MIN_CONFIDENCE = 0.6;
 
   /* ------------------------------------------------------------------ *
    * Instellingen
@@ -137,6 +149,9 @@
         state.videoId = d.videoId;
         state.retryCount = 0;
         state.waitingPlayback = null;
+        state.waitingVerify = null;
+        clearTimeout(state.verifyTimer);
+        state.verifyTimer = null;
         setBadge(state.subtitlesOff ? 'off' : '');
         if (settings.autoApply && settings.enabled) scheduleAuto(d.videoId, autoDelay(1800));
         break;
@@ -159,6 +174,12 @@
         if (d.state === 1 && state.waitingPlayback && state.waitingPlayback.videoId === d.videoId) {
           state.waitingPlayback = null;
           scheduleAuto(d.videoId, autoDelay(1500), true);
+        }
+        // De dubbelcheck wachtte tot de video speelde.
+        if (d.state === 1 && state.waitingVerify && state.waitingVerify.videoId === d.videoId) {
+          var wv = state.waitingVerify;
+          state.waitingVerify = null;
+          scheduleVerify(wv.videoId, wv.lang, 1500);
         }
         break;
 
@@ -253,7 +274,8 @@
       captionWidth: numOr(settings.captionWidth, 50),
       captionFont: settings.captionFont || 'youtube',
       captionWeight: numOr(settings.captionWeight, 400),
-      captionWordByWord: !!settings.captionWordByWord
+      captionWordByWord: !!settings.captionWordByWord,
+      captionSyncMs: L.captionSyncMs(settings.captionSyncMs)
     }).catch(function () {});
   }
 
@@ -429,14 +451,19 @@
 
   /** Snelle, gecachete check of de bridge online én klaar is. */
   function bridgeReady() {
+    return bridgeHealthRaw().then(function (h) { return !!(h && h.ok && h.ready); });
+  }
+
+  /** De volledige bridge-status (online? model klaar? nog aan het laden?). */
+  function bridgeHealthRaw() {
     return new Promise(function (resolve) {
       try {
         chrome.runtime.sendMessage({ type: 'bridgeHealth' }, function (res) {
           void chrome.runtime.lastError;
-          resolve(!!(res && res.ok && res.ready));
+          resolve(res || null);
         });
       } catch (e) {
-        resolve(false);
+        resolve(null);
       }
     });
   }
@@ -464,7 +491,7 @@
   /* ------------------------------------------------------------------ *
    * Hoofdflow
    * ------------------------------------------------------------------ */
-  async function run(trigger) {
+  async function run(trigger, forcedDet) {
     if (!settings.enabled) return;
     if (state.subtitlesOff) return;
     if (state.busy) return;
@@ -479,9 +506,14 @@
       if (!videoId) return;
       state.videoId = videoId;
 
+      // Een opgedrongen taal (dubbelcheck) hoort bij één video: niet toepassen
+      // als de gebruiker intussen naar een andere video is gegaan.
+      if (forcedDet && forcedDet.videoId && forcedDet.videoId !== videoId) return;
+
       if (trigger === 'hotkey') {
         delete state.optedOut[videoId];
         delete state.fixed[videoId];
+        delete state.verify[videoId];
       }
       if (state.optedOut[videoId] && trigger !== 'hotkey') return;
 
@@ -496,12 +528,22 @@
       if (notReady && state.retryCount < 6) {
         state.retryCount++;
         clearTimeout(state.retry);
-        state.retry = setTimeout(function () { run(trigger); }, retryDelay());
+        state.retry = setTimeout(function () { run(trigger, forcedDet); }, retryDelay());
         return;
       }
 
-      var det = L.detectAudioLanguage(probe);
-      var viaBridge = false;
+      // De dubbelcheck (of een eerdere audio-analyse) kan een taal opdringen:
+      // dan slaan we de metadata en de gewone fallback over.
+      var det = forcedDet && forcedDet.lang
+        ? {
+            lang: L.baseLang(forcedDet.lang),
+            source: forcedDet.source || 'audio-analysis',
+            ambiguous: false,
+            outOfScope: null,
+            candidates: []
+          }
+        : L.detectAudioLanguage(probe);
+      var viaBridge = !!(forcedDet && forcedDet.lang);
 
       var fallback = L.shouldUseAudioFallback({
         enabled: settings.audioFallback,
@@ -517,7 +559,7 @@
         console.log('[SC] audio-analyse overgeslagen:', fallback.reason);
       }
 
-      if ((!det.lang || det.ambiguous) && fallback.allowed) {
+      if (!viaBridge && (!det.lang || det.ambiguous) && fallback.allowed) {
         if (probe.playerState === 1) {
           // Niet opnemen als de bridge niet klaar is: dat kost alleen CPU/GPU.
           var ready = await bridgeReady();
@@ -555,6 +597,12 @@
 
       state.lastResult = { plan: plan, at: Date.now() };
 
+      // Dubbelcheck: de taal kwam uit de metadata (geen audio-analyse) en er is
+      // een ondertitel voor -> luister straks één keer na of dat echt klopt.
+      if (!viaBridge && plan.lang && plan.action !== 'no-track' && plan.action !== 'unknown') {
+        scheduleVerify(videoId, plan.lang, VERIFY_DELAY_MS);
+      }
+
       if (plan.action === 'none') {
         state.fixed[videoId] = { sig: fixedSignature(plan), at: Date.now(), lang: plan.lang };
         if (trigger === 'hotkey' && settings.showToast) toast(L.toastText(plan, null), 'ok');
@@ -581,7 +629,15 @@
         state.fixed[videoId] = { sig: plan.lang + '|' + (usedAuto ? 'asr' : 'man'), at: Date.now(), lang: plan.lang };
         setBadge(L.shortLabel(plan.lang) + (usedAuto ? '' : '*'));
       }
-      if (settings.showToast) toast(L.toastText(plan, res), res && res.ok ? 'ok' : 'err');
+      if (settings.showToast) {
+        if (trigger === 'verify') {
+          toast(res && res.ok
+            ? 'Dubbelcheck: audio klinkt als ' + L.shortLabel(plan.lang) + ' - ondertitel bijgewerkt'
+            : 'Dubbelcheck: ondertitel bijwerken mislukt', res && res.ok ? 'warn' : 'err');
+        } else {
+          toast(L.toastText(plan, res), res && res.ok ? 'ok' : 'err');
+        }
+      }
       if (settings.debug) console.log('[SC] apply resultaat', plan, res, probe);
 
     } catch (e) {
@@ -620,6 +676,170 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * Dubbelcheck van de taalkeuze (sinds 2026-10-12)
+   *
+   * De metadata (audiotrack/ASR-tracks) is meestal goed, maar niet altijd —
+   * zeker met meerdere tabbladen open, bij auto-dubs of een video die net
+   * laadt kan de gekozen taal toch de verkeerde zijn (Nederlandse audio met
+   * Engelse ondertitels). Daarom luistert de extensie ná de correctie één keer
+   * naar de audio (dezelfde bridge als de fallback) en vergelijkt die uitslag
+   * met de gekozen taal: klopt het, dan is de keuze bevestigd; klopt het niet,
+   * dan wordt de ondertitel met de audio-uitslag opnieuw gezet. Door de
+   * cooldown en de playlist-rem (caption-prioriteit) blijft dit licht werk:
+   * één opname per video, nooit vaker dan één per 45 s.
+   * ------------------------------------------------------------------ */
+  function scheduleVerify(videoId, lang, delay) {
+    if (!settings.enabled || !settings.doubleCheckLanguage || !settings.audioFallback) return;
+    if (!videoId || state.subtitlesOff) return;
+
+    var rec = state.verify[videoId];
+    if (rec && (rec.status === 'confirmed' || rec.status === 'corrected' || rec.status === 'skipped')) return;
+    if (rec && rec.attempts >= VERIFY_MAX_ATTEMPTS) return;
+    rec = rec || { attempts: 0 };
+    rec.lang = L.baseLang(lang) || rec.lang || null;
+    if (!rec.lang) return;
+    rec.status = 'scheduled';
+    state.verify[videoId] = rec;
+
+    clearTimeout(state.verifyTimer);
+    state.verifyTimer = setTimeout(function () {
+      state.verifyTimer = null;
+      verifyLanguage(videoId);
+    }, typeof delay === 'number' && delay >= 0 ? delay : VERIFY_DELAY_MS);
+    if (settings.debug) console.log('[SC] dubbelcheck gepland:', videoId, rec.lang);
+  }
+
+  /** De uitkomst van de dubbelcheck onthouden (voor de popup en de log). */
+  function setVerifyStatus(videoId, status, extra) {
+    var rec = state.verify[videoId] || { lang: null, attempts: 0 };
+    rec.status = status;
+    if (extra && extra.found) rec.found = extra.found;
+    if (extra && typeof extra.confidence === 'number') rec.confidence = extra.confidence;
+    rec.at = Date.now();
+    state.verify[videoId] = rec;
+    if (settings.debug) console.log('[SC] dubbelcheck:', status, rec.lang, rec.found || '');
+  }
+
+  /** Eén audio-opname laten beoordelen door de bridge (taal + zekerheid). */
+  async function sampleLanguage(expected) {
+    state.lastCaptureAt = Date.now();
+    var br = await bridgeDetect();
+    var verdict = L.languageCheck({
+      expected: expected,
+      detected: br && br.ok ? br.language : null,
+      confidence: br && typeof br.confidence === 'number' ? br.confidence : null,
+      minConfidence: Math.max(Number(settings.minConfidence) || 0, VERIFY_MIN_CONFIDENCE)
+    });
+    if (settings.debug) console.log('[SC] dubbelcheck meting:', verdict, br);
+    return verdict;
+  }
+
+  async function verifyLanguage(videoId) {
+    if (!settings.enabled || !settings.doubleCheckLanguage || !settings.audioFallback) return;
+    if (state.subtitlesOff || state.optedOut[videoId]) return;
+
+    var rec = state.verify[videoId];
+    if (!rec || !rec.lang) return;
+    if (rec.status === 'confirmed' || rec.status === 'corrected' || rec.status === 'skipped') return;
+    if (rec.attempts >= VERIFY_MAX_ATTEMPTS) return;
+
+    if (state.busy) {
+      // De gewone correctie loopt nog; probeer het zo meteen opnieuw.
+      scheduleVerify(videoId, rec.lang, 3000);
+      return;
+    }
+
+    state.busy = true;
+    var switchTo = null;
+    var retryIn = 0;
+    try {
+      var probe = await ask('probe', null, 5000);
+      if (!probe || !probe.ok) return;
+      if (probe.videoId !== videoId) return; // andere video: niets meer doen
+      if (probe.adShowing) {
+        retryIn = 5000;
+        return;
+      }
+      if (probe.playerState !== 1) {
+        // Nog geen audio; zodra de speler speelt gaat de dubbelcheck verder.
+        state.waitingVerify = { videoId: videoId, lang: rec.lang };
+        return;
+      }
+
+      var fallback = L.shouldUseAudioFallback({
+        enabled: settings.audioFallback,
+        trigger: 'auto',
+        inPlaylist: isPlaylistContext(),
+        captionPriority: settings.captionPriority,
+        allowInPlaylists: settings.audioFallbackInPlaylists,
+        lastCaptureAt: state.lastCaptureAt,
+        now: Date.now(),
+        cooldownMs: CAPTURE_COOLDOWN_MS
+      });
+      if (!fallback.allowed) {
+        if (fallback.reason === 'cooldown') {
+          retryIn = Math.max(1500, CAPTURE_COOLDOWN_MS - (Date.now() - state.lastCaptureAt) + 1500);
+        } else {
+          setVerifyStatus(videoId, 'skipped');
+        }
+        return;
+      }
+
+      var health = await bridgeHealthRaw();
+      if (!health || !health.ok || !health.ready) {
+        if (health && health.ok && health.loading) {
+          // Het Whisper-model laadt nog: zo meteen opnieuw proberen.
+          retryIn = 10000;
+        } else {
+          // Zonder bridge kunnen we niets horen; stil overslaan (geen foutmelding
+          // als de gebruiker de bridge niet gebruikt).
+          setVerifyStatus(videoId, 'no-bridge');
+        }
+        return;
+      }
+
+      rec.attempts++;
+      var verdict = await sampleLanguage(rec.lang);
+      if (verdict.action === 'switch') {
+        // Echte dubbelcheck: de audio moet het een tweede keer ook zeggen
+        // voordat we de ondertitel omzetten. Eén verkeerde uitslag (muziek,
+        // een deuntje in de intro) is dan niet genoeg.
+        await new Promise(function (r) { setTimeout(r, 1200); });
+        var again = await sampleLanguage(rec.lang);
+        if (!(again.action === 'switch' && L.sameLang(again.lang, verdict.lang))) {
+          verdict = { action: 'inconclusive', lang: verdict.lang, reason: 'second-sample-disagrees' };
+        }
+      }
+
+      if (verdict.action === 'confirm') {
+        setVerifyStatus(videoId, 'confirmed', { found: verdict.lang });
+      } else if (verdict.action === 'switch') {
+        switchTo = verdict.lang;
+        setVerifyStatus(videoId, 'corrected', { found: verdict.lang });
+      } else {
+        setVerifyStatus(videoId, 'inconclusive');
+        if (rec.attempts < VERIFY_MAX_ATTEMPTS) retryIn = VERIFY_RETRY_MS;
+        if (settings.debug) console.log('[SC] dubbelcheck onbeslist:', verdict);
+      }
+    } catch (e) {
+      if (settings.debug) console.warn('[SC] dubbelcheck fout', e);
+    } finally {
+      state.busy = false;
+    }
+
+    if (retryIn > 0) {
+      scheduleVerify(videoId, rec.lang, retryIn);
+      return;
+    }
+    if (switchTo) {
+      // De audio klinkt als de andere taal: dezelfde correctie nog een keer,
+      // nu met de audio-uitslag als bron.
+      if (settings.debug) console.log('[SC] dubbelcheck: audio zegt', switchTo, '- correctie opnieuw');
+      await run('verify', { lang: switchTo, source: 'audio-analysis', videoId: videoId });
+    }
+  }
+
+  /* ------------------------------------------------------------------ *
    * Berichten vanaf de popup
    * ------------------------------------------------------------------ */
   try {
@@ -629,6 +849,7 @@
         clearSubtitlesOff('popup').then(function () {
           delete state.fixed[state.videoId];
           delete state.optedOut[state.videoId];
+          delete state.verify[state.videoId];
           run('hotkey');
         });
         sendResponse({ ok: true });
@@ -640,6 +861,7 @@
           videoId: state.videoId,
           probe: state.lastProbe,
           result: state.lastResult,
+          verify: state.videoId ? state.verify[state.videoId] || null : null,
           settings: settings
         });
         return true;

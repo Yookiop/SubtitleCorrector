@@ -500,7 +500,8 @@
   var BOOST_SILENCE_GAP = 1.6;      // s stilte die een blok/run afsluit
   var BOOST_MAX_BLOCK_CHARS = 150;  // noodrem voor tracks zonder punctuatie
   var BOOST_LINGER = 0.45;          // s dat een blok/run na zijn laatste woord blijft staan
-  var BOOST_WORD_LEAD = 0.05;       // s dat een woord vóór zijn gemeten tijd al in beeld komt
+  var BOOST_SYNC_MS = L.CAPTION_SYNC_DEFAULT_MS; // optie *Sync-offset*: woord verschijnt zoveel ms eerder
+  var BOOST_WINDOW_RECHECK_FRAMES = 120;         // ± 2 s: venster/regelafstand opnieuw meten (vangnet)
 
   var boost = {
     videoId: null,
@@ -518,6 +519,9 @@
     runKey: null,         // starttijd van de run die nu in de DOM staat
     wordCount: 0,         // aantal woorden van die run dat al in de DOM staat
     windowShift: -1,      // laatst gezette venster-verschuiving in px (-1 = opnieuw meten)
+    lastWordTop: null,    // bovenkant (px) van het laatst gezette woord (alleen voor de meting)
+    lastWordEl: null,     // element van het laatst gezette woord (zelfde-frame vergelijking)
+    lineChanged: false,   // laatste woord begon een nieuwe regel -> venster opnieuw meten
     styleReady: false
   };
 
@@ -912,6 +916,9 @@
     boost.runKey = null;
     boost.wordCount = 0;
     boost.windowShift = -1;
+    boost.lastWordTop = null;
+    boost.lastWordEl = null;
+    boost.lineChanged = false;
     if (boost.scrollEl) {
       boost.scrollEl.textContent = '';
       boost.scrollEl.style.transform = ''; // oude versies schoven met transform
@@ -1244,6 +1251,7 @@
     // van de bovenste regel).
     applyWordBleed(m, true);
     var shift = Math.round((L.captionWindowShiftLines(lines, step, BOOST_LINES) + layout.shiftPx) * 100) / 100;
+    boost.lineChanged = false;
     if (shift === boost.windowShift) return;
     boost.windowShift = shift;
     setWordShift(shift, true);
@@ -1309,10 +1317,47 @@
   }
 
   /**
+   * Eén goedkope meting per nieuw woord: begint het op een nieuwe regel?
+   *
+   * Alle woorden van één regel hebben (vrijwel) exact dezelfde bovenkant; het
+   * verschil tussen twee regels is de regelafstand. Alleen als de bovenkant
+   * meer dan de meettolerantie verspringt (0,4 x de regelafstand, dezelfde maat
+   * als `L.captionLineMetrics`) hoeft het venster opnieuw gemeten te worden.
+   * Dat scheelt het dure meetwerk (alle woordblokjes langsgaan) bij elk woord —
+   * precies het werk dat de weergave kon laten haperen en dan de hele rest van
+   * de zin in één keer in beeld bracht.
+   *
+   * Beide blokjes worden in dezelfde frame gemeten: de slide-up schuift de
+   * hele wrapper (`top`), dus een meting uit een vorige frame zou tijdens die
+   * beweging een verschil van een halve regel kunnen zien.
+   */
+  function noteWordLine(prevEl, el) {
+    if (!el) return;
+    var top = null;
+    var prevTop = null;
+    try {
+      top = el.getBoundingClientRect().top;
+      if (prevEl && prevEl !== el) prevTop = prevEl.getBoundingClientRect().top;
+    } catch (e) {
+      return;
+    }
+    if (top == null || !isFinite(top)) return;
+    var lh = boostLineHeightPx();
+    var tol = Math.max(1, lh * L.CAPTION_LINE_GROUP_TOL);
+    if (prevTop != null && isFinite(prevTop) && Math.abs(top - prevTop) > tol) boost.lineChanged = true;
+    boost.lastWordTop = top;
+  }
+
+  /**
    * Eén frame van de woord-voor-woord-weergave: de woorden van de actieve run
    * komen één voor één in de DOM (op hun eigen tijd) en het venster rolt per
    * regel mee. Een stilte begint een nieuwe run (venster leeg); een sprong in
    * de video (terugspoelen) bouwt het venster opnieuw op.
+   *
+   * Per frame komt er hooguit één woord bij (`L.captionRevealPace`): loopt de
+   * weergave even vast, dan tikken de woorden één voor één na in plaats van
+   * dat er ineens een hele zin staat. Alleen bij een echte onderbreking
+   * (tabblad op de achtergrond, terugspoelen) springt de weergave naar nu.
    */
   function renderWordFrame(t) {
     if (!boost.runs) { renderBlockFrame(t); return; }
@@ -1325,14 +1370,15 @@
     var wrap = boost.scrollEl;
     var box = boost.box;
     if (!wrap || !box) return;
-    var n = L.captionWordIndex(run.words, t, BOOST_WORD_LEAD);
+    var n = L.captionWordIndex(run.words, t, L.wordLeadSeconds(BOOST_SYNC_MS));
     if (boost.runKey !== run.start || n < boost.wordCount) invalidateBoostText();
     boost.runKey = run.start;
     // De hoogte van het venster wordt NIET elke frame opnieuw gezet (dat zou de
     // gemeten hoogte steeds terugzetten): hij volgt de woorden, via
     // updateWordWindow() -> applyBoostBoxHeight() zodra er iets verandert.
-    var grew = false;
-    while (boost.wordCount < n && boost.wordCount < run.words.length) {
+    var reveal = L.captionRevealPace(n - boost.wordCount, L.CAPTION_REVEAL_PER_FRAME, L.CAPTION_REVEAL_JUMP);
+    var prevEl = boost.lastWordEl || null;
+    for (var k = 0; k < reveal && boost.wordCount < run.words.length; k++) {
       var word = run.words[boost.wordCount];
       // Sprekerswissel (">>") begint op een nieuwe regel, net als bij YouTube's
       // auto-ondertitels.
@@ -1342,10 +1388,12 @@
       // regelafbreking blijft daardoor staan (de browser wikkelt nog steeds
       // zelf, greedy).
       appendBoostWord(wrap, word.text);
+      noteWordLine(prevEl, wrap.lastChild);
+      prevEl = wrap.lastChild;
       boost.wordCount++;
-      grew = true;
     }
-    if (grew || boost.windowShift < 0) updateWordWindow();
+    boost.lastWordEl = prevEl;
+    if (boost.windowShift < 0 || boost.lineChanged) updateWordWindow();
     if (!boost.shownOnce) {
       boost.shownOnce = true;
       hideBoost(true);
@@ -1374,6 +1422,12 @@
         return;
       }
       applyBoostStyle(); // spelerformaat kan veranderd zijn (fullscreen/theater)
+    }
+    // Vangnet: elke ± 2 s het venster opnieuw meten, ook als er geen nieuwe
+    // regel begon. Zo volgt de weergave een tussentijdse wijziging van de
+    // regelafstand/fontgrootte door de pagina alsnog (bugmelding 2026-09-18).
+    if (BOOST_WORD_BY_WORD && boost.frame % BOOST_WINDOW_RECHECK_FRAMES === 0 && boost.wordCount > 0) {
+      boost.lineChanged = true;
     }
 
     var t = safe(function () { return p.getCurrentTime(); }, 0);
@@ -1600,6 +1654,14 @@
       }
       dbg('captionWordByWord', BOOST_WORD_BY_WORD);
     }
+    if (opts && Object.prototype.hasOwnProperty.call(opts, 'captionSyncMs')) {
+      var sync = L.captionSyncMs(opts.captionSyncMs);
+      if (sync !== BOOST_SYNC_MS) {
+        BOOST_SYNC_MS = sync; // geldt meteen voor de woorden die nog moeten komen
+        invalidateBoostText();
+      }
+      dbg('captionSyncMs', BOOST_SYNC_MS);
+    }
     return {
       captionBoost: CAPTION_BOOST_ENABLED,
       captionSize: BOOST_SIZE_PCT,
@@ -1610,6 +1672,7 @@
       captionFont: BOOST_FONT,
       captionWeight: BOOST_WEIGHT,
       captionWordByWord: BOOST_WORD_BY_WORD,
+      captionSyncMs: BOOST_SYNC_MS,
       subtitlesOff: SUBTITLES_OFF
     };
   }

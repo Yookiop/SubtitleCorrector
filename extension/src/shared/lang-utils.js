@@ -225,6 +225,62 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * Dubbelcheck van de taalkeuze (sinds 2026-10-12)
+   *
+   * De metadata (audiotrack, ASR-tracks) is meestal goed, maar niet altijd:
+   * bij meerdere tabbladen, auto-dubs of een video die net laadt kan de
+   * gekozen taal toch de verkeerde zijn (Nederlandse audio met Engelse
+   * ondertitels). Daarom luistert de extensie ná de correctie één keer naar
+   * de audio (bridge) en vergelijkt die uitkomst met de gekozen taal:
+   *
+   *   confirm    de audio klinkt als de gekozen taal -> niets doen
+   *   switch     de audio klinkt als de ANDERE taal (met genoeg zekerheid)
+   *              -> de correctie opnieuw doen met de audio-uitkomst
+   *   low-confidence  de audio-uitkomst is te onzeker -> niets doen
+   *   out-of-scope    de audio klinkt als een taal die we niet ondersteunen
+   *                   -> niets doen (we hebben geen betere ondertitel)
+   *   no-data    geen bruikbare uitslag (stilte, bridge offline, fout)
+   * ------------------------------------------------------------------ */
+  /**
+   * @param {Object} input
+   *   input.expected       taal die de correctie heeft gekozen ('en'|'nl'|variant)
+   *   input.detected       taal uit de audio-analyse (bridge)
+   *   input.confidence     zekerheid daarvan (0-1)
+   *   input.minConfidence  ondergrens; default 0.5
+   * @returns {{action:'confirm'|'switch'|'low-confidence'|'out-of-scope'|'no-data'|'invalid',
+   *            lang:(string|null), reason:string}}
+   */
+  function languageCheck(input) {
+    input = input || {};
+    var expected = baseLang(input.expected);
+    if (!expected || !isSupported(expected)) {
+      return { action: 'invalid', lang: null, reason: 'no-expected-language' };
+    }
+
+    var raw = input.detected == null ? '' : String(input.detected).trim();
+    if (!raw || /^unknown$/i.test(raw)) {
+      return { action: 'no-data', lang: null, reason: 'no-audio-result' };
+    }
+
+    var detected = baseLang(raw);
+    if (!detected) return { action: 'no-data', lang: null, reason: 'no-audio-result' };
+    if (!isSupported(detected)) {
+      return { action: 'out-of-scope', lang: null, reason: 'audio-language-out-of-scope' };
+    }
+    if (sameLang(detected, expected)) {
+      return { action: 'confirm', lang: expected, reason: 'audio-confirms-language' };
+    }
+
+    var conf = Number(input.confidence);
+    var min = Number(input.minConfidence);
+    if (!isFinite(min)) min = 0.5;
+    if (!isFinite(conf) || conf < min) {
+      return { action: 'low-confidence', lang: detected, reason: 'audio-language-low-confidence' };
+    }
+    return { action: 'switch', lang: detected, reason: 'audio-language-differs' };
+  }
+
+  /* ------------------------------------------------------------------ *
    * Het plan: wat moet er gebeuren?
    *
    * acties:
@@ -782,6 +838,71 @@
 
   /** Vast woordtempo (s/woord) als een segment totaal geen timing heeft. */
   var WORD_FALLBACK_STEP = 0.3;
+
+  /* ------------------------------------------------------------------ *
+   * Sync-offset (optie sinds 2026-10-12)
+   *
+   * De woordtijden komen uit YouTube's json3 (`tOffsetMs`). Die tijd is het
+   * moment waarop de herkenner het woord hoorde, en daar komt de eigen
+   * verwerkingstijd van de pagina nog bij: het woord verschijnt dan nét na de
+   * klank ("de ondertiteling loopt iets achter"). Met een kleine voorsprong
+   * (`lead`) komt elk woord net vóór (of op) zijn gemeten tijd in beeld, zodat
+   * het samenvalt met wat je hoort. De gebruiker stelt die voorsprong in met
+   * *Sync-offset* (ms): positief = eerder, negatief = later.
+   * ------------------------------------------------------------------ */
+  var CAPTION_SYNC_MIN_MS = -300;
+  var CAPTION_SYNC_MAX_MS = 500;
+  var CAPTION_SYNC_DEFAULT_MS = 120;
+
+  /** Sync-offset uit de opties: geheel getal in ms, geclamped, default 120. */
+  function captionSyncMs(value) {
+    // Een leeg veld betekent "niet ingesteld" -> de standaard; 0 is een echte
+    // keuze (geen voorsprong), dus niet met `||` werken.
+    if (value === '' || value === null || value === undefined) return CAPTION_SYNC_DEFAULT_MS;
+    var n = Number(value);
+    if (!isFinite(n)) return CAPTION_SYNC_DEFAULT_MS;
+    return Math.round(Math.max(CAPTION_SYNC_MIN_MS, Math.min(CAPTION_SYNC_MAX_MS, n)));
+  }
+
+  /** Dezelfde offset als `lead` in seconden (voor `captionWordIndex`). */
+  function wordLeadSeconds(ms) {
+    return captionSyncMs(ms) / 1000;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Woorden één voor één in beeld (sinds 2026-10-12)
+   *
+   * De weergave hangt aan `requestAnimationFrame`. Loopt die een keer vast
+   * (een zware frame, even naar een ander tabblad, een hapering in de speler),
+   * dan staan er ineens meerdere woorden "klaar" en kwam de hele rest van de
+   * zin in één frame in beeld — precies de klacht "het haakt en dan plopt er
+   * ineens een hele zin in". Daarom komt er per frame hooguit één woord bij
+   * zolang de achterstand klein is; is de achterstand groter dan `jump`
+   * (echte stilstand, tabblad op de achtergrond, terugspoelen), dan springt
+   * de weergave in één keer naar nu — dan is er niets meer om "na te tikken".
+   * ------------------------------------------------------------------ */
+  var CAPTION_REVEAL_PER_FRAME = 1;
+  var CAPTION_REVEAL_JUMP = 4;
+
+  /**
+   * Hoeveel woorden komen er in deze frame bij?
+   *
+   * @param {number} pending      woorden die op tijd `t` al gezegd zijn maar nog niet in de DOM staan
+   * @param {number} maxPerFrame  max. per frame bij een kleine achterstand (default 1)
+   * @param {number} jumpAbove    boven deze achterstand: alles in één keer (default 4)
+   * @returns {number}
+   */
+  function captionRevealPace(pending, maxPerFrame, jumpAbove) {
+    var p = Number(pending);
+    if (!isFinite(p) || p <= 0) return 0;
+    p = Math.round(p);
+    var mx = Number(maxPerFrame);
+    mx = isFinite(mx) && mx > 0 ? Math.round(mx) : CAPTION_REVEAL_PER_FRAME;
+    var jump = Number(jumpAbove);
+    jump = isFinite(jump) && jump >= 0 ? Math.round(jump) : CAPTION_REVEAL_JUMP;
+    if (p > jump) return p;
+    return Math.min(p, mx);
+  }
 
   /* ------------------------------------------------------------------ *
    * Sprekerswissel (">>") in auto-ondertitels
@@ -1450,6 +1571,7 @@
     decodeAudioTrackLang: decodeAudioTrackLang,
     pickCaptionTrack: pickCaptionTrack,
     detectAudioLanguage: detectAudioLanguage,
+    languageCheck: languageCheck,
     planFix: planFix,
     parseCaptionJson: parseCaptionJson,
     captionEventIndex: captionEventIndex,
@@ -1473,6 +1595,14 @@
     buildCaptionRuns: buildCaptionRuns,
     captionRunAt: captionRunAt,
     captionWordIndex: captionWordIndex,
+    CAPTION_SYNC_MIN_MS: CAPTION_SYNC_MIN_MS,
+    CAPTION_SYNC_MAX_MS: CAPTION_SYNC_MAX_MS,
+    CAPTION_SYNC_DEFAULT_MS: CAPTION_SYNC_DEFAULT_MS,
+    captionSyncMs: captionSyncMs,
+    wordLeadSeconds: wordLeadSeconds,
+    CAPTION_REVEAL_PER_FRAME: CAPTION_REVEAL_PER_FRAME,
+    CAPTION_REVEAL_JUMP: CAPTION_REVEAL_JUMP,
+    captionRevealPace: captionRevealPace,
     captionWindowShift: captionWindowShift,
     captionWindowShiftLines: captionWindowShiftLines,
     captionLinesFromHeight: captionLinesFromHeight,

@@ -120,6 +120,28 @@
         fallbackOpaque ? undefined : 'verwacht --sc-caption-bg:rgba(...,1)');
     }
 
+    // De timing-verbeteringen van 2026-10-12 moeten in de bron blijven zitten:
+    //  - woord-voor-woord komt getemperd binnen (hooguit één woord per frame,
+    //    een sprong alleen na een echte onderbreking) via L.captionRevealPace;
+    //  - de optie *Sync-offset* (captionSyncMs) voedt de lead van captionWordIndex;
+    //  - de content script dubbelcheckt de metadata-taal met de audio (bridge).
+    async function checkTimingFeatures() {
+      const agent = await (await fetch('../extension/src/page-agent.js', { cache: 'no-store' })).text();
+      const paced = /captionRevealPace\s*\(/.test(agent);
+      record('page-agent.js: woorden komen getemperd binnen (captionRevealPace, geen zinsdump)', paced,
+        paced ? undefined : 'verwacht een aanroep van L.captionRevealPace() in renderWordFrame()');
+
+      const lead = /wordLeadSeconds\(\s*BOOST_SYNC_MS\s*\)/.test(agent);
+      record('page-agent.js: de sync-offset stuurt de woord-lead (wordLeadSeconds(BOOST_SYNC_MS))', lead,
+        lead ? undefined : 'verwacht L.wordLeadSeconds(BOOST_SYNC_MS) in renderWordFrame()');
+
+      const content = await (await fetch('../extension/src/content.js', { cache: 'no-store' })).text();
+      const scheduled = /scheduleVerify\s*\(/.test(content);
+      const checked = /languageCheck\s*\(/.test(content);
+      record('content.js: dubbelcheck van de taalkeuze via de audio (scheduleVerify + languageCheck)', scheduled && checked,
+        scheduled && checked ? undefined : 'verwacht scheduleVerify() en L.languageCheck() in content.js');
+    }
+
     (async function () {
       for (const rel of SCRIPTS) await checkScript(rel);
       await checkManifest();
@@ -127,6 +149,11 @@
         await checkOpaqueBackground();
       } catch (e) {
         record('page-agent.js achtergrondcheck', false, String(e.message || e));
+      }
+      try {
+        await checkTimingFeatures();
+      } catch (e) {
+        record('timing-check (page-agent/content)', false, String(e.message || e));
       }
 
       const li = (r) => {
