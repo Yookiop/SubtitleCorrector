@@ -471,6 +471,59 @@
     eq(L.captionWordIndex([], 5), 0);
   });
 
+  /** Grote synthetische track (cue's van 10 woorden, zonder lange stiltes). */
+  function bigTrackJson(nEvents) {
+    var events = [];
+    var t = 0;
+    for (var i = 0; i < nEvents; i++) {
+      var segs = [];
+      for (var w = 0; w < 10; w++) {
+        var word = 'w' + i + 'x' + w;
+        if (w === 9) word += (i % 3 === 2) ? '.' : ',';
+        segs.push({ utf8: (w ? ' ' : '') + word, tOffsetMs: w * 200 });
+      }
+      events.push({ tStartMs: t, dDurationMs: 2000, segs: segs });
+      t += 2800;
+    }
+    return { events: events };
+  }
+
+  test('captionWordIndex: binair zoeken geeft exact hetzelfde als lineair tellen', function (L) {
+    var events = L.parseCaptionJson(bigTrackJson(120));
+    var words = L.buildCaptionWords(events);
+    ok(words.length > 1000, 'verwacht een lange run, kreeg ' + words.length + ' woorden');
+    for (var i = 0; i <= 400; i++) {
+      var t = i * 0.09;
+      var lead = i % 2 ? 0.05 : 0;
+      var want = 0;
+      for (var j = 0; j < words.length; j++) {
+        if (words[j].t <= t + lead) want++;
+        else break;
+      }
+      eq(L.captionWordIndex(words, t, lead), want, 'op t=' + t);
+    }
+  });
+
+  test('captionWoorden/blokken: dezelfde events twee keer verwerken geeft hetzelfde', function (L) {
+    // De chunk-opbouw wordt per events-array bewaard; dit controleert dat hergebruik
+    // (blocks + woorden uit één opgevangen track) dezelfde uitkomst geeft.
+    var events = L.parseCaptionJson(bigTrackJson(60));
+    var b1 = L.buildCaptionBlocks(events, { sentences: 2, silenceGap: 1.6, maxChars: 150 });
+    var w1 = L.buildCaptionWords(events);
+    var b2 = L.buildCaptionBlocks(events, { sentences: 2, silenceGap: 1.6, maxChars: 150 });
+    var w2 = L.buildCaptionWords(events);
+    ok(b1.length > 1 && w1.length > 100, 'track te klein voor deze test');
+    eq(b2.length, b1.length);
+    eq(JSON.stringify(b2), JSON.stringify(b1));
+    eq(w2.length, w1.length);
+    eq(JSON.stringify(w2), JSON.stringify(w1));
+    // De binaire zoekactie in captionWordIndex() mag alleen op tijd-gesorteerde
+    // woorden losgelaten worden.
+    var oplopend = true;
+    for (var i = 1; i < w1.length; i++) if (!(w1[i].t > w1[i - 1].t)) oplopend = false;
+    ok(oplopend, 'de woordtijden lopen niet strikt op');
+  });
+
   test('captionWindowShift: stapjes van hele regels', function (L) {
     eq(L.captionWindowShift(0, 34, 2), 0);
     eq(L.captionWindowShift(34, 34, 2), 0);       // 1 regel past

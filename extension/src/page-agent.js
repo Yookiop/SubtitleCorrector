@@ -101,9 +101,23 @@
     return m ? m[1] : null;
   }
 
+  /**
+   * De wrapper van de speler (`html5-video-player`) wordt één keer opgezocht en
+   * daarna hergebruikt: `isAd()` hangt in de frame-lus van Caption Boost en een
+   * `querySelector` per frame is nodeloos werk. Raakt het element los (een
+   * nieuwe speler), dan zoeken we hem opnieuw.
+   */
+  var adWrapEl = null;
+
+  function videoWrap() {
+    if (adWrapEl && adWrapEl.isConnected) return adWrapEl;
+    adWrapEl = document.querySelector('.html5-video-player');
+    return adWrapEl;
+  }
+
   function isAd() {
-    var wrap = document.querySelector('.html5-video-player');
-    if (wrap && /\bad-showing\b/.test(String(wrap.className))) return true;
+    var wrap = videoWrap();
+    if (wrap && wrap.classList && wrap.classList.contains('ad-showing')) return true;
     var p = player();
     var st = safe(function () { return p && p.getAdState ? p.getAdState() : -1; }, -1);
     return st > 0;
@@ -562,7 +576,13 @@
       // in runs van doorlopende spraak — een stilte begint een nieuw venster.
       var runs = L.buildCaptionRuns(L.buildCaptionWords(events), BOOST_SILENCE_GAP);
       var key = boostKey(v, L.baseLang(lang), urlParam(url, 'kind') || '');
-      if (!boostTracks[key]) boostTrackOrder.push(key);
+      // Dezelfde track kan opnieuw binnenkomen (bv. nadat YouTube de track
+      // opnieuw ophaalt). Haal de sleutel dan eerst uit de volgorde: anders
+      // staat hij er dubbel in en gooit het opruimen hieronder de gegevens van
+      // de zojuist opgeslagen track weg (bug 2026-10-15).
+      var at = boostTrackOrder.indexOf(key);
+      if (at !== -1) boostTrackOrder.splice(at, 1);
+      boostTrackOrder.push(key);
       boostTracks[key] = { at: Date.now(), events: events, blocks: blocks, runs: runs };
       while (boostTrackOrder.length > BOOST_MAX_TRACKS) {
         var old = boostTrackOrder.shift();
@@ -676,16 +696,53 @@
     boostStyle.increment = typeof s.fontSizeIncrement === 'number' ? s.fontSizeIncrement : 0;
   }
 
+  /**
+   * De hoogte van de speler bepaalt de fontgrootte van de overlay. Die hoogte
+   * wordt NIET elke keer opnieuw uit de layout gelezen: `clientHeight` forceren
+   * na een DOM-wijziging een synchrone layout van de hele speler. We bewaren de
+   * laatste waarde en verversen hem alleen als de speler echt van formaat
+   * verandert (ResizeObserver + fullscreenchange; zonder ResizeObserver valt de
+   * frame-lus terug op de oude periodieke controle).
+   */
+  var boostPlayerH = 0;
+
+  function markPlayerSizeStale() {
+    boostPlayerH = 0;
+  }
+
+  var boostSizeWatch = { ok: false };
+
+  function watchPlayerSize() {
+    if (boostSizeWatch.ok) return;
+    try {
+      var p = player();
+      if (!p || typeof ResizeObserver !== 'function') return;
+      var ro = new ResizeObserver(function () {
+        markPlayerSizeStale();
+        applyBoostStyle();
+      });
+      ro.observe(p);
+      document.addEventListener('fullscreenchange', function () {
+        markPlayerSizeStale();
+        applyBoostStyle();
+      });
+      boostSizeWatch.ok = true;
+    } catch (e) { /* ignore */ }
+  }
+
   function applyBoostStyle() {
     var el = boost.overlay;
     if (!el) return;
     var p = player();
-    var px = L.captionFontPx(p ? p.clientHeight : 400, boostStyle.increment, BOOST_SIZE_PCT);
+    if (!boostPlayerH) boostPlayerH = p ? p.clientHeight : 400;
+    var px = L.captionFontPx(boostPlayerH, boostStyle.increment, BOOST_SIZE_PCT);
     // Lettertype en letterdikte (opties): meteen zetten, ook als de rest van de
     // stijl al toegepast is — een andere keuze of een nieuw overlay-element moet
     // direct goed staan.
-    el.style.fontFamily = L.captionFontStack(BOOST_FONT);
-    el.style.fontWeight = String(L.captionFontWeight(BOOST_WEIGHT));
+    var family = L.captionFontStack(BOOST_FONT);
+    if (el.style.fontFamily !== family) el.style.fontFamily = family;
+    var weight = String(L.captionFontWeight(BOOST_WEIGHT));
+    if (el.style.fontWeight !== weight) el.style.fontWeight = weight;
     // Kleur van de zwarte blokjes achter elk woord. Elk woord is een eigen
     // element met een eigen achtergrond; in de woord-voor-woord-weergave komen
     // die elementen er één voor één bij. Via deze CSS-variabele krijgt een
@@ -822,6 +879,14 @@
         boost.styleReady = true;
       } catch (e) { /* ignore */ }
     }
+    // Snel pad: de overlay staat al in de speler en is compleet opgebouwd. Dan
+    // hoeft er niets opgezocht of opgeruimd te worden (dit draait elke poll).
+    var cached = boost.overlay;
+    if (cached && cached.isConnected && cached.parentNode === p && boost.box && boost.box.isConnected &&
+        boost.scrollEl && boost.scrollEl.isConnected) {
+      applyBoostStyle();
+      return cached;
+    }
     var el = document.getElementById('sc-caption-overlay');
     if (el && el.parentNode && el.parentNode !== p) el.parentNode.removeChild(el);
     if (!el) {
@@ -919,6 +984,7 @@
     boost.lastWordTop = null;
     boost.lastWordEl = null;
     boost.lineChanged = false;
+    invalidateLineHeightCache();
     if (boost.scrollEl) {
       boost.scrollEl.textContent = '';
       boost.scrollEl.style.transform = ''; // oude versies schoven met transform
@@ -1024,12 +1090,30 @@
    * Dit is de VERWACHTE regelafstand; de echte afstand tussen de regels wordt
    * gemeten met boostLineMetrics() (die kan groter zijn als de pagina de
    * woordblokjes toch een andere line-height geeft).
+   *
+   * De waarde wordt bewaard: `getComputedStyle` na een DOM-wijziging forceren
+   * een style-herberekening, en deze functie hangt aan elk nieuw woord
+   * (`noteWordLine`). De cache vervalt bij een stijl-/groottewissel (de sleutel
+   * is de laatst toegepaste stijl) en bij het vangnet van ± 2 s
+   * (`invalidateLineHeightCache`), zodat een wijziging door de pagina alsnog
+   * binnen twee seconden wordt opgemerkt.
    */
+  var boostLineHeightCache = { key: '', px: 0 };
+
+  function invalidateLineHeightCache() {
+    boostLineHeightCache.key = '';
+  }
+
   function boostLineHeightPx() {
+    var key = 'v' + (boostStyle.applied || '');
+    if (key === boostLineHeightCache.key) return boostLineHeightCache.px;
     var px = 0;
     try { px = parseFloat(getComputedStyle(boost.scrollEl).lineHeight); } catch (e) { px = 0; }
     if (!isFinite(px) || px <= 0) px = boostFontPx() * L.CAPTION_LINE_HEIGHT;
-    return isFinite(px) && px > 0 ? px : 0;
+    if (!isFinite(px) || px <= 0) px = 0;
+    boostLineHeightCache.key = key;
+    boostLineHeightCache.px = px;
+    return px;
   }
 
   /** Fontgrootte (px) van de overlay: inline gezet door applyBoostStyle(). */
@@ -1378,7 +1462,9 @@
     // updateWordWindow() -> applyBoostBoxHeight() zodra er iets verandert.
     var reveal = L.captionRevealPace(n - boost.wordCount, L.CAPTION_REVEAL_PER_FRAME, L.CAPTION_REVEAL_JUMP);
     var prevEl = boost.lastWordEl || null;
-    for (var k = 0; k < reveal && boost.wordCount < run.words.length; k++) {
+    var lastEl = null;
+    var want = Math.min(reveal, run.words.length - boost.wordCount);
+    for (var k = 0; k < want; k++) {
       var word = run.words[boost.wordCount];
       // Sprekerswissel (">>") begint op een nieuwe regel, net als bij YouTube's
       // auto-ondertitels.
@@ -1388,11 +1474,17 @@
       // regelafbreking blijft daardoor staan (de browser wikkelt nog steeds
       // zelf, greedy).
       appendBoostWord(wrap, word.text);
-      noteWordLine(prevEl, wrap.lastChild);
-      prevEl = wrap.lastChild;
+      lastEl = wrap.lastChild;
       boost.wordCount++;
     }
-    boost.lastWordEl = prevEl;
+    // Eén meting per frame, ná alle toevoegingen: meten tussen twee DOM-
+    // wijzigingen in forceren de browser per woord een layout. Het laatste woord
+    // van de reeks ligt per definitie op dezelfde regel als het vorige of een
+    // regel lager, dus de vergelijking met het vórige frame detecteert een
+    // regelovergang net zo goed als meten per woord (bugfix 2026-10-12: bij een
+    // inhaalslag kwam anders de halve zin in één keer in beeld).
+    if (lastEl) noteWordLine(prevEl, lastEl);
+    boost.lastWordEl = lastEl || prevEl;
     if (boost.windowShift < 0 || boost.lineChanged) updateWordWindow();
     if (!boost.shownOnce) {
       boost.shownOnce = true;
@@ -1421,13 +1513,19 @@
         stopBoost();
         return;
       }
-      applyBoostStyle(); // spelerformaat kan veranderd zijn (fullscreen/theater)
+      // Spelerformaat kan veranderd zijn (fullscreen/theater). Met een
+      // ResizeObserver weten we dat meteen; zonder die API blijft deze
+      // periodieke controle de terugvaloptie (dan is de hoogte wél opnieuw
+      // nodig).
+      if (!boostSizeWatch.ok) markPlayerSizeStale();
+      applyBoostStyle();
     }
     // Vangnet: elke ± 2 s het venster opnieuw meten, ook als er geen nieuwe
     // regel begon. Zo volgt de weergave een tussentijdse wijziging van de
     // regelafstand/fontgrootte door de pagina alsnog (bugmelding 2026-09-18).
     if (BOOST_WORD_BY_WORD && boost.frame % BOOST_WINDOW_RECHECK_FRAMES === 0 && boost.wordCount > 0) {
       boost.lineChanged = true;
+      invalidateLineHeightCache(); // de gemeten line-height hoort bij dit vangnet
     }
 
     var t = safe(function () { return p.getCurrentTime(); }, 0);
@@ -1436,11 +1534,14 @@
     boost.rafHandle = requestAnimationFrame(renderBoost);
   }
 
-  function boostTick() {
+  /**
+   * Aan/uit van de eigen weergave. `cur`, `id` en `ad` komen van `tick()` door:
+   * die heeft ze in dezelfde ronde al uit de speler gelezen (scheelt twee
+   * player-API-calls en een DOM-query per poll).
+   */
+  function boostTick(cur, id, ad) {
     if (!CAPTION_BOOST_ENABLED || SUBTITLES_OFF) { if (boost.rafActive) stopBoost(); return; }
-    var cur = readCurrentTrack();
-    if (!cur || !boostSupported(cur) || isAd()) { if (boost.rafActive) stopBoost(); return; }
-    var id = currentVideoId();
+    if (!cur || !boostSupported(cur) || ad) { if (boost.rafActive) stopBoost(); return; }
     if (!id) { if (boost.rafActive) stopBoost(); return; }
     var key = boostKey(id, L.baseLang(cur.languageCode), cur.kind === 'asr' ? 'asr' : '');
     if (boost.videoId !== id || boost.trackKey !== key) {
@@ -1461,6 +1562,7 @@
     if (boost.blocks) {
       refreshBoostStyle(false);
       ensureBoostDom();
+      watchPlayerSize();
       if (!boost.rafActive) {
         boost.rafActive = true;
         boost.frame = 0;
@@ -1729,7 +1831,8 @@
     }
 
     // Caption Boost: eigen weergave aan/uitzetten zodra de juiste track actief is.
-    boostTick();
+    // De al gelezen waarden gaan mee (geen tweede ronde langs de player-API).
+    boostTick(cur, id, ad);
 
     // Kill switch-knop: aanwezig houden in de controlbar en de ondertitels van
     // dit tabblad uit laten blijven, ook als YouTube ze opnieuw aanzet.

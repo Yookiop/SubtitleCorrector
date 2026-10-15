@@ -702,8 +702,26 @@
    * Alle events omzetten naar losse stukjes (woorddelen) met een tijd, zodat
    * een blokgrens ook midden in een cue kan liggen. Elk stukje krijgt een
    * `end` (start van het volgende stukje, of het einde van het event).
+   *
+   * Het resultaat wordt per events-array bewaard (WeakMap): de blokken EN de
+   * woorden komen uit dezelfde events (één opgevangen track), en dit is voor
+   * een lange video het duurste stuk van het inlezen. De events-array wordt na
+   * het parsen nooit meer gewijzigd, dus de uitkomst is dezelfde.
    */
+  var chunkCache = typeof WeakMap === 'function' ? new WeakMap() : null;
+
   function captionChunks(events) {
+    if (!events) return [];
+    if (chunkCache) {
+      var hit = chunkCache.get(events);
+      if (hit) return hit;
+    }
+    var chunks = buildCaptionChunks(events);
+    if (chunkCache) chunkCache.set(events, chunks);
+    return chunks;
+  }
+
+  function buildCaptionChunks(events) {
     var chunks = [];
     for (var i = 0; i < events.length; i++) {
       var ev = events[i];
@@ -730,8 +748,8 @@
       for (var p = 0; p < parts.length; p++) {
         var endT = p + 1 < parts.length ? parts[p + 1].t : evEnd;
         parts[p].end = endT > parts[p].t ? endT : parts[p].t;
+        chunks.push(parts[p]); // push i.p.v. concat: concat in de lus is O(n²)
       }
-      chunks = chunks.concat(parts);
     }
     return chunks;
   }
@@ -1049,17 +1067,24 @@
    * met dezelfde tijd (segment zonder per-woordoffsets) komen samen in beeld.
    * `lead` (default 0,05 s) laat een woord heel even vóór zijn starttijd
    * verschijnen, zodat het niet ná de klank komt.
+   *
+   * Binaire zoekactie: dit draait elke frame en een run kan honderden woorden
+   * tellen, dus een lineaire scan kost onnodig tijd. `words` moet op tijd
+   * gesorteerd zijn — dat garandeert `buildCaptionWords()` (strikt oplopende
+   * `t`), net als bij `captionRunAt()` en `captionBlockIndex()`.
    */
   function captionWordIndex(words, t, lead) {
     if (!words || !words.length) return 0;
     var ld = typeof lead === 'number' && isFinite(lead) ? lead : WORD_LEAD;
     var tt = (typeof t === 'number' && isFinite(t) ? t : 0) + ld;
-    var n = 0;
-    for (var i = 0; i < words.length; i++) {
-      if (words[i].t <= tt) n++;
-      else break;
+    var lo = 0;
+    var hi = words.length;
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if (words[mid].t <= tt) lo = mid + 1;
+      else hi = mid;
     }
-    return n;
+    return lo;
   }
 
   /**
