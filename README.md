@@ -129,7 +129,7 @@ Een extensie kan YouTube's caption-renderer geen extra CPU geven — wat wél ka
 * duurt het minstens 45 s voordat er automatisch opnieuw wordt opgenomen;
 * wacht de extensie in playlists langer met corrigeren (±4 s na de videostart) en tussen retries;
 * pollt de page agent langzamer (2,6 s) als het tabblad niet zichtbaar is;
-* doet de eigen captionweergave per frame hooguit **één** layout: nieuwe woorden worden eerst allemaal toegevoegd en daarna in één meting vergeleken, de regelafstand en de spelerhoogte worden bewaard (de hoogte wordt alleen bij een echte formaatwissel opnieuw gelezen, via een `ResizeObserver` + `fullscreenchange`), en de blokken/woorden van een track worden maar één keer uit de opgevangen json3 opgebouwd;
+* doet de eigen captionweergave per frame hooguit **één** layout: nieuwe woorden worden eerst allemaal toegevoegd en daarna in één meting vergeleken, de regelafstand en de spelerhoogte worden bewaard (de hoogte wordt alleen bij een echte formaatwissel opnieuw gelezen, via een `ResizeObserver` + `fullscreenchange`), de trackstatus wordt uit de 900ms-poll hergebruikt in plaats van elke frame opnieuw via de player-API opgevraagd, en de blokken/woorden van een track worden maar één keer uit de opgevangen json3 opgebouwd;
 * maakt het offscreen document geen echte audio-uitvoer als "Geluid hoorbaar houden" uit staat.
 
 Daarnaast tekent **Caption Boost** (default aan) de ondertitels zelf:

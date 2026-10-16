@@ -140,6 +140,17 @@
       const checked = /languageCheck\s*\(/.test(content);
       record('content.js: dubbelcheck van de taalkeuze via de audio (scheduleVerify + languageCheck)', scheduled && checked,
         scheduled && checked ? undefined : 'verwacht scheduleVerify() en L.languageCheck() in content.js');
+      const frameLoop = /function renderBoost\(\)\s*\{([\s\S]*?)\n  \}/.exec(agent);
+      const frameBody = frameLoop ? frameLoop[1] : '';
+      const cachedTrack = /var cur = boost\.currentTrack;/.test(frameBody) &&
+        /boost\.currentTrack = cur;/.test(agent);
+      record('page-agent.js: frame-lus gebruikt gecachte trackgegevens', cachedTrack,
+        cachedTrack ? undefined : 'verwacht de track uit boostTick() te cachen en die in renderBoost() te gebruiken');
+
+      const noPerFramePlayerState = frameLoop && !/readCurrentTrack\(\)|\bisAd\(\)/.test(frameBody) &&
+        /isAdShowingInDom\(\)/.test(frameBody);
+      record('page-agent.js: frame-lus vermijdt herhaalde track-/ad-API-calls', !!noPerFramePlayerState,
+        noPerFramePlayerState ? undefined : 'track- en ad-API-reads horen in de poll; gebruik alleen de DOM-ad-status per frame');
     }
 
     (async function () {

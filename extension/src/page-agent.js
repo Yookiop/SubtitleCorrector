@@ -115,9 +115,13 @@
     return adWrapEl;
   }
 
-  function isAd() {
+  function isAdShowingInDom() {
     var wrap = videoWrap();
-    if (wrap && wrap.classList && wrap.classList.contains('ad-showing')) return true;
+    return !!(wrap && wrap.classList && wrap.classList.contains('ad-showing'));
+  }
+
+  function isAd() {
+    if (isAdShowingInDom()) return true;
     var p = player();
     var st = safe(function () { return p && p.getAdState ? p.getAdState() : -1; }, -1);
     return st > 0;
@@ -536,6 +540,7 @@
     lastWordTop: null,    // bovenkant (px) van het laatst gezette woord (alleen voor de meting)
     lastWordEl: null,     // element van het laatst gezette woord (zelfde-frame vergelijking)
     lineChanged: false,   // laatste woord begon een nieuwe regel -> venster opnieuw meten
+    currentTrack: null,   // track uit de 900ms-poll; niet opnieuw via de player-API per frame
     styleReady: false
   };
 
@@ -1499,8 +1504,8 @@
   function renderBoost() {
     if (!boost.rafActive) return;
     var p = player();
-    var cur = readCurrentTrack();
-    if (!CAPTION_BOOST_ENABLED || !p || !cur || !boostSupported(cur) || isAd() || !boost.blocks) {
+    var cur = boost.currentTrack;
+    if (!CAPTION_BOOST_ENABLED || !p || !cur || !boostSupported(cur) || isAdShowingInDom() || !boost.blocks) {
       stopBoost();
       return;
     }
@@ -1540,6 +1545,7 @@
    * player-API-calls en een DOM-query per poll).
    */
   function boostTick(cur, id, ad) {
+    boost.currentTrack = cur;
     if (!CAPTION_BOOST_ENABLED || SUBTITLES_OFF) { if (boost.rafActive) stopBoost(); return; }
     if (!cur || !boostSupported(cur) || ad) { if (boost.rafActive) stopBoost(); return; }
     if (!id) { if (boost.rafActive) stopBoost(); return; }
