@@ -329,6 +329,16 @@
     eq(L.captionBlockAt(blocks, 9), -1);    // na alles
   });
 
+  test('captionBlockAt: BOOST_HOLD houdt het laatste blok na een stilte vast (2026-10-23)', function (L) {
+    var blocks = L.buildCaptionBlocks(L.parseCaptionJson({ events: [
+      { tStartMs: 1000, dDurationMs: 900, segs: [{ utf8: 'Yes.' }] },
+      { tStartMs: 4000, dDurationMs: 900, segs: [{ utf8: 'Exactly.' }] }
+    ] }));
+    eq(blocks[1].end, 4.9);
+    eq(L.captionBlockAt(blocks, 5.5, 4), 1);  // binnen de hold: de laatste regel blijft staan
+    eq(L.captionBlockAt(blocks, 9.5, 4), -1); // hold voorbij: overlay uit
+  });
+
   test('captionBoxHeightEm: vast venster van 1 of 2 regels', function (L) {
     eq(L.captionBoxHeightEm(2), 2.89);       // 2 x 1,4 + 0,06 boven + 0,03 onder
     eq(L.captionBoxHeightEm(1), 1.49);
@@ -453,6 +463,16 @@
     eq(L.captionRunAt(runs, 4.2), 1);
     eq(L.captionRunAt(runs, 9), -1);
     eq(L.captionRunAt([], 1), -1);
+  });
+
+  test('captionRunAt: BOOST_HOLD houdt de laatste regel na een stilte vast (2026-10-23)', function (L) {
+    var runs = L.buildCaptionRuns(L.buildCaptionWords(L.parseCaptionJson({ events: [
+      { tStartMs: 1000, dDurationMs: 900, segs: [{ utf8: 'Yes.' }] },
+      { tStartMs: 4000, dDurationMs: 900, segs: [{ utf8: 'Exactly.' }] }
+    ] })));
+    eq(runs[1].end, 4.9);
+    eq(L.captionRunAt(runs, 5.5, 4), 1);  // binnen de hold: de laatste regel blijft staan
+    eq(L.captionRunAt(runs, 9.5, 4), -1); // hold voorbij: overlay uit
   });
 
   test('captionWordIndex: woord voor woord, met en zonder lead', function (L) {

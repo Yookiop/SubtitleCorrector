@@ -517,7 +517,10 @@
   var BOOST_BLOCK_SENTENCES = 2;    // zinnen per blok (user-keuze: 2 volle zinnen)
   var BOOST_SILENCE_GAP = 1.6;      // s stilte die een blok/run afsluit
   var BOOST_MAX_BLOCK_CHARS = 150;  // noodrem voor tracks zonder punctuatie
-  var BOOST_LINGER = 0.45;          // s dat een blok/run na zijn laatste woord blijft staan
+  var BOOST_LINGER = 0.45;          // s dat een blok/run na zijn laatste woord nog "actief" is
+  // s dat de laatste regel na de stilte blijft staan voordat de overlay uitgaat
+  // (YouTube's captionvenster laat de regel ook even staan; zie renderWordFrame).
+  var BOOST_HOLD = 4.0;
   var BOOST_SYNC_MS = L.CAPTION_SYNC_DEFAULT_MS; // optie *Sync-offset*: woord verschijnt zoveel ms eerder
   var BOOST_WINDOW_RECHECK_FRAMES = 120;         // ± 2 s: venster/regelafstand opnieuw meten (vangnet)
 
@@ -541,6 +544,7 @@
     lastWordEl: null,     // element van het laatst gezette woord (zelfde-frame vergelijking)
     lineChanged: false,   // laatste woord begon een nieuwe regel -> venster opnieuw meten
     currentTrack: null,   // track uit de 900ms-poll; niet opnieuw via de player-API per frame
+    ownsCaptions: false,  // wij tekenen de ondertitel -> YouTube's eigen venster verborgen
     styleReady: false
   };
 
@@ -926,26 +930,46 @@
     boost.box = box;
     boost.scrollEl = scrollEl;
     applyBoostStyle();
+    // Een nieuwe speler (SPA-navigatie) mist de klasse die YouTube's venster
+    // verbergt; zolang wij de captions tekenen zetten we hem terug.
+    if (boost.ownsCaptions && p.classList) p.classList.add('sc-boost-on');
     return el;
   }
 
+  /**
+   * Onze eigen overlay aan/uit. Dit raakt YouTube's caption-venster NIET: dat
+   * blijft verborgen zolang Caption Boost de track tekent (`ownCaptions`). Zo
+   * kan YouTube's eigen venster tijdens een stilte niet ineens zijn oude,
+   * achterlopende regel terugzetten.
+   */
   function hideBoost(on) {
+    if (!boost.overlay) return;
+    if (on) {
+      boost.overlay.classList.add('sc-on');
+      return;
+    }
+    boost.overlay.classList.remove('sc-on');
+    if (boost.box) {
+      boost.box.style.height = '';
+      boost.box.style.fontSize = ''; // het font krimpt nooit
+    }
+    invalidateBoostText();
+  }
+
+  /**
+   * YouTube's eigen caption-venster verbergen (`.sc-boost-on`) zolang Caption
+   * Boost de ondertitel tekent. Vanaf het moment dat wij de track in handen
+   * hebben is YouTube's renderer volledig uit beeld: die loopt in playlists
+   * 1-2 s achter en houdt na een stilte de oude regel nog even vast. Wat je
+   * ziet komt dan altijd uit onze eigen, op de tracktijd gesynchroniseerde
+   * weergave.
+   */
+  function ownCaptions(on) {
+    boost.ownsCaptions = !!on;
     var p = player();
-    if (p) {
-      if (on) p.classList.add('sc-boost-on');
-      else p.classList.remove('sc-boost-on');
-    }
-    if (boost.overlay) {
-      if (on) boost.overlay.classList.add('sc-on');
-      else {
-        boost.overlay.classList.remove('sc-on');
-        if (boost.box) {
-          boost.box.style.height = '';
-          boost.box.style.fontSize = ''; // het font krimpt nooit
-        }
-        invalidateBoostText();
-      }
-    }
+    if (!p || !p.classList) return;
+    if (on) p.classList.add('sc-boost-on');
+    else p.classList.remove('sc-boost-on');
   }
 
   /**
@@ -997,7 +1021,7 @@
     }
   }
 
-  /** Overlay uit als er iets in stond (stilte, video-einde, wissel). */
+  /** Onze overlay uit als er iets in stond (hold verlopen, video-einde, wissel). */
   function hideOnce() {
     if (!boost.shownOnce) return;
     boost.shownOnce = false;
@@ -1012,6 +1036,9 @@
     }
     boost.shownOnce = false;
     hideBoost(false);
+    // Wij tekenen niets meer: YouTube's eigen venster mag weer (het is de enige
+    // weergave die dan nog kan tonen wat er gezegd wordt).
+    ownCaptions(false);
   }
 
   /* ------------------------------------------------ *
@@ -1064,13 +1091,17 @@
 
   /**
    * Eén frame van de blokweergave: welk blok hoort bij `t`? Het hele blok
-   * staat in één keer in beeld (geen woord-voor-woord). Tijdens een stilte —
-   * of na het laatste blok + BOOST_LINGER — gaat de overlay uit en komt
-   * YouTube's eigen venster terug.
+   * staat in één keer in beeld (geen woord-voor-woord). Tijdens een stilte
+   * blijft het laatste blok nog BOOST_HOLD s staan (zoals YouTube's venster);
+   * daarna gaat onze overlay uit. YouTube's eigen venster blijft verborgen,
+   * dus er komt geen oude regel terug.
    */
   function renderBlockFrame(t) {
-    var idx = L.captionBlockAt(boost.blocks, t, BOOST_LINGER);
+    var ts = t + L.wordLeadSeconds(BOOST_SYNC_MS);
+    var idx = L.captionBlockAt(boost.blocks, ts, BOOST_LINGER);
     if (idx < 0) {
+      var held = L.captionBlockAt(boost.blocks, ts, BOOST_HOLD);
+      if (held >= 0 && boost.shownOnce && boost.blockKey === boost.blocks[held].start) return;
       hideOnce();
       return;
     }
@@ -1443,6 +1474,9 @@
    * regel mee. Een stilte begint een nieuwe run (venster leeg); een sprong in
    * de video (terugspoelen) bouwt het venster opnieuw op.
    *
+   * De sync-offset verschuift de HELE tijdlijn (runkeuze én woorden), zodat ook
+   * het eerste woord van een nieuwe zin evenveel eerder komt als de rest.
+   *
    * Per frame komt er hooguit één woord bij (`L.captionRevealPace`): loopt de
    * weergave even vast, dan tikken de woorden één voor één na in plaats van
    * dat er ineens een hele zin staat. Alleen bij een echte onderbreking
@@ -1450,8 +1484,14 @@
    */
   function renderWordFrame(t) {
     if (!boost.runs) { renderBlockFrame(t); return; }
-    var idx = L.captionRunAt(boost.runs, t, BOOST_LINGER);
+    var ts = t + L.wordLeadSeconds(BOOST_SYNC_MS);
+    var idx = L.captionRunAt(boost.runs, ts, BOOST_LINGER);
     if (idx < 0) {
+      // Stilte: de laatste regel blijft nog BOOST_HOLD s staan (zoals YouTube's
+      // venster) en gaat daarna uit. YouTube's eigen venster blijft verborgen,
+      // zodat daar nooit een oude, achterlopende regel terugkomt.
+      var held = L.captionRunAt(boost.runs, ts, BOOST_HOLD);
+      if (held >= 0 && boost.shownOnce && boost.runKey === boost.runs[held].start) return;
       hideOnce();
       return;
     }
@@ -1459,7 +1499,7 @@
     var wrap = boost.scrollEl;
     var box = boost.box;
     if (!wrap || !box) return;
-    var n = L.captionWordIndex(run.words, t, L.wordLeadSeconds(BOOST_SYNC_MS));
+    var n = L.captionWordIndex(run.words, ts, 0);
     if (boost.runKey !== run.start || n < boost.wordCount) invalidateBoostText();
     boost.runKey = run.start;
     // De hoogte van het venster wordt NIET elke frame opnieuw gezet (dat zou de
@@ -1500,9 +1540,25 @@
   /**
    * Eén frame: kies de weergave (blokken of woord voor woord) en teken de
    * tekst die bij de huidige speeltijd hoort.
+   *
+   * De frame-lus is de enige plek waar een fout ons eigen captionvenster kan
+   * laten staan terwijl YouTube's venster verborgen is (`ownCaptions`). Daarom
+   * zit de body in een try/catch: bij een fout stoppen we netjes, zodat
+   * YouTube's eigen weergave weer terugkomt in plaats van dat er helemaal geen
+   * ondertiteling meer te zien is.
    */
   function renderBoost() {
     if (!boost.rafActive) return;
+    try {
+      renderBoostFrame();
+    } catch (e) {
+      stopBoost();
+      return;
+    }
+    if (boost.rafActive) boost.rafHandle = requestAnimationFrame(renderBoost);
+  }
+
+  function renderBoostFrame() {
     var p = player();
     var cur = boost.currentTrack;
     if (!CAPTION_BOOST_ENABLED || !p || !cur || !boostSupported(cur) || isAdShowingInDom() || !boost.blocks) {
@@ -1536,7 +1592,6 @@
     var t = safe(function () { return p.getCurrentTime(); }, 0);
     if (BOOST_WORD_BY_WORD) renderWordFrame(t);
     else renderBlockFrame(t);
-    boost.rafHandle = requestAnimationFrame(renderBoost);
   }
 
   /**
@@ -1569,6 +1624,12 @@
       refreshBoostStyle(false);
       ensureBoostDom();
       watchPlayerSize();
+      // Vanaf hier tekenen wij de ondertitel: YouTube's eigen venster gaat uit
+      // en blijft uit tot stopBoost() (dus ook tijdens een stilte). Anders zet
+      // YouTube's (in playlists 1-2 s achterlopende) renderer tijdens elke
+      // pauze zijn oude regel terug — precies het "de ondertiteling loopt
+      // achter" dat je dan ziet.
+      ownCaptions(true);
       if (!boost.rafActive) {
         boost.rafActive = true;
         boost.frame = 0;
@@ -1839,6 +1900,11 @@
     // Caption Boost: eigen weergave aan/uitzetten zodra de juiste track actief is.
     // De al gelezen waarden gaan mee (geen tweede ronde langs de player-API).
     boostTick(cur, id, ad);
+
+    // Vangnet: een herlaadbeurt van de extensie kan '.sc-boost-on' op een open
+    // pagina hebben achtergelaten. Zonder eigen weergave hoort YouTube's
+    // captionvenster gewoon zichtbaar te zijn.
+    if (!boost.ownsCaptions && p.classList) p.classList.remove('sc-boost-on');
 
     // Kill switch-knop: aanwezig houden in de controlbar en de ondertitels van
     // dit tabblad uit laten blijven, ook als YouTube ze opnieuw aanzet.

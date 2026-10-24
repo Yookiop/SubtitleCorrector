@@ -882,7 +882,7 @@
     return Math.round(Math.max(CAPTION_SYNC_MIN_MS, Math.min(CAPTION_SYNC_MAX_MS, n)));
   }
 
-  /** Dezelfde offset als `lead` in seconden (voor `captionWordIndex`). */
+  /** Dezelfde offset als `lead` in seconden (voor `captionWordIndex` én de run-/blokkeuze). */
   function wordLeadSeconds(ms) {
     return captionSyncMs(ms) / 1000;
   }

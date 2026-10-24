@@ -120,10 +120,15 @@
         fallbackOpaque ? undefined : 'verwacht --sc-caption-bg:rgba(...,1)');
     }
 
-    // De timing-verbeteringen van 2026-10-12 moeten in de bron blijven zitten:
+    // De timing-verbeteringen van 2026-10-12/2026-10-23 moeten in de bron
+    // blijven zitten:
     //  - woord-voor-woord komt getemperd binnen (hooguit één woord per frame,
     //    een sprong alleen na een echte onderbreking) via L.captionRevealPace;
-    //  - de optie *Sync-offset* (captionSyncMs) voedt de lead van captionWordIndex;
+    //  - de optie *Sync-offset* (captionSyncMs) verschuift de hele tijdlijn
+    //    (runkeuze én woorden, ook in de blokweergave);
+    //  - YouTube's eigen captionvenster blijft verborgen zolang Caption Boost
+    //    de track tekent, en de laatste regel blijft na een stilte nog even
+    //    staan (BOOST_HOLD) in plaats van dat YouTube's oude regel terugkomt;
     //  - de content script dubbelcheckt de metadata-taal met de audio (bridge).
     async function checkTimingFeatures() {
       const agent = await (await fetch('../extension/src/page-agent.js', { cache: 'no-store' })).text();
@@ -140,17 +145,44 @@
       const checked = /languageCheck\s*\(/.test(content);
       record('content.js: dubbelcheck van de taalkeuze via de audio (scheduleVerify + languageCheck)', scheduled && checked,
         scheduled && checked ? undefined : 'verwacht scheduleVerify() en L.languageCheck() in content.js');
-      const frameLoop = /function renderBoost\(\)\s*\{([\s\S]*?)\n  \}/.exec(agent);
+
+      const frameLoop = /function renderBoostFrame\(\)\s*\{([\s\S]*?)\n  \}/.exec(agent);
       const frameBody = frameLoop ? frameLoop[1] : '';
       const cachedTrack = /var cur = boost\.currentTrack;/.test(frameBody) &&
         /boost\.currentTrack = cur;/.test(agent);
       record('page-agent.js: frame-lus gebruikt gecachte trackgegevens', cachedTrack,
-        cachedTrack ? undefined : 'verwacht de track uit boostTick() te cachen en die in renderBoost() te gebruiken');
+        cachedTrack ? undefined : 'verwacht de track uit boostTick() te cachen en die in de frame-lus te gebruiken');
 
       const noPerFramePlayerState = frameLoop && !/readCurrentTrack\(\)|\bisAd\(\)/.test(frameBody) &&
         /isAdShowingInDom\(\)/.test(frameBody);
       record('page-agent.js: frame-lus vermijdt herhaalde track-/ad-API-calls', !!noPerFramePlayerState,
         noPerFramePlayerState ? undefined : 'track- en ad-API-reads horen in de poll; gebruik alleen de DOM-ad-status per frame');
+
+      const guarded = /function renderBoost\(\)\s*\{[\s\S]*?try\s*\{\s*renderBoostFrame\(\);\s*\}[\s\S]*?catch\s*\(/.test(agent);
+      record('page-agent.js: frame-lus is tegen fouten beschermd (try/catch -> stopBoost)', guarded,
+        guarded ? undefined : 'verwacht try { renderBoostFrame(); } catch (...) { stopBoost(); } in renderBoost()');
+
+      const timelineLead = /var ts = t \+ L\.wordLeadSeconds\(BOOST_SYNC_MS\);/.test(agent) &&
+        /captionRunAt\(\s*boost\.runs,\s*ts,/.test(agent) &&
+        /captionBlockAt\(\s*boost\.blocks,\s*ts,/.test(agent);
+      record('page-agent.js: de sync-offset verschuift de hele tijdlijn (runkeuze én blokken)', timelineLead,
+        timelineLead ? undefined : 'verwacht `var ts = t + L.wordLeadSeconds(BOOST_SYNC_MS)` in renderWordFrame() én renderBlockFrame()');
+
+      const hold = /captionRunAt\(\s*boost\.runs,\s*ts,\s*BOOST_HOLD\s*\)/.test(agent) &&
+        /captionBlockAt\(\s*boost\.blocks,\s*ts,\s*BOOST_HOLD\s*\)/.test(agent);
+      record('page-agent.js: de laatste regel blijft na een stilte nog even staan (BOOST_HOLD)', hold,
+        hold ? undefined : 'verwacht captionRunAt/captionBlockAt met BOOST_HOLD in de stilte-tak');
+
+      const own = /function ownCaptions\(on\)/.test(agent) &&
+        /ownCaptions\(true\);/.test(agent) && /ownCaptions\(false\);/.test(agent);
+      record("page-agent.js: YouTube's captionvenster blijft uit zolang Caption Boost tekent (ownCaptions)", own,
+        own ? undefined : 'verwacht ownCaptions(true) in boostTick() en ownCaptions(false) in stopBoost()');
+
+      const hideLoop = /function hideBoost\(on\)\s*\{([\s\S]*?)\n  \}/.exec(agent);
+      const hideBody = hideLoop ? hideLoop[1] : '';
+      const hideIsLocal = !!hideLoop && !/sc-boost-on/.test(hideBody);
+      record("page-agent.js: onze overlay aan/uit raakt YouTube's venster niet (hideBoost)", hideIsLocal,
+        hideIsLocal ? undefined : 'hideBoost() mag .sc-boost-on niet meer zetten; dat doet ownCaptions()');
     }
 
     (async function () {
