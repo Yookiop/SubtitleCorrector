@@ -51,7 +51,15 @@
     waardoor je naast het laatste woord van de bovenste regel een strook zwart zonder tekst zag
     (bugmelding 2026-09-20). Daar hoort maximaal de eigen padding (0,28em) te staan.<br>
     <b>Oude berekening</b> = rekenen met <code>getComputedStyle(wrap).lineHeight</code> en de
-    em-hoogte; <b>nu</b> = meten (<code>captionLineMetrics</code> + <code>captionVerticalLayout</code>).
+    em-hoogte; <b>nu</b> = meten (<code>captionLineMetrics</code> + <code>captionVerticalLayout</code>,
+    de verschuiving uit <code>captionWindowShiftMeasured</code>, de controle
+    <code>captionTopKeepOut</code> op de echte onderkant van de regel erboven, en de woordblokjes van
+    regels die ruim boven het venster staan worden opgeruimd).<br>
+    <b>uitstek boven de regel</b> = hoeveel px van de onderkant van de regel die net boven het
+    venster staat er nog ín het venster steekt: dat hoort 0 te zijn (anders zie je daar witte
+    puntjes/streepjes van de vorige regel — bugmelding 2026-10-31). <b>na het verbergen</b> = hetzelfde
+    nog een keer gemeten nadat de page agent de woorden van die regel onzichtbaar heeft gemaakt
+    (<code>BOOST_WINDOW_SETTLE_MS</code> na de slide-up): dat is de harde garantie en moet altijd 0 zijn.
   </div>
   <div id="verdict" class="verdict">bezig...</div>
   <div id="out"></div>
@@ -61,9 +69,15 @@
     woordblokjes <em>inline</em> een grotere <code>line-height</code> geeft (<code>!important</code>);
     onze stylesheet-pin kan dat niet tegenhouden, dus dan moet de <em>meting</em> het venster
     kloppend houden: het venster wordt dan hoger (twee hele regels) en de verschuiving volgt de
-    echte regelafstand, zodat de bovenste regel niet meer uit het venster loopt.
+    echte regelafstand, zodat de bovenste regel niet meer uit het venster loopt. Scenario C = de
+    canvasmeting van de fontmaten klopt niet (de pagina tekent een ander font dan gemeten); de
+    gemeten controle houdt de regel erboven dan alsnog buiten.
     De meting gebeurt per woord op een echte layout (1280x720, 130% grootte), met de woorden uit
-    een lange doorlopende spraak (zoals een debatvideo zonder stiltes).
+    een lange doorlopende spraak (zoals een debatvideo zonder stiltes).<br>
+    Extra's om zelf te proberen: <code>?nofix=1</code> (zonder de zwart-bleed),
+    <code>?nopoke=1</code> (zonder de fijne correctie van de layout),
+    <code>?nokeepout=1</code> (zonder de gemeten controle) en <code>?badink=0.84</code>
+    (factor voor de gesimuleerde fontmeting).
   </div>
   <script src="../extension/src/shared/lang-utils.js"></script>
   <script>
@@ -79,6 +93,19 @@
       // (de regel boven het venster schoof anders een fractie van een px in het
       // venster); ook dat moet deze pagina kunnen aantonen.
       var NOPOKE = /[?&]nopoke=1/.test(location.search);
+      // ?badink=1 simuleert een meetfout in de fontmaten (de canvasmeting zag
+      // een ander font dan de pagina tekent). Scenario C laat zien dat de
+      // GEMETEN controle (L.captionTopKeepOut) de onderkant van de vorige regel
+      // dan alsnog buiten het venster houdt; ?nokeepout=1 zet die controle uit
+      // zodat je ziet dat het zonder haar misgaat (witte puntjes/streepjes van
+      // de vorige regel boven de bovenste regel, klacht 2026-10-31).
+      var BADINK_M = /[?&]badink=([0-9.]+)/.exec(location.search);
+      var BADINK = !!BADINK_M;
+      var BADINK_FACTOR = BADINK ? parseFloat(BADINK_M[1]) : 0.84;
+      var NOKEEPOUT = /[?&]nokeepout=1/.test(location.search);
+      // Zelfde grens als BOOST_KEEP_LINES in page-agent.js: zoveel regels
+      // woordblokjes blijven in de DOM staan (de rest wordt opgeruimd).
+      var KEEP_LINES = 4;
       var SILENCE = 'Kijk , als mevrouw Bikker ook het bredere punt wil maken dan zou ik daar graag ' +
                     'eerst nog even iets over willen zeggen in deze vergadering want dat is namelijk ' +
                     'precies het punt waar het hier vandaag over gaat en daarom wil ik dat graag ' +
@@ -173,9 +200,11 @@
       /**
        * Zelfde verticale layout als de page agent: hoogte van het venster (voor
        * LINES zichtbare regels), de verticale padding van de woordblokjes en de
-       * verschuiving (het aantal GEMETEN regels in hele stappen, plus de marge).
+       * verschuiving — uit de GEMETEN regels (`captionWindowShiftMeasured`) plus
+       * de gemeten controle dat de regel erboven er niet in schildert
+       * (`captionTopKeepOut`).
        */
-      function applyVerticalLayout(lineCount, advance, ink) {
+      function applyVerticalLayout(lineCount, advance, ink, m, nokeepout) {
         var fontPx = parseFloat(overlay.style.fontSize) || FS;
         var layout = L.captionVerticalLayout({
           advancePx: advance,
@@ -196,19 +225,129 @@
         }
         overlay.style.setProperty('--sc-word-pad-top', layout.wordPadTopEm + 'em');
         overlay.style.setProperty('--sc-word-pad-bottom', layout.wordPadBottomEm + 'em');
-        setShift(L.captionWindowShiftLines(lineCount, advance, LINES) + layout.shiftPx);
+        var shiftLines = L.captionWindowShiftLines(lineCount, advance, LINES);
+        var measured = m && m.lines > 1 ? L.captionWindowShiftMeasured(m.tops, LINES) : 0;
+        if (measured > 0) shiftLines = measured;
+        var shift = shiftLines + layout.shiftPx;
+        if (!nokeepout) shift += topKeepOut(m, shift, layout.marginPx);
+        setShift(shift);
         return layout;
       }
 
+      /**
+       * Spiegelt boostTopKeepOut() uit page-agent.js: meet de onderkant van het
+       * FONTVLAK van de regel die net boven het venster staat en schuif het
+       * venster zoveel extra omhoog als nodig is (max. de marge).
+       */
+      function topKeepOut(m, nextShift, marginPx) {
+        if (!m || !m.items || !m.index || !m.lines) return 0;
+        var range = L.captionVisibleGroupRange(m.lines, LINES, true);
+        var prev = range.first - 1;
+        if (prev < 0) return 0;
+        var boxTop = box.getBoundingClientRect().top;
+        var cur = -parseFloat(wrap.style.top || '0');
+        var bottom = null;
+        for (var i = 0; i < m.items.length; i++) {
+          if (m.index[i] !== prev) continue;
+          var rangeEl = document.createRange();
+          rangeEl.selectNodeContents(m.items[i]);
+          var rects = rangeEl.getClientRects();
+          for (var j = 0; j < rects.length; j++) {
+            if (!(rects[j].height > 0) || !(rects[j].width > 0)) continue;
+            if (bottom === null || rects[j].bottom > bottom) bottom = rects[j].bottom;
+          }
+        }
+        if (bottom === null) return 0;
+        return L.captionTopKeepOut(bottom, boxTop, cur, nextShift, marginPx, 0.5);
+      }
+
+      /**
+       * Spiegelt boostTrimAbove() uit page-agent.js: regels die ruim boven het
+       * venster staan uit de DOM halen en de verschuiving met de GEMETEN afstand
+       * verlagen, zodat er visueel niets verspringt.
+       */
+      function trimAbove(m) {
+        if (!m || !m.items || !m.index || !m.lines) return { lines: 0, px: 0 };
+        var cut = m.lines - KEEP_LINES;
+        if (cut <= 0) return { lines: 0, px: 0 };
+        var keepEl = null;
+        for (var i = 0; i < m.items.length; i++) {
+          if (m.index[i] >= cut) { keepEl = m.items[i]; break; }
+        }
+        if (!keepEl || keepEl.parentNode !== wrap) return { lines: 0, px: 0 };
+        var px = m.tops[cut] - m.tops[0];
+        if (!isFinite(px) || px <= 0) return { lines: 0, px: 0 };
+        while (wrap.firstChild && wrap.firstChild !== keepEl) wrap.removeChild(wrap.firstChild);
+        return { lines: cut, px: px };
+      }
+
+      /**
+       * Scenario C: de canvasmeting (boostInkMetrics) zag een ander font dan de
+       * pagina werkelijk tekent — de maten wijken dan af. Zo'n meting mag het
+       * venster niet op de verkeerde plek zetten.
+       */
+      function simulatedInk(real) {
+        return {
+          fontBoxPx: real.fontBoxPx * BADINK_FACTOR,
+          inkAbovePx: real.inkAbovePx * BADINK_FACTOR,
+          inkBelowPx: real.inkBelowPx * BADINK_FACTOR
+        };
+      }
+
+      /**
+       * Spiegelt applyHiddenAbove() uit page-agent.js: woordblokjes van regels
+       * boven het venster onzichtbaar maken zodra de slide-up klaar is. In deze
+       * (synchrone) simulatie is dat meteen; in de page agent gebeurt het na
+       * BOOST_WINDOW_SETTLE_MS, zodat de vertrekkende regel eerst nog zichtbaar
+       * omhoog schuift.
+       */
+      function hideAbove(m) {
+        if (!m || !m.items || !m.index || !m.lines) return;
+        var range = L.captionVisibleGroupRange(m.lines, LINES, true);
+        for (var i = 0; i < m.items.length; i++) {
+          m.items[i].style.visibility = m.index[i] < range.first ? 'hidden' : '';
+        }
+      }
+
+      /**
+       * Wat er na het verbergen nog van een ONTWIKKELDE regel in het venster
+       * steekt: 0 = goed. Dit is de harde garantie (onzichtbare blokjes
+       * schilderen niets), los van de geometrie hierboven.
+       */
+      function visiblePoke(m, boxRect) {
+        if (!m || !m.items || !m.index || !m.lines) return 0;
+        var range = L.captionVisibleGroupRange(m.lines, LINES, true);
+        var worst = 0;
+        for (var i = 0; i < m.items.length; i++) {
+          if (m.index[i] >= range.first) continue;      // alleen de regels BOVEN het venster
+          var el = m.items[i];
+          if (el.style.visibility === 'hidden') continue;
+          var r = el.getBoundingClientRect();
+          // Een blokje dat de bovenrand kruist (deel boven, deel eronder).
+          if (r.top < boxRect.top - 0.5 && r.bottom > boxRect.top + 0.5) {
+            var poke = r.bottom - boxRect.top;
+            if (poke > worst) worst = poke;
+          }
+        }
+        return worst;
+      }
+
       /** Eén tijdpad (run) doorlopen; `mode` = 'old' | 'new'. */
-      function walk(hostile, mode) {
+      function walk(hostile, mode, opts) {
+        opts = opts || {};
+        var badink = !!opts.badink;
+        var nokeepout = opts.nokeepout === undefined ? NOKEEPOUT : !!opts.nokeepout;
         buildStage();
         var lh = parseFloat(getComputedStyle(wrap).lineHeight) || 0;
-        var ink = inkMetrics(FS);
-        var res = { minGapText: null, minGapBlock: null, worstAt: 0, advance: 0, lines: 0, cutSteps: 0, bottomCut: 0, heightEm: '', marginPx: 0, minMarginTop: null, minMarginBottom: null, maxMarginDiff: 0, maxBleed: 0, bleedAt: 0, maxPoke: 0, pokeAt: 0, rows: [] };
+        var real = inkMetrics(FS);
+        // `layoutInk` gaat de layout in (in scenario C opzettelijk fout),
+        // `real` is wat de pagina echt tekent en waarmee we meten.
+        var layoutInk = badink ? simulatedInk(real) : real;
+        var res = { minGapText: null, minGapBlock: null, worstAt: 0, advance: 0, lines: 0, cutSteps: 0, bottomCut: 0, heightEm: '', marginPx: 0, minMarginTop: null, minMarginBottom: null, maxMarginDiff: 0, maxBleed: 0, bleedAt: 0, maxPoke: 0, pokeAt: 0, maxVisiblePoke: 0, visiblePokeAt: 0, trimSteps: 0, maxGapJump: 0, jumpAt: 0, lastGap: null, rows: [], steps: [] };
         for (var n = 1; n <= WORDS.length; n++) {
           appendWord(WORDS[n - 1], hostile);
           var h = wrap.getBoundingClientRect().height;
+          var hasAdvance = false;
           if (mode === 'old') {
             box.style.height = L.captionBoxHeightEm(LINES) + 'em';
             overlay.style.setProperty('--sc-word-pad-top', L.CAPTION_WORD_PAD_Y_EM + 'em');
@@ -216,11 +355,17 @@
             setShift(L.captionWindowShift(h, lh, LINES));
           } else {
             var m = boostMetrics(h, lh);
-            var layout = applyVerticalLayout(m.lines, m.advance > 0 ? m.advance : lh, ink);
+            var layout = applyVerticalLayout(m.lines, m.advance > 0 ? m.advance : lh, layoutInk, m, nokeepout);
             if (!NOFIX) applyWordBleed(m, true);
+            var trimmed = trimAbove(m);
+            if (trimmed.px > 0) {
+              setShift(-parseFloat(wrap.style.top || '0') - trimmed.px);
+              res.trimSteps++;
+            }
             res.marginPx = layout.marginPx;
             if (m.lines) res.lines = m.lines;
             if (m.advance > 0) res.advance = m.advance;
+            hasAdvance = m.advance > 0;
           }
           void wrap.offsetHeight;
 
@@ -230,16 +375,36 @@
           var textLines = L.captionLineMetrics(rects.texts, lh);
           var gapBlock = gapOf(blockLines, rects.blocks, boxRect.top);
           var gapText = gapOf(textLines, rects.texts, boxRect.top);
-          var margins = inkMargins(rects.texts, boxRect, ink);
+          var margins = inkMargins(rects.texts, boxRect, real);
           // Zwart in de bovenstrook dat niet bij de bovenste zichtbare regel hoort.
-          var bleed = topBandBleed(rects, boxRect, ink, lh, LINES);
+          var bleed = topBandBleed(rects, boxRect, real, lh, LINES);
           res.lastBleed = bleed;
           if (bleed > res.maxBleed) { res.maxBleed = bleed; res.bleedAt = n; }
           var poke = topPoke(rects, boxRect, lh, LINES);
           if (poke > res.maxPoke) { res.maxPoke = poke; res.pokeAt = n; }
+          // En de harde garantie: na het verbergen van de regels erboven mag er
+          // van een ontwikkelde regel niets meer te zien zijn.
+          if (mode === 'new') {
+            hideAbove(m);
+            var vp = visiblePoke(m, boxRect);
+            if (vp > res.maxVisiblePoke) { res.maxVisiblePoke = vp; res.visiblePokeAt = n; }
+          }
           if (isFinite(gapText) && (res.minGapText === null || gapText < res.minGapText)) { res.minGapText = gapText; res.worstAt = n; }
           if (isFinite(gapBlock) && (res.minGapBlock === null || gapBlock < res.minGapBlock)) res.minGapBlock = gapBlock;
           if (isFinite(gapText) && gapText <= 0) res.cutSteps++;
+          // De bovenste zichtbare regel hoort bij elke stap even hoog te staan:
+          // een sprong betekent dat het venster niet klopt (of dat het opruimen
+          // van oude regels niet gecompenseerd is). De overgang van 1 regel naar
+          // 2 regels telt niet mee: met één regel valt de regelafstand nog niet
+          // te meten (dan geldt de line-height van de wrapper) en corrigeert de
+          // layout zichzelf zodra de tweede regel er is.
+          if (isFinite(gapText) && res.lastGap !== null && isFinite(res.lastGap) && res.prevHasAdvance && hasAdvance) {
+            var jump = Math.abs(gapText - res.lastGap);
+            if (jump > res.maxGapJump) { res.maxGapJump = jump; res.jumpAt = n; }
+          }
+          res.prevHasAdvance = hasAdvance;
+          res.lastGap = isFinite(gapText) ? gapText : res.lastGap;
+          res.steps.push({ n: n, lines: blockLines.lines, gapText: isFinite(gapText) ? gapText : null, trimmed: mode === 'new' ? trimmed.px : 0, shift: parseFloat(wrap.style.top) * -1 });
           if (isFinite(margins.top) && (res.minMarginTop === null || margins.top < res.minMarginTop)) res.minMarginTop = margins.top;
           if (isFinite(margins.bottom) && (res.minMarginBottom === null || margins.bottom < res.minMarginBottom)) res.minMarginBottom = margins.bottom;
           // Alleen als het venster vol staat (minstens LINES regels tekst) horen de
@@ -399,21 +564,28 @@
 
       var results = [];
       var out = document.getElementById('out');
-      for (var s = 0; s < 2; s++) {
+      for (var s = 0; s < 3; s++) {
         var hostile = s === 1;
-        var oldRes = walk(hostile, 'old');
-        var newRes = walk(hostile, 'new');
-        results.push({ hostile: hostile, oldRes: oldRes, newRes: newRes });
+        var badink = s === 2;
+        var opts = { badink: badink };
+        var oldRes = walk(hostile, 'old', opts);
+        var newRes = walk(hostile, 'new', opts);
+        // Scenario C laat ook zien wat er ZONDER de gemeten controle gebeurt
+        // (dan steekt de vorige regel in het venster: de witte puntjes).
+        var noGuard = badink ? walk(hostile, 'new', { badink: true, nokeepout: true }) : null;
+        results.push({ hostile: hostile, badink: badink, oldRes: oldRes, newRes: newRes, noGuard: noGuard });
 
         var h2 = document.createElement('h2');
-        h2.textContent = hostile
-          ? 'B. Pagina geeft de woordblokjes inline line-height 2,2em (bugscenario)'
-          : 'A. Normale CSS';
+        h2.textContent = badink
+          ? 'C. De fontmeting klopt niet (canvas zag een ander font dan de pagina tekent)'
+          : (hostile ? 'B. Pagina geeft de woordblokjes inline line-height 2,2em (bugscenario)' : 'A. Normale CSS');
         out.appendChild(h2);
         var sum = document.createElement('div');
-        sum.className = 'verdict ' + (!(newRes.minGapText > 0) || newRes.cutSteps || newRes.bottomCut ? 'fail' : 'pass');
+        var goodNow = newRes.minGapText > 0 && newRes.cutSteps === 0 && newRes.bottomCut === 0 && newRes.maxPoke <= 0.1 && newRes.maxGapJump <= 1.5;
+        sum.className = 'verdict ' + (goodNow ? 'pass' : 'fail');
         sum.innerHTML =
           (hostile ? 'pagina-override actief &middot; ' : '') +
+          (badink ? 'fontmeting 16% te klein &middot; ' : '') +
           'gemeten regelafstand = ' + fmt(newRes.advance) + 'px (' + fmt(newRes.advance / FS, 3) + 'em), ' + 
           'lh(wrapper) = ' + fmt(parseFloat(getComputedStyle(wrap).lineHeight)) + 'px, font = ' + fmt(FS) + 'px, venster = ' + newRes.heightEm +
           '<br>oud: kleinste gapText = ' + fmt(oldRes.minGapText) + 'px (' + fmt(oldRes.minGapText / FS, 3) + 'em), afgekapte stappen = ' + oldRes.cutSteps + ', onderaan afgekapt = ' + oldRes.bottomCut +
@@ -421,7 +593,10 @@
           '<br>zwart boven de inkt: ' + fmt(newRes.minMarginTop) + 'px (' + fmt(newRes.minMarginTop / FS, 3) + 'em), zwart onder de inkt: ' + fmt(newRes.minMarginBottom) + 'px (' + fmt(newRes.minMarginBottom / FS, 3) + 'em)' +
           ', grootste verschil boven/onder = ' + fmt(newRes.maxMarginDiff) + 'px (marge volgens de layout: ' + fmt(newRes.marginPx) + 'px)' +
           '<br>zwart in de bovenstrook buiten de bovenste regel: max ' + fmt(newRes.maxBleed) + 'px (stap ' + newRes.bleedAt + ', laatste stap ' + fmt(newRes.lastBleed) + 'px), toegestaan ' + fmt(0.28 * FS + 2) + 'px (padding 0,28em + 2px)' +
-          ', en de uitstekende fractie van de regel erboven: max ' + fmt(newRes.maxPoke) + 'px (stap ' + newRes.pokeAt + '), toegestaan 0,1px';
+          ', en de uitstekende fractie van de regel erboven: max ' + fmt(newRes.maxPoke) + 'px (stap ' + newRes.pokeAt + '), toegestaan 0,1px' +
+          ', na het verbergen nog zichtbaar: ' + fmt(newRes.maxVisiblePoke) + 'px (stap ' + newRes.visiblePokeAt + '), toegestaan 0,1px' +
+          (noGuard ? '<br>zonder de gemeten controle: <b class="bad">' + fmt(noGuard.maxPoke) + 'px</b> van de regel erboven in het venster (stap ' + noGuard.pokeAt + ') — precies de witte puntjes/streepjes van de klacht' : '') +
+          '<br>opruimen van oude regels: ' + newRes.trimSteps + ' stappen, grootste sprong in gapText = ' + fmt(newRes.maxGapJump) + 'px (stap ' + newRes.jumpAt + '), toegestaan 1,5px';
         out.appendChild(sum);
 
         var t = document.createElement('table');
@@ -445,18 +620,27 @@
       var parts = [];
       for (var q = 0; q < results.length; q++) {
         var r = results[q];
-        var good = r.newRes.minGapText > 0 && r.newRes.cutSteps === 0 && r.newRes.bottomCut === 0 &&
-          r.newRes.minMarginTop >= 0.2 * FS && r.newRes.minMarginBottom >= 0.2 * FS && r.newRes.maxMarginDiff <= 1.5 &&
-          r.newRes.maxBleed <= 0.28 * FS + 2 && r.newRes.maxPoke <= 0.1;
+        // Scenario C heeft opzettelijk foute fontmaten: daar eisen we alleen dat
+        // er niets van de regel erboven in het venster steekt (de harde eis) en
+        // dat de onderste regel heel blijft.
+        var good = r.badink
+          ? (r.newRes.maxPoke <= 0.1 && r.newRes.maxVisiblePoke <= 0.1 && r.newRes.bottomCut === 0 && r.newRes.minGapText > 0)
+          : (r.newRes.minGapText > 0 && r.newRes.cutSteps === 0 && r.newRes.bottomCut === 0 &&
+             r.newRes.minMarginTop >= 0.2 * FS && r.newRes.minMarginBottom >= 0.2 * FS && r.newRes.maxMarginDiff <= 1.5 &&
+             r.newRes.maxBleed <= 0.28 * FS + 2 && r.newRes.maxPoke <= 0.1 && r.newRes.maxVisiblePoke <= 0.1 && r.newRes.maxGapJump <= 1.5);
         if (!good) ok = false;
-        parts.push((r.hostile ? 'B' : 'A') + ': ' + (good ? 'OK' : 'FOUT') +
+        parts.push((r.badink ? 'C' : (r.hostile ? 'B' : 'A')) + ': ' + (good ? 'OK' : 'FOUT') +
           ' (kleinste gapText ' + fmt(r.newRes.minGapText) + 'px, zwart boven/onder ' + fmt(r.newRes.minMarginTop) + '/' + fmt(r.newRes.minMarginBottom) +
-          'px, verschil ' + fmt(r.newRes.maxMarginDiff) + 'px, zwart in de bovenstrook ' + fmt(r.newRes.maxBleed) + 'px, uitstek boven de regel ' + fmt(r.newRes.maxPoke) + 'px; oud: ' + fmt(r.oldRes.minGapText) + 'px / ' + r.oldRes.cutSteps + ')');
+          'px, verschil ' + fmt(r.newRes.maxMarginDiff) + 'px, zwart in de bovenstrook ' + fmt(r.newRes.maxBleed) + 'px, uitstek boven de regel ' + fmt(r.newRes.maxPoke) + 'px' +
+          (r.noGuard ? ', zonder controle ' + fmt(r.noGuard.maxPoke) + 'px' : '') +
+          ', sprong bij opruimen ' + fmt(r.newRes.maxGapJump) + 'px; oud: ' + fmt(r.oldRes.minGapText) + 'px / ' + r.oldRes.cutSteps + ')');
       }
       var v = document.getElementById('verdict');
       v.className = 'verdict ' + (ok ? 'pass' : 'fail');
+      // Voor automatisering (Playwright/console): de ruwe metingen per scenario.
+      window.SC_CHECK = { ok: ok, results: results, fs: FS, keepLines: KEEP_LINES };
       v.innerHTML = (ok ? 'PASS' : 'FAIL') + ' &mdash; ' + parts.join(' &middot; ') +
-        '<br><span style="font-weight:400">De oude berekening kapt in scenario B de bovenste regel af en zet de tekst scheef in het zwart (meer zwart boven dan onder); de inkt-layout houdt de tekst in beide scenario\'s heel en zet hem met evenveel zwart boven als onder in het venster.</span>';
+        '<br><span style="font-weight:400">De oude berekening kapt in scenario B de bovenste regel af en zet de tekst scheef in het zwart (meer zwart boven dan onder); de inkt-layout houdt de tekst in beide scenario\'s heel en zet hem met evenveel zwart boven als onder in het venster. In scenario C kloppen de fontmaten niet: de layout alleen laat dan de onderkant van de vorige regel in het venster staan (witte puntjes/streepjes boven de bovenste regel, klacht 2026-10-31) — de gemeten controle (L.captionTopKeepOut) en het opruimen van oude regels houden het venster ook dan kloppend.</span>';
     })();
   </script>
 </body>

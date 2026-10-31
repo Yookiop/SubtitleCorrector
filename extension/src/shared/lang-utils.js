@@ -1108,6 +1108,73 @@
   }
 
   /**
+   * Verschuiving (px) van het rollende venster uit de **gemeten bovenkanten**
+   * van de regelgroepen (`captionLineMetrics().tops`).
+   *
+   * `captionWindowShiftLines()` rekent met de mediaan-regelafstand maal het
+   * aantal regels. Zodra de regels onderling verschillen (een andere
+   * line-height op één regel, een woordblokje met een eigen box, een fontval)
+   * is dat net niet de afstand waarop de bovenste zichtbare regel staat — en
+   * dan schuift de regel erboven een paar px in het venster: witte puntjes en
+   * streepjes van de vorige regel boven de bovenste regel (klacht 2026-10-31).
+   * De gemeten hoogteverschillen zijn de bron van waarheid; die gebruikt deze
+   * functie.
+   *
+   * Retour: px, of 0 als de meting niet bruikbaar is (dan valt de aanroeper
+   * terug op `captionWindowShiftLines`).
+   */
+  function captionWindowShiftMeasured(tops, visibleLines) {
+    var vis = typeof visibleLines === 'number' && isFinite(visibleLines) ? Math.round(visibleLines) : 2;
+    if (vis < 1) vis = 1;
+    if (!tops || !tops.length) return 0;
+    var n = tops.length;
+    var first = n - vis;
+    if (n <= vis || first <= 0 || first >= n) return 0;
+    var lo = Number(tops[0]);
+    var hi = Number(tops[first]);
+    if (!isFinite(lo) || !isFinite(hi) || !(hi > lo)) return 0;
+    return Math.round((hi - lo) * 100) / 100;
+  }
+
+  /**
+   * Extra verschuiving (px) zodat de regel die NET boven het venster staat er
+   * niet in schildert.
+   *
+   * `captionVerticalLayout()` zet de inkt van de bovenste zichtbare regel een
+   * marge onder de rand en gaat ervan uit dat de regel erboven dan precies
+   * buiten valt. Dat klopt alleen als élke fontmaat klopt (canvasmeting,
+   * fontval, line-height). Daarom meet de page agent de onderkant van die
+   * regel echt (`prevBottomPx`, het fontvak van de glyphs) en schuift hij het
+   * venster zoveel extra omhoog als nodig is.
+   *
+   * `currentShiftPx` = de verschuiving die nu op de wrapper staat,
+   * `nextShiftPx` = de nieuwe. Het verschil bepaalt waar die onderkant straks
+   * staat. Nooit meer dan `maxPx` (de marge), zodat de tekst niet tegen de
+   * bovenrand komt; `safetyPx` is de speling die buiten het venster moet
+   * blijven staan.
+   *
+   * Retour: 0 als er niets hoeft te gebeuren.
+   */
+  function captionTopKeepOut(prevBottomPx, boxTopPx, currentShiftPx, nextShiftPx, maxPx, safetyPx) {
+    var bottom = Number(prevBottomPx);
+    var boxTop = Number(boxTopPx);
+    var cur = Number(currentShiftPx);
+    var next = Number(nextShiftPx);
+    if (!isFinite(bottom) || !isFinite(boxTop) || !isFinite(cur) || !isFinite(next)) return 0;
+    var safety = typeof safetyPx === 'number' && isFinite(safetyPx) && safetyPx >= 0 ? safetyPx : 0.5;
+    var max = typeof maxPx === 'number' && isFinite(maxPx) && maxPx > 0 ? maxPx : 0;
+    // Het venster schuift `next - cur` px verder omhoog, dus de inhoud komt
+    // evenveel hoger te staan.
+    var y = (bottom - boxTop) - (next - cur);
+    if (!isFinite(y)) return 0;
+    // De onderkant moet minstens `safety` boven de rand staan.
+    var need = y + safety;
+    if (!(need > 0)) return 0;
+    if (max > 0 && need > max) need = max;
+    return Math.round(need * 100) / 100;
+  }
+
+  /**
    * Verschuiving (px) van het rollende venster: alles boven de laatste
    * `visibleLines` regels schuift omhoog, in stapjes van hele regels (nooit
    * een halve regel). `totalPx` = hoogte van alle gezette tekst,
@@ -1630,6 +1697,8 @@
     captionRevealPace: captionRevealPace,
     captionWindowShift: captionWindowShift,
     captionWindowShiftLines: captionWindowShiftLines,
+    captionWindowShiftMeasured: captionWindowShiftMeasured,
+    captionTopKeepOut: captionTopKeepOut,
     captionLinesFromHeight: captionLinesFromHeight,
     captionLineMetrics: captionLineMetrics,
     captionVisibleGroupRange: captionVisibleGroupRange,

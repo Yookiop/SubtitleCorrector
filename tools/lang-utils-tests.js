@@ -567,6 +567,41 @@
     eq(L.captionWindowShiftLines(2.4, 10, 2), 0);    // wordt afgerond naar 2
   });
 
+  test('captionWindowShiftMeasured: verschuiving uit de GEMETEN regelposities', function (L) {
+    // Uniforme regels: hetzelfde als aantal x regelafstand.
+    eq(L.captionWindowShiftMeasured([100, 142, 184], 2), 42);    // 142 - 100
+    eq(L.captionWindowShiftMeasured([100, 142, 184, 226], 2), 84);
+    eq(L.captionWindowShiftMeasured([100, 142], 2), 0);          // past binnen het venster
+    eq(L.captionWindowShiftMeasured([100, 142, 184], 1), 84);    // 1-regelig venster
+    // Onregelmatige regels: de mediaan (42) is hier fout, de meting niet.
+    // Regel 1 staat 52px onder regel 0 (een grotere line-height op die regel).
+    eq(L.captionWindowShiftMeasured([100, 152, 204], 2), 52);
+    // Niet bruikbaar -> 0, zodat de aanroeper terugvalt op captionWindowShiftLines.
+    eq(L.captionWindowShiftMeasured(null, 2), 0);
+    eq(L.captionWindowShiftMeasured([], 2), 0);
+    eq(L.captionWindowShiftMeasured([100], 2), 0);
+    eq(L.captionWindowShiftMeasured([100, 100, 100], 2), 0);     // geen hoogteverschil
+    eq(L.captionWindowShiftMeasured(['x', 142], 2), 0);
+    eq(L.captionWindowShiftMeasured([100, 142, 184], 0), 84);    // 0 zichtbare regels -> 1
+  });
+
+  test('captionTopKeepOut: de regel boven het venster er echt buiten houden', function (L) {
+    // De vorige regel eindigt 4px ONDER de bovenrand (boxTop=100, bottom=104) en
+    // de verschuiving blijft gelijk: 4px + 0,5px speling omhoog.
+    eq(L.captionTopKeepOut(104, 100, 40, 40, 20, 0.5), 4.5);
+    // De verschuiving gaat 10px verder omhoog -> die 4px zijn al weg.
+    eq(L.captionTopKeepOut(104, 100, 40, 50, 20, 0.5), 0);
+    // De vorige regel staat al ruim boven het venster: niets doen.
+    eq(L.captionTopKeepOut(90, 100, 40, 45, 20, 0.5), 0);
+    // Nooit meer dan de marge (anders komt de tekst tegen de bovenrand).
+    eq(L.captionTopKeepOut(140, 100, 0, 0, 20, 0.5), 20);
+    // Onbruikbare meting -> 0 (geen correctie).
+    eq(L.captionTopKeepOut(null, 100, 0, 0, 20, 0.5), 0);
+    eq(L.captionTopKeepOut(104, NaN, 0, 0, 20, 0.5), 0);
+    // Zonder marge geen plafond.
+    eq(L.captionTopKeepOut(104, 100, 0, 0, 0, 0.5), 4.5);
+  });
+
   test('captionLinesFromHeight: aantal regels uit de gemeten hoogte', function (L) {
     eq(L.captionLinesFromHeight(0, 34), 0);
     eq(L.captionLinesFromHeight(34, 0), 0);

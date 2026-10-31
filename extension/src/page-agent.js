@@ -495,6 +495,30 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * Vangnet: video-pagina verversen (standaard UIT)
+   *
+   * YouTube's eigen ondertitelvenster loopt in playlists soms 1-2 s achter en
+   * plopt dan in blokken. Normaal lossen we dat op door de timedtext-track
+   * zelf op te vangen en tekenen (zie Caption Boost hieronder). Lukt dat voor
+   * een video niet — de track komt niet binnen, of de pagina is lang open en
+   * YouTube's renderer raakt de draad kwijt — dan is een pagina-refresh de
+   * enige betrouwbare reset: daarna vraagt de speler de track opnieuw op en is
+   * het weer synchroon.
+   *
+   * Dit mechanisme doet precies dat: 2 s nadat een video-pagina opent, één keer
+   * verversen. Het staat UIT en wordt hieronder met één cijfer aangezet:
+   *
+   *     var AUTO_RELOAD_VIDEO_PAGE = 0;   ->   1
+   *
+   * Twee waarborgen: er wordt per video maar één keer ververst (een markering
+   * in sessionStorage overleeft de reload, dus geen refresh-lus) en een
+   * SPA-navigatie naar een andere video wapent het mechanisme opnieuw.
+   * ------------------------------------------------------------------ */
+  var AUTO_RELOAD_VIDEO_PAGE = 0;      // 0 = uit, 1 = aan
+  var AUTO_RELOAD_DELAY_MS = 2000;     // wachttijd na het openen van de pagina
+  var AUTO_RELOAD_MARK = 'sc-auto-reload';
+
+  /* ------------------------------------------------------------------ *
    * Caption Boost: eigen ondertitelweergave
    *
    * YouTube's eigen caption-venster loopt in playlists soms 1-2 s achter en
@@ -523,6 +547,17 @@
   var BOOST_HOLD = 4.0;
   var BOOST_SYNC_MS = L.CAPTION_SYNC_DEFAULT_MS; // optie *Sync-offset*: woord verschijnt zoveel ms eerder
   var BOOST_WINDOW_RECHECK_FRAMES = 120;         // ± 2 s: venster/regelafstand opnieuw meten (vangnet)
+  // s dat de slide-up duurt (CSS: `transition: top .2s`) + wat marge. Pas
+  // daarna mag de regel die het venster uit schoof onzichtbaar gemaakt worden
+  // (zie scheduleHideAboveWindow): tijdens het schuiven hoort hij nog te zien.
+  var BOOST_WINDOW_SETTLE_MS = 240;
+  // Aantal regels woordblokjes dat in de DOM blijft staan. Een run kan minuten
+  // doorgaan zonder stilte; zonder grens groeit de DOM onbeperkt door en wordt
+  // elke regelwissel (meten van alle blokjes) en elk schilderframe steeds
+  // duurder — dat is de "na een tijdje loopt de ondertiteling achter"-klacht
+  // (2026-10-31). De regels die ruim boven het venster staan zijn onzichtbaar
+  // en worden weggegooid; de verschuiving gaat evenveel omlaag.
+  var BOOST_KEEP_LINES = 4;
 
   var boost = {
     videoId: null,
@@ -1014,6 +1049,7 @@
     boost.lastWordEl = null;
     boost.lineChanged = false;
     invalidateLineHeightCache();
+    clearHideTimer();
     if (boost.scrollEl) {
       boost.scrollEl.textContent = '';
       boost.scrollEl.style.transform = ''; // oude versies schoven met transform
@@ -1106,13 +1142,16 @@
       return;
     }
     var blk = boost.blocks[idx];
-    if (boost.blockKey !== blk.start) {
-      buildBlock(blk);
-      boost.blockKey = blk.start;
-    }
+    // Eerst zichtbaar maken, dan pas opbouwen/metern: in een verborgen venster
+    // (`display:none`) geven alle rects 0 en zou het venster op lucht gezet
+    // worden (zie updateWordWindow).
     if (!boost.shownOnce) {
       boost.shownOnce = true;
       hideBoost(true);
+    }
+    if (boost.blockKey !== blk.start) {
+      buildBlock(blk);
+      boost.blockKey = blk.start;
     }
   }
 
@@ -1268,8 +1307,15 @@
           var descent = m.fontBoundingBoxDescent || 0;
           var inkAsc = m.actualBoundingBoxAscent || 0;
           var inkDesc = m.actualBoundingBoxDescent || 0;
-          if (ascent + descent > 0 && inkAsc + inkDesc > 0) {
-            next.fontBoxPx = ascent + descent;
+          // Plausibiliteit: is de font-shorthand niet geaccepteerd (dan blijft
+          // `ctx.font` op zijn oude waarde staan), dan kloppen de maten niet bij
+          // deze fontgrootte. Zo'n meting is erger dan geen meting: de
+          // halve regelafstand zou er enorm van worden en het venster op de
+          // verkeerde plek zetten. Een fontvak tussen 0,6em en 2,2em is reëel.
+          var box = ascent + descent;
+          var plausible = box > fs * 0.6 && box < fs * 2.2 && inkAsc + inkDesc > 0;
+          if (plausible) {
+            next.fontBoxPx = box;
             next.inkAbovePx = Math.max(0, ascent - inkAsc);
             next.inkBelowPx = Math.max(0, descent - inkDesc);
           }
@@ -1329,22 +1375,178 @@
   }
 
   /**
+   * Onderkant van het FONTVLAK van één woordblokje (viewport-px): waar de
+   * glyphs van dat woord echt staan, zónder de verticale padding van het
+   * blokje. `getBoundingClientRect()` van het blokje geeft de rand mét die
+   * padding, en die padding wordt voor regels buiten het venster juist op 0
+   * gezet (applyWordBleed) — voor de controle "steekt deze regel nog in het
+   * venster?" hebben we het tekstvlak nodig. Een Range om de inhoud geeft dat
+   * vlak; lukt de meting niet, dan is de onderkant van het blokje de terugval.
+   */
+  function boostWordInkBottom(el) {
+    if (!el) return null;
+    var bottom = null;
+    try {
+      var range = document.createRange();
+      range.selectNodeContents(el);
+      var rects = range.getClientRects();
+      for (var i = 0; i < rects.length; i++) {
+        var r = rects[i];
+        if (!(r.height > 0) || !(r.width > 0)) continue;
+        if (bottom === null || r.bottom > bottom) bottom = r.bottom;
+      }
+    } catch (e) { bottom = null; }
+    if (bottom !== null) return bottom;
+    try {
+      var own = el.getBoundingClientRect();
+      if (own && own.height > 0) return own.bottom;
+    } catch (e) { /* ignore */ }
+    return null;
+  }
+
+  /** Staat de eigen overlay zichtbaar in de layout? Meten heeft anders geen zin. */
+  function boostDisplayed() {
+    var el = boost.overlay;
+    if (!el || !el.isConnected) return false;
+    try {
+      if (!el.classList.contains('sc-on')) return false;
+      var r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * Extra verschuiving (px) zodat de regel die NET boven het venster staat er
+   * niet in schildert (zie L.captionTopKeepOut voor de berekening).
+   *
+   * `captionVerticalLayout()` rekent de onderkant van die regel uit de
+   * fontmaten en de marge. Zodra één van die maten niet klopt — een ander font
+   * dan de canvasmeting zag, een pagina die de line-height overschrijft, een
+   * fontval — staat die regel nét niet buiten en zie je de onderkant van zijn
+   * letters als witte puntjes/streepjes boven de bovenste regel (klacht
+   * 2026-10-31). Daarom meet deze functie de echte onderkant en schuift hij het
+   * venster bij. De uitkomst is nooit groter dan de marge, zodat de tekst niet
+   * tegen de bovenrand komt; wat er daarna nog zou uitsteken vangt
+   * scheduleHideAboveWindow af.
+   */
+  function boostTopKeepOut(m, range, nextShiftPx, marginPx) {
+    var box = boost.box;
+    if (!box || !m || !m.items || !m.index) return 0;
+    var prev = range && typeof range.first === 'number' ? range.first - 1 : -1;
+    if (prev < 0) return 0;
+    var boxTop = 0;
+    try { boxTop = box.getBoundingClientRect().top; } catch (e) { return 0; }
+    // De stand die de wrapper NU heeft (tijdens een slide-up een tussenstand;
+    // `boost.windowShift` is dan al de eindstand van de vorige wissel).
+    var cur = 0;
+    try {
+      var top = parseFloat(boost.scrollEl.style.top);
+      cur = isFinite(top) ? -top : 0;
+    } catch (e) { cur = 0; }
+    var bottom = null;
+    for (var i = 0; i < m.items.length; i++) {
+      if (m.index[i] !== prev) continue;
+      var b = boostWordInkBottom(m.items[i].el);
+      if (b !== null && (bottom === null || b > bottom)) bottom = b;
+    }
+    if (bottom === null) return 0;
+    return L.captionTopKeepOut(bottom, boxTop, cur, nextShiftPx, marginPx, 0.5);
+  }
+
+  var boostHideTimer = null;
+
+  function clearHideTimer() {
+    if (!boostHideTimer) return;
+    try { clearTimeout(boostHideTimer); } catch (e) { /* ignore */ }
+    boostHideTimer = null;
+  }
+
+  /**
+   * `visibility:hidden` voor de woordblokjes van regels die boven het venster
+   * staan. De clip van de box (`overflow:hidden` + `clip-path`) hoort die
+   * regels al buiten te houden, maar dat is afhankelijk van de gemeten
+   * geometrie — en zodra die een paar px afwijkt zie je de onderkant van de
+   * letters van de vorige regel bovenaan het venster (klacht 2026-10-31).
+   * Onzichtbare blokjes kunnen per definitie niets meer laten lekken, dus dit
+   * is de harde garantie naast de berekening.
+   *
+   * De blokjes blijven in de layout staan (alleen `visibility`), zodat de
+   * metingen en de regelindeling niet veranderen.
+   */
+  function applyHiddenAbove(m, range) {
+    if (!m || !m.items || !m.index || !range) return;
+    for (var i = 0; i < m.items.length; i++) {
+      var el = m.items[i].el;
+      if (!el || !el.style) continue;
+      var v = m.index[i] < range.first ? 'hidden' : '';
+      if (el.style.visibility !== v) el.style.visibility = v;
+    }
+  }
+
+  /**
+   * Het onzichtbaar maken uitstellen tot de slide-up klaar is: tijdens het
+   * schuiven hoort de vertrekkende regel nog gewoon te zien, daarna nooit
+   * meer. Elke nieuwe wissel zet de teller opnieuw.
+   */
+  function scheduleHideAboveWindow(m, range) {
+    clearHideTimer();
+    if (!m || !m.items || !m.index || !m.lines) return;
+    if (!range || !(range.first > 0)) return;
+    boostHideTimer = setTimeout(function () {
+      boostHideTimer = null;
+      applyHiddenAbove(m, range);
+    }, BOOST_WINDOW_SETTLE_MS);
+  }
+
+  /**
+   * Woordblokjes van regels die ruim boven het venster staan uit de DOM halen
+   * (zie BOOST_KEEP_LINES).
+   *
+   * Retour: `{lines, px}` — hoeveel regels er weg zijn en hoeveel px de inhoud
+   * daardoor omhoog schoof. Dat laatste moet van de verschuiving af, anders
+   * verspringt het beeld; omdat de afstand GEMETEN is, blijft de stand exact.
+   */
+  function boostTrimAbove(m) {
+    var wrap = boost.scrollEl;
+    var none = { lines: 0, px: 0 };
+    if (!wrap || !m || !m.items || !m.index || !m.lines) return none;
+    // Nooit in de zichtbare regels snijden: er moeten minstens BOOST_LINES + 1
+    // regels blijven staan (de zichtbare regels plus één regel erboven, zodat de
+    // slide-up iets te schuiven heeft).
+    var keep = Math.max(BOOST_KEEP_LINES, BOOST_LINES + 1);
+    var cut = m.lines - keep;
+    if (cut <= 0) return none;
+    var keepEl = null;
+    for (var i = 0; i < m.items.length; i++) {
+      if (m.index[i] >= cut) { keepEl = m.items[i].el; break; }
+    }
+    if (!keepEl || keepEl.parentNode !== wrap) return none;
+    var px = 0;
+    try { px = m.tops[cut] - m.tops[0]; } catch (e) { px = 0; }
+    if (!isFinite(px) || px <= 0) return none;
+    while (wrap.firstChild && wrap.firstChild !== keepEl) wrap.removeChild(wrap.firstChild);
+    return { lines: cut, px: Math.round(px * 100) / 100 };
+  }
+
+  /**
    * Het rollende venster bijwerken: zolang de gezette tekst binnen BOOST_LINES
    * regels past gebeurt er niets; daarboven schuift de tekst per HELE regel
    * omhoog zodat altijd de laatste regels zichtbaar zijn. De box zelf blijft
    * even hoog (het font krimpt nooit).
    *
    * De verschuiving komt uit de GEMETEN regels (`boostLineMetrics`: het aantal
-   * regels en de echte afstand ertussen) plus de marge uit de verticale layout
-   * (`boostVerticalLayout` / `L.captionVerticalLayout()`). Die layout zet de inkt
-   * van de bovenste zichtbare regel precies `L.CAPTION_MARGIN_RATIO` x de
-   * regelafstand onder de bovenrand, maakt het venster zo hoog als de inkt van
-   * BOOST_LINES regels plus twee keer die marge, en geeft de woordblokjes zoveel
-   * verticale padding dat het zwart tot de rand van het venster komt. Daardoor
-   * staat de tekst optisch midden in het zwart in plaats van tegen de bovenrand
-   * (bugmelding 2026-09-19) en blijft de bovenste regel ook heel als de echte
-   * regelafstand afwijkt van de line-height van de wrapper (bugmelding
-   * 2026-09-18).
+   * regels, de echte afstand ertussen en de bovenkant van elke regel) plus de
+   * marge uit de verticale layout (`boostVerticalLayout` /
+   * `L.captionVerticalLayout()`). Die layout zet de inkt van de bovenste
+   * zichtbare regel precies `L.CAPTION_MARGIN_RATIO` x de regelafstand onder de
+   * bovenrand, maakt het venster zo hoog als de inkt van BOOST_LINES regels plus
+   * twee keer die marge, en geeft de woordblokjes zoveel verticale padding dat
+   * het zwart tot de rand van het venster komt. Daardoor staat de tekst optisch
+   * midden in het zwart in plaats van tegen de bovenrand (bugmelding
+   * 2026-09-19) en blijft de bovenste regel ook heel als de echte regelafstand
+   * afwijkt van de line-height van de wrapper (bugmelding 2026-09-18).
    *
    * Het schuiven gebeurt met `top` op een `position:relative`-wrapper (via
    * setWordShift), met een korte CSS-overgang zodat je de slide-up ziet. Bewust
@@ -1355,6 +1557,15 @@
   function updateWordWindow() {
     var wrap = boost.scrollEl;
     if (!wrap) return;
+    // Meten kan alleen als het venster echt in de layout staat: bij een
+    // verborgen overlay (`display:none`) zijn alle rects 0 en zou de geometrie
+    // op lucht gezet worden — met een veel te klein venster en een verkeerde
+    // verschuiving tot gevolg. Dan blijft `windowShift` op -1 staan, zodat de
+    // eerstvolgende zichtbare frame opnieuw meet.
+    if (!boostDisplayed()) {
+      boost.windowShift = -1;
+      return;
+    }
     var lh = boostLineHeightPx();
     var h = 0;
     try { h = wrap.getBoundingClientRect().height; } catch (e) { h = 0; }
@@ -1370,11 +1581,31 @@
     // doorlopen (bugmelding 2026-09-20: een strook zwart naast het laatste woord
     // van de bovenste regel).
     applyWordBleed(m, true);
-    var shift = Math.round((L.captionWindowShiftLines(lines, step, BOOST_LINES) + layout.shiftPx) * 100) / 100;
+    var range = L.captionVisibleGroupRange(m.lines, BOOST_LINES, true);
+    // De verschuiving bij voorkeur uit de GEMETEN hoogteverschillen: het aantal
+    // regels x de mediaan-regelafstand is net niet de afstand waarop de
+    // bovenste zichtbare regel staat zodra de regels onderling afwijken.
+    var shiftLines = L.captionWindowShiftLines(lines, step, BOOST_LINES);
+    var measured = m.lines > 1 ? L.captionWindowShiftMeasured(m.tops, BOOST_LINES) : 0;
+    if (measured > 0) shiftLines = measured;
+    var shift = Math.round((shiftLines + layout.shiftPx) * 100) / 100;
+    // Vangnet: de regel die net boven het venster staat mag er echt niet in
+    // schilderen, ook niet als een van de fontmaten niet klopt. Zonder bekende
+    // marge (layout zonder meting) is de minimummarge het plafond.
+    var keepOutMax = layout.marginPx > 0 ? layout.marginPx : boostFontPx() * L.CAPTION_MARGIN_MIN_EM;
+    shift = Math.round((shift + boostTopKeepOut(m, range, shift, keepOutMax)) * 100) / 100;
+    // Oude regels opruimen: de DOM groeit anders onbeperkt door in een lange run
+    // (elke regelwissel meet alle blokjes en de browser schildert ze allemaal).
+    var trimmed = boostTrimAbove(m);
+    if (trimmed.px > 0) shift = Math.round((shift - trimmed.px) * 100) / 100;
     boost.lineChanged = false;
-    if (shift === boost.windowShift) return;
-    boost.windowShift = shift;
-    setWordShift(shift, true);
+    if (shift !== boost.windowShift || trimmed.px > 0) {
+      var animate = boost.windowShift >= 0 && !(trimmed.px > 0);
+      boost.windowShift = shift;
+      setWordShift(shift, animate);
+    }
+    // En na de slide-up: niets van de regels erboven mag nog zichtbaar zijn.
+    scheduleHideAboveWindow(m, range);
   }
 
   /**
@@ -1528,13 +1759,16 @@
     // regel lager, dus de vergelijking met het vórige frame detecteert een
     // regelovergang net zo goed als meten per woord (bugfix 2026-10-12: bij een
     // inhaalslag kwam anders de halve zin in één keer in beeld).
-    if (lastEl) noteWordLine(prevEl, lastEl);
-    boost.lastWordEl = lastEl || prevEl;
-    if (boost.windowShift < 0 || boost.lineChanged) updateWordWindow();
+    // Eerst de overlay zichtbaar maken en dán pas meten: in een verborgen
+    // venster (`display:none`) geeft elke rect 0 en zou de geometrie op lucht
+    // gezet worden (zie updateWordWindow).
     if (!boost.shownOnce) {
       boost.shownOnce = true;
       hideBoost(true);
     }
+    if (lastEl) noteWordLine(prevEl, lastEl);
+    boost.lastWordEl = lastEl || prevEl;
+    if (boost.windowShift < 0 || boost.lineChanged) updateWordWindow();
   }
 
   /**
@@ -1861,6 +2095,85 @@
     return cur.languageCode + '|' + cur.kind + '|' + (cur.translated ? 'tr:' + cur.translatedTo : 'orig');
   }
 
+  /* ------------------------------------------------------------------ *
+   * Vangnet: video-pagina verversen (zie AUTO_RELOAD_VIDEO_PAGE)
+   * ------------------------------------------------------------------ */
+  var autoReloadVideoId = null;   // video waarvoor al gepland/ververst is
+  var autoReloadTimer = null;
+
+  /** Staat er een video-pagina open (watch/shorts/live)? */
+  function onVideoPage() {
+    try {
+      if (/^\/(watch|shorts|live)\b/.test(location.pathname)) return true;
+      return /[?&]v=[A-Za-z0-9_-]{6,}/.test(location.search);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * De markering in sessionStorage: welke video is er (net) ververst?
+   * `null` = geen opslag beschikbaar. Dan ververst het vangnet NIET: zonder
+   * markering zou de verse pagina zichzelf meteen weer verversen (lus).
+   */
+  function autoReloadMarkRead() {
+    try {
+      var raw = window.sessionStorage.getItem(AUTO_RELOAD_MARK);
+      if (!raw) return { id: '', at: 0 };
+      var o = JSON.parse(raw);
+      if (!o || typeof o !== 'object') return { id: '', at: 0 };
+      return { id: String(o.id || ''), at: Number(o.at) || 0 };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function autoReloadMarkWrite(id) {
+    try {
+      window.sessionStorage.setItem(AUTO_RELOAD_MARK, JSON.stringify({ id: id, at: Date.now() }));
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function autoReloadMarkClear() {
+    try { window.sessionStorage.removeItem(AUTO_RELOAD_MARK); } catch (e) { /* ignore */ }
+  }
+
+  /**
+   * Plan één verversing voor deze video (alleen als AUTO_RELOAD_VIDEO_PAGE aan
+   * staat). De markering wordt vóór het verversen gezet en overleeft de reload:
+   * de verse pagina ziet hem, ruimt hem op en ververst niet opnieuw. Zo kan de
+   *zelfde video later gewoon weer ververst worden en is er nooit een lus.
+   */
+  function scheduleVideoPageReload(id) {
+    if (!AUTO_RELOAD_VIDEO_PAGE || !id || !onVideoPage()) return;
+    if (autoReloadVideoId === id) return;
+    autoReloadVideoId = id;
+    var mark = autoReloadMarkRead();
+    if (mark === null) return;
+    // Al ververst voor deze video (markering < 60 s oud)? Dan niets doen en de
+    // markering opruimen, zodat dezelfde video later wél weer ververst kan
+    // worden. Een oude markering telt niet (de reload kan mislukt zijn).
+    if (mark.id === id && Date.now() - mark.at < 60000) {
+      autoReloadMarkClear();
+      dbg('auto-reload: al ververst voor', id);
+      return;
+    }
+    if (autoReloadTimer) {
+      try { clearTimeout(autoReloadTimer); } catch (e) { /* ignore */ }
+      autoReloadTimer = null;
+    }
+    autoReloadTimer = setTimeout(function () {
+      autoReloadTimer = null;
+      if (currentVideoId() !== id) return;      // intussen een andere video
+      if (!autoReloadMarkWrite(id)) return;     // geen opslag -> niet verversen
+      dbg('auto-reload: pagina verversen voor', id);
+      try { location.reload(); } catch (e) { /* ignore */ }
+    }, AUTO_RELOAD_DELAY_MS);
+  }
+
   function tick() {
     var p = player();
     if (!p) return;
@@ -1870,6 +2183,9 @@
       lastVideoId = id;
       dbg('videoChanged', id);
       post({ type: 'videoChanged', videoId: id, title: safe(function () { return p.getVideoData().title; }, null) });
+      // Vangnet (zie AUTO_RELOAD_VIDEO_PAGE): een verse pagina is de enige
+      // betrouwbare reset als de ondertitels achterlopen.
+      scheduleVideoPageReload(id);
     }
 
     var ad = isAd();
