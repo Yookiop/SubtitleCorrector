@@ -12,6 +12,18 @@
  */
 'use strict';
 
+// Firefox levert `browser` (promise-gebaseerd) én een `chrome`-namespace die
+// alleen callbacks kent; Chrome levert alleen `chrome` (met promises). Deze
+// background gebruikt promises, dus pak `browser` als die er is — dan werkt
+// hetzelfde bestand op beide browsers (manifest.firefox.json gebruikt
+// background.scripts, want Firefox heeft geen service workers voor extensies).
+const ext = (typeof browser !== 'undefined' && browser && browser.runtime) ? browser : chrome;
+
+// Chrome-only: een offscreen document en tabCapture bestaan in Firefox niet,
+// dus daar kan de audio-analyse (Whisper-bridge) niet draaien. De rest van de
+// extensie (ondertitels kiezen + Caption Boost) werkt daar gewoon.
+const canCaptureAudio = !!(ext.offscreen && ext.tabCapture);
+
 const OFFSCREEN_PATH = 'src/offscreen.html';
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:8791';
 
@@ -28,7 +40,7 @@ let lastTrackedTab = null;
  * het tabblad onthoudt hem, het afsluiten van de browser niet.
  * ------------------------------------------------------------------ */
 const disabledTabs = new Set();
-const disabledReady = chrome.storage.session
+const disabledReady = ext.storage.session
   .get({ scTabDisabled: {} })
   .then((s) => {
     const map = (s && s.scTabDisabled) || {};
@@ -40,7 +52,7 @@ function persistDisabledTabs() {
   try {
     const map = {};
     disabledTabs.forEach((id) => { map[id] = true; });
-    chrome.storage.session.set({ scTabDisabled: map }).catch(() => {});
+    ext.storage.session.set({ scTabDisabled: map }).catch(() => {});
   } catch (e) { /* ignore */ }
 }
 
@@ -63,17 +75,17 @@ async function setTabDisabled(tabId, off) {
  * ------------------------------------------------------------------ */
 function paintBadge(text, tabId) {
   try {
-    chrome.action.setBadgeBackgroundColor({ color: '#0b3a4a' });
-    if (chrome.action.setBadgeTextColor) chrome.action.setBadgeTextColor({ color: '#7ef0ff' });
+    ext.action.setBadgeBackgroundColor({ color: '#0b3a4a' });
+    if (ext.action.setBadgeTextColor) ext.action.setBadgeTextColor({ color: '#7ef0ff' });
   } catch (e) { /* ignore */ }
 
   if (text) {
     lastTrackedTab = tabId != null ? tabId : lastTrackedTab;
-    try { chrome.action.setBadgeText(tabId != null ? { text: text, tabId: tabId } : { text: text }); } catch (e) { /* ignore */ }
+    try { ext.action.setBadgeText(tabId != null ? { text: text, tabId: tabId } : { text: text }); } catch (e) { /* ignore */ }
     return;
   }
   try {
-    if (lastTrackedTab != null) chrome.action.setBadgeText({ text: '', tabId: lastTrackedTab });
+    if (lastTrackedTab != null) ext.action.setBadgeText({ text: '', tabId: lastTrackedTab });
     lastTrackedTab = null;
   } catch (e) { /* ignore */ }
 }
@@ -83,8 +95,8 @@ function paintBadge(text, tabId) {
  * ------------------------------------------------------------------ */
 async function hasOffscreen() {
   try {
-    if (!chrome.runtime.getContexts) return false;
-    const contexts = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
+    if (!ext.runtime.getContexts) return false;
+    const contexts = await ext.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
     return contexts && contexts.length > 0;
   } catch (e) {
     return false;
@@ -92,9 +104,10 @@ async function hasOffscreen() {
 }
 
 async function ensureOffscreen() {
+  if (!canCaptureAudio) throw new Error('offscreen niet ondersteund in deze browser');
   if (await hasOffscreen()) return;
   if (creatingOffscreen) { await creatingOffscreen; return; }
-  creatingOffscreen = chrome.offscreen.createDocument({
+  creatingOffscreen = ext.offscreen.createDocument({
     url: OFFSCREEN_PATH,
     reasons: ['USER_MEDIA', 'AUDIO_PLAYBACK'],
     justification: 'Kort (een paar seconden) de audio van de YouTube-tab opnemen om de audiotaal (EN/NL) te herkennen.'
@@ -111,7 +124,7 @@ async function ensureOffscreen() {
 
 async function closeOffscreen() {
   try {
-    if (await hasOffscreen()) await chrome.offscreen.closeDocument();
+    if (await hasOffscreen()) await ext.offscreen.closeDocument();
   } catch (e) { /* ignore */ }
 }
 
@@ -120,8 +133,8 @@ function sendToOffscreen(msg) {
     const payload = Object.assign({ target: 'sc.offscreen' }, msg);
     const timer = setTimeout(() => reject(new Error('offscreen-timeout')), 25000);
     try {
-      chrome.runtime.sendMessage(payload, (res) => {
-        void chrome.runtime.lastError;
+      ext.runtime.sendMessage(payload, (res) => {
+        void ext.runtime.lastError;
         clearTimeout(timer);
         if (res === undefined) reject(new Error('offscreen-no-response'));
         else resolve(res);
@@ -138,7 +151,7 @@ function sendToOffscreen(msg) {
  * ------------------------------------------------------------------ */
 async function getBridgeUrl() {
   try {
-    const s = await chrome.storage.sync.get({ bridgeUrl: DEFAULT_BRIDGE_URL });
+    const s = await ext.storage.sync.get({ bridgeUrl: DEFAULT_BRIDGE_URL });
     return String(s.bridgeUrl || DEFAULT_BRIDGE_URL).replace(/\/+$/, '');
   } catch (e) {
     return DEFAULT_BRIDGE_URL;
@@ -173,7 +186,9 @@ async function bridgeHealth(force) {
   } finally {
     clearTimeout(timer);
   }
-  return healthCache.data;
+  // `capture: false` = deze browser kan geen tab-audio opnemen (Firefox); de
+  // popup toont dat dan als "niet ondersteund" in plaats van "offline".
+  return Object.assign({ capture: canCaptureAudio }, healthCache.data);
 }
 
 /* ------------------------------------------------------------------ *
@@ -190,6 +205,8 @@ let capturing = false;
 async function detectAudio(tab, msg) {
   const tabId = tab && tab.id;
   if (tabId == null) return { ok: false, reason: 'no-tab' };
+  // Firefox: geen offscreen document en geen tabCapture -> geen audio-analyse.
+  if (!canCaptureAudio) return { ok: false, reason: 'capture-unsupported' };
   // Kill switch: dit tabblad heeft de ondertiteling bewust uit staan.
   if (await isTabDisabled(tabId)) return { ok: false, reason: 'subtitles-off' };
   if (capturing) return { ok: false, reason: 'capture-busy' };
@@ -218,7 +235,7 @@ async function captureAndDetect(tabId, msg) {
 
   let streamId;
   try {
-    streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
+    streamId = await ext.tabCapture.getMediaStreamId({ targetTabId: tabId });
   } catch (e) {
     await closeOffscreen();
     return { ok: false, reason: 'tab-capture-denied', detail: String(e.message || e) };
@@ -244,7 +261,7 @@ async function captureAndDetect(tabId, msg) {
 /* ------------------------------------------------------------------ *
  * Berichten
  * ------------------------------------------------------------------ */
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+ext.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg !== 'object') return false;
   if (msg.target === 'sc.offscreen') return false; // niet voor ons
 
@@ -277,7 +294,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => {
+ext.tabs.onRemoved.addListener((tabId) => {
   if (tabId === lastTrackedTab) lastTrackedTab = null;
   if (disabledTabs.has(tabId)) {
     disabledTabs.delete(tabId);

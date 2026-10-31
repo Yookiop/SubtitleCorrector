@@ -36,6 +36,7 @@
     captionWeight: 400,
     captionWordByWord: true,
     captionSyncMs: 120,
+    disableAutoDub: true,
     doubleCheckLanguage: true,
     audioSeconds: 5,
     minConfidence: 0.5,
@@ -62,7 +63,8 @@
     retryCount: 0,
     lastCaptureAt: 0,
     subtitlesOff: false,
-    fixCooldown: Object.create(null)
+    fixCooldown: Object.create(null),   // videoId -> tijdstip laatste zelfcorrectie
+    fixTries: Object.create(null)       // videoId -> aantal zelfcorrecties
   };
 
   // Laag 4 (audio-analyse) is zwaar; nooit vaker dan één keer per 45 s automatisch.
@@ -150,6 +152,7 @@
         state.retryCount = 0;
         state.waitingPlayback = null;
         state.waitingVerify = null;
+        state.fixTries = Object.create(null);
         clearTimeout(state.verifyTimer);
         state.verifyTimer = null;
         setBadge(state.subtitlesOff ? 'off' : '');
@@ -184,21 +187,84 @@
         break;
 
       case 'captionChanged':
-        // YouTube zet de vertaling (soms) opnieuw aan -> nog een keer corrigeren.
-        if (d.translated && d.captionsOn && settings.autoApply && settings.enabled && settings.fixTranslation) {
-          var vid = d.videoId;
-          var now = Date.now();
-          var last = state.fixCooldown[vid] || 0;
-          if (now - last > 20000) {
-            state.fixCooldown[vid] = now;
-            scheduleAuto(vid, autoDelay(900), true);
-          }
+        // YouTube zet soms zelf een andere track: het onthoudt je laatste
+        // ondertitelkeuze en past die op de volgende video toe (Nederlandse
+        // video -> Engelse video bleef zo op Nederlands staan), of het zet een
+        // vertaling aan of draait onze keuze terug. Alles wat niet de track is
+        // die wij willen, is reden voor één nieuwe poging — met een cooldown en
+        // een maximum, zodat we niet met YouTube gaan vechten.
+        if (d.captionsOn && settings.autoApply && settings.enabled) {
+          handleUnexpectedCaption(d);
+        }
+        break;
+
+      case 'audioChanged':
+        // YouTube zette een nagesynchroniseerde audiotrack (auto-dub) of de
+        // gebruiker wisselde van audiotrack. Staat de optie aan, dan gaat de
+        // speler terug naar het origineel en volgt de ondertitel die taal.
+        if (settings.disableAutoDub && d.audioTrack && d.audioTrack.isAutoDubbed) {
+          handleAutoDub(d);
         }
         break;
 
       default:
         break;
     }
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Zelftherapatie: YouTube zette een andere ondertitel dan wij willen
+   * ------------------------------------------------------------------ */
+
+  // Niet vaker dan één correctie per 12 s en hooguit 4 keer per video; anders
+  // kunnen wij en YouTube elkaar in een lus heen en weer zetten.
+  var FIX_COOLDOWN_MS = 12000;
+  var FIX_MAX_TRIES = 4;
+
+  /**
+   * Reageert op een `captionChanged` van de page agent. Alleen als captions aan
+   * staan en de track niet is wat de laatste planning wilde (of er een
+   * vertaling actief is) plannen we één nieuwe correctie.
+   */
+  function handleUnexpectedCaption(d) {
+    var vid = d.videoId || state.videoId;
+    if (!vid || vid !== (state.lastResult && state.lastResult.videoId)) return;
+    var wanted = state.lastResult.plan ? state.lastResult.plan.target : null;
+    var unexpected = !L.captionMatchesTarget(d.current, wanted);
+    var translated = !!(d.current && d.current.translated);
+    if (!unexpected && !(translated && settings.fixTranslation)) return;
+
+    var now = Date.now();
+    var last = state.fixCooldown[vid] || 0;
+    var tries = state.fixTries[vid] || 0;
+    if (now - last < FIX_COOLDOWN_MS || tries >= FIX_MAX_TRIES) return;
+    state.fixCooldown[vid] = now;
+    state.fixTries[vid] = tries + 1;
+    if (settings.debug) {
+      console.log('[SC] YouTube zette een andere ondertitel (' +
+        (d.current ? d.current.languageCode + '/' + d.current.kind : 'uit') +
+        (translated ? ' vertaald' : '') + ') - opnieuw corrigeren, poging ' + (tries + 1));
+    }
+    scheduleAuto(vid, autoDelay(900), true);
+  }
+
+  /**
+   * Auto-dub gesignaleerd: plan één correctie, die de page agent de originele
+   * audiotrack laat kiezen (`setOriginalAudio`). Max 2 keer per video met een
+   * cooldown, zodat we niet met YouTube (of met een bewuste gebruikerskeuze)
+   * gaan vechten.
+   */
+  function handleAutoDub(d) {
+    var vid = d.videoId || state.videoId;
+    if (!vid || !settings.autoApply || !settings.enabled) return;
+    var now = Date.now();
+    var last = state.fixCooldown[vid] || 0;
+    var tries = state.fixTries[vid] || 0;
+    if (now - last < FIX_COOLDOWN_MS || tries >= FIX_MAX_TRIES) return;
+    state.fixCooldown[vid] = now;
+    state.fixTries[vid] = tries + 1;
+    if (settings.debug) console.log('[SC] auto-dub gesignaleerd (' + (d.audioTrack && d.audioTrack.id) + ') - origineel terugzetten');
+    scheduleAuto(vid, autoDelay(600), true);
   }
 
   /* ------------------------------------------------------------------ *
@@ -532,6 +598,29 @@
         return;
       }
 
+      // Auto-dub uitzetten (optie, standaard aan): YouTube kiest op een
+      // niet-Engelse UI soms een nagesynchroniseerde audiotrack (bv. Nederlands
+      // op een Engelse video). Dan is de "taal van de audio" de dub en zou de
+      // ondertiteling ook Nederlands worden. Zet de speler terug naar het
+      // origineel en bepaal de taal daarna opnieuw (live geverifieerd
+      // 2026-10-31: audio nl-NL.10 -> en-US.4 originel).
+      if (settings.disableAutoDub && probe.audioTrack && probe.audioTrack.isAutoDubbed) {
+        var sw = null;
+        try {
+          sw = await ask('setOriginalAudio', null, 8000);
+        } catch (e) {
+          if (settings.debug) console.warn('[SC] auto-dub uitzetten mislukt', e);
+        }
+        if (sw && sw.ok && sw.changed) {
+          await new Promise(function (r) { setTimeout(r, 1200); });
+          var p2 = await ask('probe', null, 5000).catch(function () { return null; });
+          if (p2 && p2.ok && (!p2.videoId || p2.videoId === videoId)) probe = p2;
+          if (settings.showToast) toast('Auto-dub uitgezet - originele audio', 'ok');
+        } else if (sw && !sw.ok && settings.debug) {
+          console.log('[SC] auto-dub uitzetten niet gelukt:', sw.reason, sw.detail || '');
+        }
+      }
+
       // De dubbelcheck (of een eerdere audio-analyse) kan een taal opdringen:
       // dan slaan we de metadata en de gewone fallback over.
       var det = forcedDet && forcedDet.lang
@@ -595,7 +684,7 @@
         forceSubtitlesOn: settings.forceSubtitlesOn
       });
 
-      state.lastResult = { plan: plan, at: Date.now() };
+      state.lastResult = { plan: plan, at: Date.now(), videoId: videoId };
 
       // Dubbelcheck: de taal kwam uit de metadata (geen audio-analyse) en er is
       // een ondertitel voor -> luister straks één keer na of dat echt klopt.
@@ -856,19 +945,30 @@
         return true;
       }
       if (msg.type === 'popupState') {
-        sendResponse({
-          ok: true,
-          videoId: state.videoId,
-          probe: state.lastProbe,
-          result: state.lastResult,
-          verify: state.videoId ? state.verify[state.videoId] || null : null,
-          settings: settings
-        });
+        // De diagnose van de page agent (waarom tekent hij wel/niet) gaat mee
+        // naar de popup. Hij is async, dus het antwoord komt pas als die
+        // binnen is; zonder antwoord stuurt de popup gewoon `diag: null`.
+        ask('diag', null, 3000).then(
+          function (diag) { sendResponse(buildPopupState(diag)); },
+          function () { sendResponse(buildPopupState(null)); }
+        );
         return true;
       }
       return false;
     });
   } catch (e) { /* ignore */ }
+
+  function buildPopupState(diag) {
+    return {
+      ok: true,
+      videoId: state.videoId,
+      probe: state.lastProbe,
+      result: state.lastResult,
+      verify: state.videoId ? state.verify[state.videoId] || null : null,
+      diag: diag,
+      settings: settings
+    };
+  }
 
   /* ------------------------------------------------------------------ *
    * Start
@@ -882,11 +982,18 @@
       if (off) setBadge('off');
       ask('setSubtitlesOff', { off: off }).catch(function () {});
     });
-    // eerste probe, zodat de popup direct iets kan tonen
+    // eerste probe, zodat de popup direct iets kan tonen én de correctie niet
+    // gemist wordt: de page agent draait vanaf document_start en kan de video
+    // al gezien hebben vóórdat dit content script luisterde. Dan is
+    // `videoChanged` weg en zou er nooit gecorrigeerd worden — dan bleef
+    // YouTube's eigen (onthouden) ondertiteltaal staan (bug 2026-10-31).
     ask('probe', null, 5000).then(function (p) {
       if (p && p.ok) {
         state.lastProbe = p;
         state.videoId = p.videoId;
+        if (settings.autoApply && settings.enabled && p.videoId) {
+          scheduleAuto(p.videoId, autoDelay(900));
+        }
       }
     }).catch(function () {});
   });

@@ -183,11 +183,113 @@
       const hideIsLocal = !!hideLoop && !/sc-boost-on/.test(hideBody);
       record("page-agent.js: onze overlay aan/uit raakt YouTube's venster niet (hideBoost)", hideIsLocal,
         hideIsLocal ? undefined : 'hideBoost() mag .sc-boost-on niet meer zetten; dat doet ownCaptions()');
+
+      // Reparatie i.p.v. een pagina-refresh (2026-10-31): komt de track niet
+      // binnen, dan zet de page agent de ondertiteling één keer uit/aan (de
+      // speler vraagt de track dan opnieuw op). Het verversen van de pagina is
+      // laatste redmiddel en hangt niet meer aan een video-wissel — dat
+      // ververste élke video in een playlist.
+      const repair = /function reRequestCaptions\s*\(/.test(agent) && /function maybeRepairTrack\s*\(/.test(agent) &&
+        /maybeRepairTrack\(cur, id\)/.test(agent);
+      record('page-agent.js: ontbrekende track wordt gerepareerd (ondertiteling uit/aan)', repair,
+        repair ? undefined : 'verwacht reRequestCaptions() + maybeRepairTrack() in boostTick()');
+
+      const reloadCalls = (agent.match(/scheduleVideoPageReload\(/g) || []).length;
+      record('page-agent.js: pagina verversen is laatste redmiddel, niet elke video (' + reloadCalls + ' aanroepen)',
+        reloadCalls <= 2, reloadCalls <= 2 ? undefined : 'scheduleVideoPageReload() hoort alleen in maybeRepairTrack() te staan');
+    }
+
+    /**
+     * Firefox-manifest: MV3 met background.scripts (Firefox heeft geen
+     * service worker voor extensies), zonder de Chrome-only API's tabCapture en
+     * offscreen, en met `world: MAIN` voor de page agent (Firefox >= 128).
+     * Zo blijft manifest.firefox.json in de pas lopen met de Chrome-variant.
+     */
+    async function checkFirefoxManifest() {
+      let m;
+      try {
+        const res = await fetch('../extension/manifest.firefox.json', { cache: 'no-store' });
+        m = await res.json();
+        record('manifest.firefox.json is geldige JSON (v' + m.version + ', MV' + m.manifest_version + ')',
+          m.manifest_version === 3);
+      } catch (e) {
+        record('manifest.firefox.json', false, String(e.message || e));
+        return;
+      }
+
+      const bg = m.background || {};
+      record('firefox: background.scripts (Firefox heeft geen service_worker)',
+        Array.isArray(bg.scripts) && bg.scripts.length > 0 && !bg.service_worker,
+        bg.service_worker ? 'service_worker mag er niet in staan' : undefined);
+
+      const perms = (m.permissions || []).concat(m.host_permissions || []);
+      const chromeOnly = perms.filter((p) => p === 'tabCapture' || p === 'offscreen');
+      record('firefox: geen Chrome-only permissies (tabCapture/offscreen)', chromeOnly.length === 0,
+        chromeOnly.length ? 'verwijder: ' + chromeOnly.join(', ') : undefined);
+
+      const worlds = (m.content_scripts || []).map((cs) => cs.world || 'ISOLATED');
+      record('firefox: content scripts ISOLATED + MAIN (world: MAIN vanaf Firefox 128)',
+        worlds.includes('MAIN') && worlds.includes('ISOLATED'));
+
+      const gecko = (m.browser_specific_settings && m.browser_specific_settings.gecko) || {};
+      const min = parseFloat(gecko.strict_min_version || '0');
+      record('firefox: browser_specific_settings.gecko met strict_min_version >= 128 (' + (gecko.strict_min_version || '-') + ')',
+        !!gecko.id && min >= 128, min >= 128 ? undefined : 'world: MAIN vereist Firefox 128 of nieuwer');
+
+      const paths = new Set();
+      if (bg.scripts) bg.scripts.forEach((p) => paths.add(p));
+      if (m.action && m.action.default_popup) paths.add(m.action.default_popup);
+      if (m.options_page) paths.add(m.options_page);
+      Object.values(m.icons || {}).forEach((p) => paths.add(p));
+      Object.values((m.action && m.action.default_icon) || {}).forEach((p) => paths.add(p));
+      (m.content_scripts || []).forEach((cs) => (cs.js || []).forEach((p) => paths.add(p)));
+      const checks = await Promise.all([...paths].map(async (p) => {
+        try {
+          const res = await fetch('../extension/' + p, { cache: 'no-store' });
+          return { p, ok: res.ok, status: res.status };
+        } catch (e) {
+          return { p, ok: false, status: String(e.message || e) };
+        }
+      }));
+      const missing = checks.filter((c) => !c.ok);
+      record('firefox: alle ' + checks.length + ' manifest-verwijzingen bestaan' +
+        (missing.length ? ': ' + missing.map((x) => x.p).join(', ') : ''), missing.length === 0);
+    }
+
+    /**
+     * Auto-dub: YouTube kiest op een niet-Engelse UI soms een nagesynchroniseerde
+     * audiotrack, waardoor de "taal van de audio" de dub is. De page agent moet
+     * die kunnen uitzetten (met het VOLLEDIGE trackobject — `{id}` gooit) en de
+     * bron-ondertitel moet uit `captionTrackIndices[0]` komen (niet uit
+     * `defaultCaptionTrackIndex`, dat is de localized track).
+     */
+    async function checkAutoDub() {
+      const agent = await (await fetch('../extension/src/page-agent.js', { cache: 'no-store' })).text();
+      const content = await (await fetch('../extension/src/content.js', { cache: 'no-store' })).text();
+      const agentOk = /function setOriginalAudio\s*\(/.test(agent) &&
+        /setAudioTrack\(pick\.track\)/.test(agent) &&
+        /captionTrackIndices\[0\]/.test(agent) &&
+        /decodeAudioTrackDubbed/.test(agent);
+      record('page-agent.js: auto-dub uitzetten (setAudioTrack met het volledige trackobject)', agentOk,
+        agentOk ? undefined : 'verwacht setOriginalAudio() + setAudioTrack(pick.track) + captionTrackIndices[0]');
+      const contentOk = /disableAutoDub/.test(content) && /setOriginalAudio/.test(content);
+      record('content.js: optie disableAutoDub zet de originele audiotrack terug', contentOk,
+        contentOk ? undefined : 'verwacht disableAutoDub + ask(\'setOriginalAudio\') in run()');
     }
 
     (async function () {
       for (const rel of SCRIPTS) await checkScript(rel);
       await checkManifest();
+      try {
+        await checkFirefoxManifest();
+      } catch (e) {
+        record('manifest.firefox.json-check', false, String(e.message || e));
+      }
+      try {
+        await checkAutoDub();
+      } catch (e) {
+        record('auto-dub-check', false, String(e.message || e));
+      }
       try {
         await checkOpaqueBackground();
       } catch (e) {

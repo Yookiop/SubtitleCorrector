@@ -53,6 +53,108 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * Diagnose (waarom loopt de ondertiteling achter?)
+   *
+   * De klacht "de ondertiteling loopt achter" heeft maar twee mogelijke
+   * oorzaken: wij tekenen niet (dan zie je YouTube's eigen, in playlists
+   * 1-2 s achterlopende venster) of onze frame-lus staat stil. Allebei is
+   * van buitenaf onzichtbaar, dus houdt de page agent hier de feiten bij:
+   * binnenkomende timedtext-verzoeken (en waarom er één genegeerd werd),
+   * waarom de eigen weergave startte of stopte, en hoe groot de gaten
+   * tussen twee frames waren. Uitlezen met `__scDiag()` in de console
+   * (MAIN world) - hetzelfde object gaat mee in de popup (Diagnose).
+   * ------------------------------------------------------------------ */
+  var diag = {
+    bootAt: Date.now(),
+    videoId: null,
+    timedtext: { requests: 0, stored: 0, ignored: Object.create(null) },
+    lastTrack: null,
+    boost: { starts: 0, stops: 0, active: false, since: 0, lastStop: null, stops: Object.create(null) },
+    frames: { count: 0, maxGapMs: 0, slowFrames: 0, lastGapMs: 0, lastAt: 0, hiddenFrames: 0 },
+    own: { on: 0, off: 0 },
+    repairs: 0,
+    lastRepair: null,
+    audioSwitches: 0,
+    lastAudioSwitch: null
+  };
+
+  function diagIgnore(reason) {
+    var d = diag.timedtext.ignored;
+    d[reason] = (d[reason] || 0) + 1;
+  }
+
+  /**
+   * Leesbare momentopname. `hidden`/`rafActive`/`ownsCaptions` vertellen
+   * meteen welke van de twee oorzaken speelt; `timedtext.ignored` zegt of de
+   * track überhaupt is opgevangen.
+   */
+  function diagSnapshot() {
+    var cur = readCurrentTrack();
+    var id = currentVideoId();
+    var key = cur && id ? boostKey(id, L.baseLang(cur.languageCode), cur.kind === 'asr' ? 'asr' : '') : null;
+    return {
+      at: new Date().toISOString(),
+      uptimeS: Math.round((Date.now() - diag.bootAt) / 1000),
+      videoId: id,
+      current: cur,
+      trackKey: key,
+      trackCaptured: !!(key && boostTracks[key]),
+      boostStoredKeys: Object.keys(boostTracks),
+      drawing: {
+        cboostOn: CAPTION_BOOST_ENABLED,
+        rafActive: boost.rafActive,
+        ownsCaptions: boost.ownsCaptions,
+        blockKey: boost.blockKey,
+        runKey: boost.runKey,
+        words: boost.wordCount,
+        overlayConnected: !!(boost.overlay && boost.overlay.isConnected),
+        overlayVisible: boostDisplayed(),
+        text: boost.box ? String(boost.box.textContent || '').slice(-140) : ''
+      },
+      renderLag: diagRenderLag(),
+      timedtext: diag.timedtext,
+      boost: diag.boost,
+      frames: diag.frames,
+      own: diag.own,
+      repairs: diag.repairs,
+      lastRepair: diag.lastRepair,
+      audioSwitches: diag.audioSwitches,
+      lastAudioSwitch: diag.lastAudioSwitch,
+      docHidden: document.hidden,
+      pageVisibility: document.visibilityState,
+      autoReload: { enabled: AUTO_RELOAD_VIDEO_PAGE, done: autoReloadVideoId, pending: !!autoReloadTimer }
+    };
+  }
+
+  /**
+   * Hoeveel woorden staat de eigen weergave achter op de spelerklok?
+   *
+   * Dit is de enige harde maat voor "de ondertiteling loopt achter": het
+   * verschil tussen de woorden die volgens de track nu gezegd zijn
+   * (`captionWordIndex`) en de woorden die al in de DOM staan
+   * (`boost.wordCount`). 0-1 = normaal (de reveal-pace loopt één frame
+   * achter); oplopend = de frame-lus of de opbouw kan het niet bijhouden.
+   * `run: -1` betekent een stilte, `-2` dat het venster nog opgebouwd wordt.
+   */
+  function diagRenderLag() {
+    if (!boost.rafActive || !boost.runs) return null;
+    var p = player();
+    var t = safe(function () { return p && p.getCurrentTime ? p.getCurrentTime() : null; }, null);
+    if (t === null || !isFinite(t)) return null;
+    var ts = t + L.wordLeadSeconds(BOOST_SYNC_MS);
+    var idx = L.captionRunAt(boost.runs, ts, BOOST_LINGER);
+    if (idx < 0) return { t: t, run: -1, pending: 0, have: boost.wordCount };
+    var run = boost.runs[idx];
+    if (run.start !== boost.runKey) return { t: t, run: -2, pending: 0, have: boost.wordCount };
+    var n = L.captionWordIndex(run.words, ts, 0);
+    return { t: t, run: idx, want: n, have: boost.wordCount, pending: Math.max(0, n - boost.wordCount) };
+  }
+
+  try {
+    window.__scDiag = diagSnapshot;
+  } catch (e) { /* ignore */ }
+
+  /* ------------------------------------------------------------------ *
    * Berichten: content script (isolated world) <-> page agent (main world)
    * ------------------------------------------------------------------ */
   function post(payload) {
@@ -84,6 +186,8 @@
       case 'setOptions': return Promise.resolve(setPageOptions(d.payload || {}));
       case 'setSubtitlesOff': return Promise.resolve(setSubtitlesOff(!!(d.payload && d.payload.off), 'content'));
       case 'state': return Promise.resolve({ videoId: currentVideoId(), current: readCurrentTrack(), captionsOn: captionsOn(), adShowing: isAd() });
+      case 'diag': return Promise.resolve(diagSnapshot());
+      case 'setOriginalAudio': return Promise.resolve(setOriginalAudio());
       default: return Promise.resolve({ ok: false, reason: 'unknown-request:' + d.type });
     }
   }
@@ -193,15 +297,128 @@
     if (!p || !p.getAudioTrack) return null;
     var at = safe(function () { return p.getAudioTrack(); }, null);
     if (!at) return null;
-    var s1 = at.s1 || null;
+    // Twee vormen: `s1` (oud) en `Pb` (sinds 2026: {name:"Originele Nederlands
+    // (NL)", id:"nl-NL.4", isDefault, isAutoDubbed}) — dezelfde velden die we
+    // nodig hebben, dus één variabele voor beide.
+    var s1 = at.s1 || at.Pb || null;
     var code = s1 ? L.decodeAudioTrackLang(s1.id) : null;
     if (!code) code = L.decodeAudioTrackLang(at.id);
     if (!code && !(s1 && s1.name)) return null;
+    // `isAutoDubbed` zit niet in elke vorm; de base64-blob zegt het ook
+    // ("dubbed-auto" vs "original") — zie L.decodeAudioTrackDubbed().
+    var dubbed = s1 && typeof s1.isAutoDubbed === 'boolean' ? s1.isAutoDubbed : null;
+    if (dubbed === null) dubbed = L.decodeAudioTrackDubbed((s1 && s1.id) || at.id);
     return {
       languageCode: code,
       id: (s1 && s1.id) || at.id || null,
       name: (s1 && s1.name) || null,
-      isAutoDubbed: !!(s1 && s1.isAutoDubbed)
+      isAutoDubbed: !!dubbed
+    };
+  }
+
+  /** Alle beschikbare audiotracks (origineel + auto-dubs), met hun vlaggen. */
+  function readAudioTracks() {
+    var p = player();
+    var list = safe(function () { return p && p.getAvailableAudioTracks ? p.getAvailableAudioTracks() : []; }, []) || [];
+    return list.map(function (t) {
+      var s = (t && (t.s1 || t.Pb)) || null;
+      var raw = (s && s.id) || (t && t.id) || null;
+      var dubbed = s && typeof s.isAutoDubbed === 'boolean' ? s.isAutoDubbed : L.decodeAudioTrackDubbed(raw);
+      return {
+        id: raw,
+        name: (s && s.name) || null,
+        languageCode: L.decodeAudioTrackLang(raw),
+        isAutoDubbed: !!dubbed,
+        isDefault: !!(s && s.isDefault),
+        track: t
+      };
+    }).filter(function (t) { return !!t.id; });
+  }
+
+  /**
+   * Auto-dub uitzetten: terug naar de originele audiotrack.
+   *
+   * YouTube kiest op een niet-Engelse UI soms automatisch een nagesynchroniseerde
+   * track (bv. Nederlands op een Engelse video). Dat verandert de audiotaal — en
+   * dus de taal van de ondertitels die de gebruiker verwacht. `setAudioTrack()`
+   * werkt alleen met het **volledige** trackobject uit `getAvailableAudioTracks()`
+   * (met `{id}` of een string gooit de speler; live geverifieerd 2026-10-31).
+   */
+  function setOriginalAudio() {
+    var p = player();
+    if (!p || !p.setAudioTrack || !p.getAvailableAudioTracks) return { ok: false, reason: 'no-api' };
+    var cur = safe(function () { return p.getAudioTrack(); }, null);
+    var curS = cur && (cur.s1 || cur.Pb) || null;
+    var curId = (curS && curS.id) || (cur && cur.id) || null;
+    var curDub = curS && typeof curS.isAutoDubbed === 'boolean' ? curS.isAutoDubbed : L.decodeAudioTrackDubbed(curId);
+    if (!curDub) return { ok: true, changed: false, reason: 'not-dubbed', current: curId };
+    var list = readAudioTracks().filter(function (t) { return !t.isAutoDubbed; });
+    if (!list.length) return { ok: false, reason: 'no-original-track', current: curId };
+    // Voorkeur: origineel in een ondersteunde taal (EN/NL), dan een standaardtack.
+    var pick = list.filter(function (t) { return L.isSupported(t.languageCode); })[0] ||
+               list.filter(function (t) { return t.isDefault; })[0] || list[0];
+    try {
+      p.setAudioTrack(pick.track);
+    } catch (e) {
+      return { ok: false, reason: 'api-error', detail: String((e && e.message) || e), current: curId };
+    }
+    diag.audioSwitches++;
+    diag.lastAudioSwitch = { at: Date.now(), from: curId, to: pick.id, videoId: currentVideoId() };
+    dbg('auto-dub uit: ' + curId + ' -> ' + pick.id);
+    return { ok: true, changed: true, from: curId, to: pick.id, languageCode: pick.languageCode };
+  }
+
+  /**
+   * Welke ondertitel hoort volgens YouTube zelf bij de actieve audiotrack?
+   *
+   * `playerResponse.captions.playerCaptionsTracklistRenderer` koppelt elke
+   * audiotrack aan zijn ondertiteltracks: `audioTracks[i].audioTrackId`,
+   * `captionTrackIndices[]` en `defaultCaptionTrackIndex`.
+   *
+   * Let op (live geverifieerd 2026-10-31 op `nQhXoo5564w`, EN-video met 20
+   * auto-dubs): `defaultCaptionTrackIndex` is de **getoonde/localized** track
+   * (hier `nl`, omdat de UI Nederlands is), terwijl **`captionTrackIndices[0]`
+   * de bron-taal** is (`en`). Voor "wat is de taal van deze audio" is dat eerste
+   * index het juiste signaal; anders leidde een Nederlandse UI een Engelse video
+   * naar Nederlandse ondertitels.
+   *
+   * Bij een **auto-dub** zegt de bron-taal niets over de audio (die is immers
+   * nagesynchroniseerd), dus dan geven we niets terug: de audiotaal zelf komt
+   * dan uit `readAudioTrack()` (gewicht 100), en met de optie *Auto-dub uitzetten*
+   * gaat de speler eerst terug naar het origineel.
+   */
+  function readAudioCaptionLanguage() {
+    var p = player();
+    var pr = safe(function () { return p && p.getPlayerResponse ? p.getPlayerResponse() : null; }, null);
+    var r = pr && pr.captions && pr.captions.playerCaptionsTracklistRenderer;
+    if (!r || !r.captionTracks || !r.captionTracks.length) return null;
+    var at = safe(function () { return p.getAudioTrack ? p.getAudioTrack() : null; }, null);
+    var atS = (at && (at.s1 || at.Pb)) || null;
+    var activeId = (atS && atS.id) || (at && at.id) || null;
+    var dubbed = atS && typeof atS.isAutoDubbed === 'boolean' ? atS.isAutoDubbed : L.decodeAudioTrackDubbed(activeId);
+    if (dubbed) return null;
+    var tracks = r.audioTracks || [];
+    var entry = null;
+    for (var i = 0; i < tracks.length; i++) {
+      if (activeId && tracks[i] && tracks[i].audioTrackId === activeId) { entry = tracks[i]; break; }
+    }
+    if (!entry && typeof r.defaultAudioTrackIndex === 'number') entry = tracks[r.defaultAudioTrackIndex] || null;
+    if (!entry && tracks.length === 1) entry = tracks[0];
+    if (!entry) return null;
+    var ct = null;
+    if (entry.captionTrackIndices && entry.captionTrackIndices.length) {
+      ct = r.captionTracks[entry.captionTrackIndices[0]] || null;
+    }
+    if (!ct && typeof entry.defaultCaptionTrackIndex === 'number') {
+      ct = r.captionTracks[entry.defaultCaptionTrackIndex] || null;
+    }
+    if (!ct || !ct.languageCode) return null;
+    return {
+      languageCode: ct.languageCode,
+      kind: ct.kind || '',
+      vssId: ct.vssId || '',
+      audioTrackId: entry.audioTrackId || null,
+      isAutoDubbed: false
     };
   }
 
@@ -236,6 +453,10 @@
       captionsOn: captionsOn(),
       current: readCurrentTrack(),
       audioTrack: readAudioTrack(),
+      audioCaption: readAudioCaptionLanguage(),
+      audioTracks: readAudioTracks().map(function (t) {
+        return { id: t.id, name: t.name, languageCode: t.languageCode, isAutoDubbed: t.isAutoDubbed, isDefault: t.isDefault };
+      }),
       tracks: supported,
       allTrackCount: tracks.length,
       asrLanguages: asrLanguages,
@@ -495,24 +716,27 @@
   }
 
   /* ------------------------------------------------------------------ *
-   * Vangnet: video-pagina verversen (standaard UIT)
+   * Laatste redmiddel: video-pagina verversen
    *
    * YouTube's eigen ondertitelvenster loopt in playlists soms 1-2 s achter en
    * plopt dan in blokken. Normaal lossen we dat op door de timedtext-track
-   * zelf op te vangen en tekenen (zie Caption Boost hieronder). Lukt dat voor
-   * een video niet — de track komt niet binnen, of de pagina is lang open en
-   * YouTube's renderer raakt de draad kwijt — dan is een pagina-refresh de
-   * enige betrouwbare reset: daarna vraagt de speler de track opnieuw op en is
-   * het weer synchroon.
+   * zelf op te vangen en tekenen (zie Caption Boost hieronder). Komt die track
+   * ook na de gerichte reparatie (ondertiteling één keer uit/aan) niet binnen,
+   * dan is een pagina-refresh de enige reset die overblijft: daarna vraagt de
+   * speler de track opnieuw op.
    *
-   * Dit mechanisme doet precies dat: 2 s nadat een video-pagina opent, één keer
-   * verversen. Het staat UIT en wordt hieronder met één cijfer aangezet:
+   * Sinds 2026-10-31 hangt dit aan die voorwaarde en niet meer aan een
+   * video-wissel. Vóór die wijziging ververste de extensie élke video (ook in
+   * een playlist, waar de video zonder pagina-load wisselt): 2 s na de start
+   * een volledige reload en daarna ~5 s YouTube's eigen venster — precies de
+   * achterstand die het vangnet moest oplossen.
    *
    *     var AUTO_RELOAD_VIDEO_PAGE = 0;   ->   1
    *
-   * Twee waarborgen: er wordt per video maar één keer ververst (een markering
-   * in sessionStorage overleeft de reload, dus geen refresh-lus) en een
-   * SPA-navigatie naar een andere video wapent het mechanisme opnieuw.
+   * Waarborgen: per video wordt er maar één keer ververst (een markering in
+   * sessionStorage overleeft de reload, dus geen refresh-lus) en zonder
+   * sessionStorage ververst het vangnet niet — liever niet verversen dan een
+   * lus.
    * ------------------------------------------------------------------ */
   var AUTO_RELOAD_VIDEO_PAGE = 1;      // 0 = uit, 1 = aan
   var AUTO_RELOAD_DELAY_MS = 2000;     // wachttijd na het openen van de pagina
@@ -537,7 +761,12 @@
   var CAPTION_BOOST_ENABLED = true;
   var BOOST_WORD_BY_WORD = true;   // optie "Word-for-Word" (default aan = woord voor woord;
                                    // uit = hele blokken van 2 volle zinnen)
-  var BOOST_MAX_TRACKS = 2;
+  // YouTube kan per video meerdere tracks opvragen (handmatig + ASR + een
+  // vertaalde variant) en prefetcht in playlists de volgende video. Met een
+  // kleine voorraad gooit zo'n verzoek de track van de video die je nú kijkt
+  // weg — en dan valt de weergave terug op YouTube's eigen (achterlopende)
+  // venster. Vier is ruim genoeg en nog steeds begrensd.
+  var BOOST_MAX_TRACKS = 4;
   var BOOST_BLOCK_SENTENCES = 2;    // zinnen per blok (user-keuze: 2 volle zinnen)
   var BOOST_SILENCE_GAP = 1.6;      // s stilte die een blok/run afsluit
   var BOOST_MAX_BLOCK_CHARS = 150;  // noodrem voor tracks zonder punctuatie
@@ -558,6 +787,28 @@
   // (2026-10-31). De regels die ruim boven het venster staan zijn onzichtbaar
   // en worden weggegooid; de verschuiving gaat evenveel omlaag.
   var BOOST_KEEP_LINES = 4;
+
+  /* ------------------------------------------------------------------ *
+   * Reparatie als de track niet binnenkomt (2026-10-31)
+   *
+   * Caption Boost kan alleen tekenen als de speler de timedtext-track heeft
+   * opgevraagd. Gebeurt dat niet (de speler denkt hem al te hebben, een
+   * mislukt verzoek, een extensie die de respons tegenhield), dan bleef
+   * YouTube's eigen venster staan — en dat loopt in playlists 1-2 s achter.
+   * In plaats van de hele pagina te verversen (duur: reload + ~5 s geen
+   * eigen ondertiteling) zet de page agent de ondertiteling één keer uit en
+   * weer aan, precies wat een gebruiker doet. De speler vraagt de track dan
+   * opnieuw op en onze XHR-hook vangt hem alsnog op (live geverifieerd
+   * 2026-10-31: verzoeken 2 -> 3, daarna tekent de overlay direct weer).
+   *
+   * Pas als dat twee keer niet lukt valt hij terug op het oude vangnet: één
+   * keer de pagina verversen (AUTO_RELOAD_VIDEO_PAGE).
+   * ------------------------------------------------------------------ */
+  var BOOST_REPAIR_AFTER_MS = 7000;    // s zonder track voordat we ingrijpen
+  var BOOST_REPAIR_RETRY_MS = 10000;   // minimale tijd tussen twee pogingen
+  var BOOST_REPAIR_MAX = 2;            // pogingen per video
+  var BOOST_TRACK_SETTLE_MS = 3000;    // track moet zo lang stabiel zijn (menu-automatisering niet storen)
+  var BOOST_RELOAD_AFTER_MS = 20000;   // laatste redmiddel: pagina verversen
 
   var boost = {
     videoId: null,
@@ -580,7 +831,11 @@
     lineChanged: false,   // laatste woord begon een nieuwe regel -> venster opnieuw meten
     currentTrack: null,   // track uit de 900ms-poll; niet opnieuw via de player-API per frame
     ownsCaptions: false,  // wij tekenen de ondertitel -> YouTube's eigen venster verborgen
-    styleReady: false
+    styleReady: false,
+    missingSince: 0,      // sinds wanneer deze video geen opgevangen track heeft (0 = niets aan de hand)
+    repairs: 0,           // reparatiepogingen (ondertiteling uit/aan) voor deze video
+    repairAt: 0,          // tijdstip van de laatste reparatiepoging
+    trackStableSince: 0   // sinds wanneer de track-key onveranderd is
   };
 
   var boostTracks = Object.create(null);
@@ -597,25 +852,27 @@
 
   /** Timedtext-respons (json3) bewaren; nooit een fout naar de speler laten lekken. */
   function storeBoostTrack(url, body) {
-    if (!CAPTION_BOOST_ENABLED) return;
+    if (!CAPTION_BOOST_ENABLED) { diagIgnore('boost-off'); return; }
     try {
       var lang = urlParam(url, 'lang');
       var v = urlParam(url, 'v');
-      if (!v || !lang || !L.isSupported(lang)) return;
-      if (urlParam(url, 'tlang')) return; // vertaalde variant: nooit gebruiken
+      if (!v) { diagIgnore('no-v'); return; }
+      if (!lang) { diagIgnore('no-lang'); return; }
+      if (!L.isSupported(lang)) { diagIgnore('lang-unsupported:' + lang); return; }
+      if (urlParam(url, 'tlang')) { diagIgnore('translated'); return; } // vertaalde variant: nooit gebruiken
       var data = body;
       if (typeof data === 'string') {
-        try { data = JSON.parse(data); } catch (e) { return; }
+        try { data = JSON.parse(data); } catch (e) { diagIgnore('not-json'); return; }
       }
-      if (!data || !data.events) return;
+      if (!data || !data.events) { diagIgnore('no-events-field'); return; }
       var events = L.parseCaptionJson(data);
-      if (!events.length) return;
+      if (!events.length) { diagIgnore('no-events'); return; }
       var blocks = L.buildCaptionBlocks(events, {
         sentences: BOOST_BLOCK_SENTENCES,
         silenceGap: BOOST_SILENCE_GAP,
         maxChars: BOOST_MAX_BLOCK_CHARS
       });
-      if (!blocks.length) return;
+      if (!blocks.length) { diagIgnore('no-blocks'); return; }
       // Woord-voor-woord (optie): dezelfde events, maar als losse woorden en
       // in runs van doorlopende spraak — een stilte begint een nieuw venster.
       var runs = L.buildCaptionRuns(L.buildCaptionWords(events), BOOST_SILENCE_GAP);
@@ -628,12 +885,42 @@
       if (at !== -1) boostTrackOrder.splice(at, 1);
       boostTrackOrder.push(key);
       boostTracks[key] = { at: Date.now(), events: events, blocks: blocks, runs: runs };
+      diag.timedtext.stored++;
+      diag.lastTrack = { key: key, at: Date.now(), events: events.length, blocks: blocks.length, runs: runs.length };
       while (boostTrackOrder.length > BOOST_MAX_TRACKS) {
         var old = boostTrackOrder.shift();
         if (old !== key) delete boostTracks[old];
       }
       dbg('timedtext opgevangen', key, events.length + ' events / ' + blocks.length + ' blokken / ' + runs.length + ' runs');
     } catch (e) { /* ignore */ }
+  }
+
+  /**
+   * Een XHR-/fetch-respons naar een json3-object omzetten. De speler gebruikt
+   * `responseType: 'json'`, 'text' of (zelden) een blob/ArrayBuffer; alle vier
+   * moeten werken, anders valt Caption Boost terug op YouTube's eigen venster.
+   */
+  function bodyAsObject(body) {
+    if (!body) return null;
+    if (typeof body === 'object') {
+      // Al geparsed door de speler (responseType 'json') of een Blob/ArrayBuffer.
+      if (body.events) return body;
+      if (typeof body.text === 'function') return null;   // Blob: synchroon niet te lezen
+      if (body instanceof ArrayBuffer) return null;       // idem
+      return body;
+    }
+    try { return JSON.parse(String(body)); } catch (e) { return null; }
+  }
+
+  /** Async variant voor Blob/ArrayBuffer (fetch of XHR met responseType blob). */
+  function bodyAsObjectAsync(body, cb) {
+    var sync = bodyAsObject(body);
+    if (sync) { cb(sync); return; }
+    try {
+      if (body && typeof body.text === 'function') { body.text().then(function (t) { cb(bodyAsObject(t)); }, function () { cb(null); }); return; }
+      if (body instanceof ArrayBuffer) { cb(bodyAsObject(new TextDecoder().decode(body))); return; }
+    } catch (e) { /* ignore */ }
+    cb(null);
   }
 
   /**
@@ -651,6 +938,7 @@
         try {
           this.__scTtUrl = String(url || '');
           this.__scTt = this.__scTtUrl.indexOf('/api/timedtext') !== -1;
+          if (this.__scTt) diag.timedtext.requests++;
         } catch (e) { /* ignore */ }
         return origOpen.apply(this, arguments);
       };
@@ -660,12 +948,21 @@
             var xhr = this;
             xhr.addEventListener('load', function () {
               try {
-                var txt = null;
-                try { txt = xhr.responseText || null; } catch (e) { txt = null; }
-                if (!txt) {
-                  try { if (typeof xhr.response === 'string') txt = xhr.response; } catch (e) { /* ignore */ }
+                var body = null;
+                // `responseText` gooit bij responseType 'json'/'blob'/'arraybuffer';
+                // `response` is dan het al geparste object (of een Blob).
+                try { body = xhr.response; } catch (e) { body = null; }
+                if (typeof body === 'string' && !body) {
+                  try { body = xhr.responseText || null; } catch (e) { /* ignore */ }
                 }
-                if (txt) storeBoostTrack(xhr.__scTtUrl, txt);
+                if (body) {
+                  bodyAsObjectAsync(body, function (data) {
+                    if (data) storeBoostTrack(xhr.__scTtUrl, data);
+                    else diagIgnore('unreadable');
+                  });
+                } else {
+                  diagIgnore('empty-body');
+                }
               } catch (e) { /* ignore */ }
             });
           } catch (e) { /* ignore */ }
@@ -681,6 +978,7 @@
           var url = typeof input === 'string' ? input : (input && input.url) || '';
           var pr = origFetch.apply(this, arguments);
           if (String(url).indexOf('/api/timedtext') !== -1) {
+            diag.timedtext.requests++;
             try {
               pr.then(function (res) {
                 try {
@@ -1001,6 +1299,7 @@
    */
   function ownCaptions(on) {
     boost.ownsCaptions = !!on;
+    if (on) diag.own.on++; else diag.own.off++;
     var p = player();
     if (!p || !p.classList) return;
     if (on) p.classList.add('sc-boost-on');
@@ -1064,7 +1363,13 @@
     hideBoost(false);
   }
 
-  function stopBoost() {
+  function stopBoost(reason) {
+    if (boost.rafActive || boost.ownsCaptions) {
+      diag.boost.stops++;
+      diag.boost.lastStop = { reason: reason || 'unknown', at: Date.now(), videoId: diag.videoId };
+      if (reason) diag.boost.stops[reason] = (diag.boost.stops[reason] || 0) + 1;
+    }
+    diag.boost.active = false;
     boost.rafActive = false;
     if (boost.rafHandle) {
       try { cancelAnimationFrame(boost.rafHandle); } catch (e) { /* ignore */ }
@@ -1783,10 +2088,22 @@
    */
   function renderBoost() {
     if (!boost.rafActive) return;
+    var now = Date.now();
+    if (diag.frames.lastAt) {
+      var gap = now - diag.frames.lastAt;
+      diag.frames.lastGapMs = gap;
+      if (gap > diag.frames.maxGapMs) diag.frames.maxGapMs = gap;
+      // > 150 ms = er zijn frames overgeslagen: de weergave kan dan zichtbaar
+      // achter de audio aanlopen (rAF staat stil, pagina is te druk).
+      if (gap > 150) diag.frames.slowFrames++;
+    }
+    diag.frames.lastAt = now;
+    diag.frames.count++;
+    if (document.hidden) diag.frames.hiddenFrames++;
     try {
       renderBoostFrame();
     } catch (e) {
-      stopBoost();
+      stopBoost('frame-error');
       return;
     }
     if (boost.rafActive) boost.rafHandle = requestAnimationFrame(renderBoost);
@@ -1796,7 +2113,7 @@
     var p = player();
     var cur = boost.currentTrack;
     if (!CAPTION_BOOST_ENABLED || !p || !cur || !boostSupported(cur) || isAdShowingInDom() || !boost.blocks) {
-      stopBoost();
+      stopBoost('no-track-or-ad');
       return;
     }
     boost.frame++;
@@ -1805,7 +2122,7 @@
       if (idNow && boost.videoId && idNow !== boost.videoId) {
         boost.blocks = null;
         boost.runs = null;
-        stopBoost();
+        stopBoost('video-changed');
         return;
       }
       // Spelerformaat kan veranderd zijn (fullscreen/theater). Met een
@@ -1829,22 +2146,98 @@
   }
 
   /**
+   * De speler opnieuw om de timedtext-track laten vragen: ondertiteling één
+   * keer uit en (na een korte pauze) weer aan — dezelfde twee klikken die een
+   * gebruiker zou doen. Live geverifieerd 2026-10-31: dit levert een nieuw
+   * `/api/timedtext`-verzoek op dat de XHR-hook opvangt.
+   *
+   * Alleen als er echt gespeeld wordt en het tabblad zichtbaar is: een
+   * reparatie in een verborgen tabblad kan niemand zien en zou alleen de
+   * ondertiteling van dat tabblad laten knipperen.
+   */
+  var boostRepairTimer = null;
+
+  function reRequestCaptions() {
+    var p = player();
+    var ps = safe(function () { return p && p.getPlayerState ? p.getPlayerState() : -1; }, -1);
+    if (ps !== 1 || document.hidden) return false;
+    var btn = document.querySelector('.ytp-subtitles-button');
+    if (!btn || !readCurrentTrack()) return false;
+    clickEl(btn);                       // ondertiteling uit
+    if (boostRepairTimer) {
+      try { clearTimeout(boostRepairTimer); } catch (e) { /* ignore */ }
+    }
+    boostRepairTimer = setTimeout(function () {
+      boostRepairTimer = null;
+      var b = document.querySelector('.ytp-subtitles-button');
+      if (!b) return;
+      if (readCurrentTrack()) return;    // staat alweer aan (YouTube herstelde zichzelf)
+      clickEl(b);                        // weer aan -> speler vraagt de track opnieuw op
+    }, 700);
+    return true;
+  }
+
+  /**
+   * Vangnet in de poll: hoort er getekend te worden maar is de track van deze
+   * video nooit opgevangen, dan eerst de ondertiteling één keer uit/aan zetten
+   * en pas als dat niets oplevert (en AUTO_RELOAD_VIDEO_PAGE aan staat) de
+   * pagina verversen. Zo verversen we niet meer bij élke video — dat kostte
+   * een reload plus enkele seconden YouTube's eigen venster per video.
+   */
+  function maybeRepairTrack(cur, id) {
+    var now = Date.now();
+    if (!boost.missingSince) {
+      boost.missingSince = now;
+      boost.repairs = 0;
+      boost.repairAt = 0;
+      return;
+    }
+    // De menu-automatisering van de content script kan net een track gezet
+    // hebben; geef die eerst de tijd om binnen te komen.
+    if (now - (boost.trackStableSince || 0) < BOOST_TRACK_SETTLE_MS) return;
+    var waited = now - boost.missingSince;
+    if (boost.repairs < BOOST_REPAIR_MAX && waited >= BOOST_REPAIR_AFTER_MS &&
+        now - boost.repairAt >= BOOST_REPAIR_RETRY_MS) {
+      boost.repairAt = now;
+      if (reRequestCaptions()) {
+        boost.repairs++;
+        diag.repairs++;
+        diag.lastRepair = { at: now, videoId: id, attempt: boost.repairs, track: cur ? cur.languageCode + '/' + (cur.kind || '') : null };
+        dbg('track niet opgevangen - ondertiteling een keer uit/aan (poging ' + boost.repairs + ')');
+      }
+      return;
+    }
+    if (boost.repairs >= BOOST_REPAIR_MAX && waited >= BOOST_RELOAD_AFTER_MS) {
+      dbg('track komt ook na reparatie niet binnen - pagina verversen');
+      scheduleVideoPageReload(id);
+    }
+  }
+
+  /**
    * Aan/uit van de eigen weergave. `cur`, `id` en `ad` komen van `tick()` door:
    * die heeft ze in dezelfde ronde al uit de speler gelezen (scheelt twee
    * player-API-calls en een DOM-query per poll).
    */
   function boostTick(cur, id, ad) {
     boost.currentTrack = cur;
-    if (!CAPTION_BOOST_ENABLED || SUBTITLES_OFF) { if (boost.rafActive) stopBoost(); return; }
-    if (!cur || !boostSupported(cur) || ad) { if (boost.rafActive) stopBoost(); return; }
-    if (!id) { if (boost.rafActive) stopBoost(); return; }
+    if (!CAPTION_BOOST_ENABLED || SUBTITLES_OFF) { if (boost.rafActive) stopBoost('off'); return; }
+    if (!cur || !boostSupported(cur) || ad) {
+      if (boost.rafActive) stopBoost(!cur ? 'no-track-selected' : (!boostSupported(cur) ? 'track-unsupported-or-translated' : 'ad'));
+      return;
+    }
+    if (!id) { if (boost.rafActive) stopBoost('no-video-id'); return; }
     var key = boostKey(id, L.baseLang(cur.languageCode), cur.kind === 'asr' ? 'asr' : '');
     if (boost.videoId !== id || boost.trackKey !== key) {
       boost.blocks = null;
       boost.runs = null;
-      stopBoost();
+      stopBoost('track-key-changed');
       boost.videoId = id;
       boost.trackKey = key;
+      boost.missingSince = 0;
+      boost.repairs = 0;
+      boost.repairAt = 0;
+      boost.trackStableSince = Date.now();
+      diag.videoId = id;
     }
     if (!boost.blocks) {
       var rec = boostTracks[key];
@@ -1855,6 +2248,8 @@
       }
     }
     if (boost.blocks) {
+      boost.missingSince = 0;
+      boost.repairs = 0;
       refreshBoostStyle(false);
       ensureBoostDom();
       watchPlayerSize();
@@ -1867,8 +2262,16 @@
       if (!boost.rafActive) {
         boost.rafActive = true;
         boost.frame = 0;
+        diag.boost.starts++;
+        diag.boost.active = true;
+        diag.boost.since = Date.now();
+        diag.frames.lastAt = 0;
         boost.rafHandle = requestAnimationFrame(renderBoost);
       }
+    } else {
+      // Wel een geschikte track, maar (nog) geen opgevangen timedtext: eerst
+      // de ondertiteling één keer uit/aan, daarna pas het oude vangnet.
+      maybeRepairTrack(cur, id);
     }
   }
 
@@ -1884,7 +2287,7 @@
   function turnSubtitlesOff() {
     var p = player();
     try { if (p && p.setOption) p.setOption('captions', 'track', {}); } catch (e) { /* ignore */ }
-    stopBoost();
+    stopBoost('subtitles-off');
   }
 
   function setSubtitlesOff(off, source) {
@@ -2008,7 +2411,7 @@
   function setPageOptions(opts) {
     if (opts && Object.prototype.hasOwnProperty.call(opts, 'captionBoost')) {
       CAPTION_BOOST_ENABLED = !!opts.captionBoost;
-      if (!CAPTION_BOOST_ENABLED) stopBoost();
+      if (!CAPTION_BOOST_ENABLED) stopBoost('boost-disabled');
       dbg('captionBoost', CAPTION_BOOST_ENABLED);
     }
     if (opts && Object.prototype.hasOwnProperty.call(opts, 'captionSize')) {
@@ -2089,6 +2492,7 @@
   var lastAd = null;
   var lastState = null;
   var lastCaptionKey = null;
+  var lastAudioKey = null;
 
   function captionKey(cur) {
     if (!cur) return 'off';
@@ -2183,9 +2587,9 @@
       lastVideoId = id;
       dbg('videoChanged', id);
       post({ type: 'videoChanged', videoId: id, title: safe(function () { return p.getVideoData().title; }, null) });
-      // Vangnet (zie AUTO_RELOAD_VIDEO_PAGE): een verse pagina is de enige
-      // betrouwbare reset als de ondertitels achterlopen.
-      scheduleVideoPageReload(id);
+      // Het vangnet (pagina verversen) hangt NIET meer aan een video-wissel:
+      // dat verversde élke video in een playlist. Het draait nu pas als de
+      // track ook na de reparatie in boostTick() niet binnenkomt.
     }
 
     var ad = isAd();
@@ -2211,6 +2615,16 @@
         captionsOn: !!cur,
         translated: !!(cur && cur.translated)
       });
+    }
+
+    // Audiotrack-wissel (auto-dub!): YouTube kan tijdens het kijken van
+    // audiotrack wisselen (of de gebruiker doet het). De content script zet
+    // een dub terug naar het origineel als die optie aan staat.
+    var at = readAudioTrack();
+    var atKey = at ? (at.id + '|' + (at.isAutoDubbed ? 'dub' : 'orig')) : 'none';
+    if (atKey !== lastAudioKey) {
+      lastAudioKey = atKey;
+      post({ type: 'audioChanged', videoId: lastVideoId, audioTrack: at });
     }
 
     // Caption Boost: eigen weergave aan/uitzetten zodra de juiste track actief is.
