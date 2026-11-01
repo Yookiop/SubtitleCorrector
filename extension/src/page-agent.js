@@ -69,7 +69,7 @@
     videoId: null,
     timedtext: { requests: 0, stored: 0, ignored: Object.create(null) },
     lastTrack: null,
-    boost: { starts: 0, stops: 0, active: false, since: 0, lastStop: null, stops: Object.create(null) },
+    boost: { starts: 0, stops: 0, restarts: 0, active: false, since: 0, lastStop: null, stops: Object.create(null) },
     frames: { count: 0, maxGapMs: 0, slowFrames: 0, lastGapMs: 0, lastAt: 0, hiddenFrames: 0 },
     own: { on: 0, off: 0 },
     repairs: 0,
@@ -142,6 +142,7 @@
         blocksFrom: boost.blocks && boost.blocks.length ? boost.blocks[0].start : null,
         blocksTo: boost.blocks && boost.blocks.length ? boost.blocks[boost.blocks.length - 1].end : null,
         playerTime: tNow,
+        frameAgeMs: boost.rafAt ? Date.now() - boost.rafAt : null,
         overlayConnected: !!(boost.overlay && boost.overlay.isConnected),
         overlayVisible: boostDisplayed(),
         text: boost.box ? String(boost.box.textContent || '').slice(-140) : ''
@@ -904,6 +905,7 @@
     frame: 0,
     rafActive: false,
     rafHandle: null,
+    rafAt: 0,             // Date.now() van de laatste frame (watchdog in tick())
     overlay: null,
     box: null,
     scrollEl: null,
@@ -2174,6 +2176,7 @@
   function renderBoost() {
     if (!boost.rafActive) return;
     var now = Date.now();
+    boost.rafAt = now;
     if (diag.frames.lastAt) {
       var gap = now - diag.frames.lastAt;
       diag.frames.lastGapMs = gap;
@@ -2371,6 +2374,14 @@
         }
       }
     }
+    // Niets (meer) te tekenen? Dan mag onze overlay YouTube's venster niet
+    // verborgen houden. Zonder deze controle bleef na een videowissel of een
+    // leeggeraakte track een verborgen YouTube-venster achter zonder eigen
+    // inhoud — precies "de ondertitel lijkt aan maar je ziet niets"
+    // (bugmelding 2026-11-01, diag: `blocks: -1`, `ownsCaptions: true`).
+    if ((!boost.blocks || !boost.blocks.length) && (boost.rafActive || boost.ownsCaptions)) {
+      stopBoost('no-blocks');
+    }
     if (boost.blocks && boost.blocks.length) {
       boost.missingSince = 0;
       boost.repairs = 0;
@@ -2390,11 +2401,21 @@
       if (!boost.rafActive) {
         boost.rafActive = true;
         boost.frame = 0;
+        boost.rafAt = 0;
         diag.boost.starts++;
         diag.boost.active = true;
         diag.boost.since = Date.now();
         diag.frames.lastAt = 0;
         boost.rafHandle = requestAnimationFrame(renderBoost);
+      } else if (boost.rafAt && Date.now() - boost.rafAt > 3000 && !document.hidden) {
+        // Watchdog: de frame-lus staat stil terwijl het tabblad zichtbaar is
+        // (rAF zweeg, bv. door occlusie of throttling). Zonder deze herstart
+        // bleef de laatste regel staan en hield onze overlay YouTube's venster
+        // verborgen — de "bevroren ondertiteling" van 2026-11-01.
+        try { if (boost.rafHandle) cancelAnimationFrame(boost.rafHandle); } catch (e) { /* ignore */ }
+        boost.rafHandle = requestAnimationFrame(renderBoost);
+        diag.boost.restarts++;
+        dbg('frame-lus stond stil - opnieuw aangevraagd');
       }
     } else {
       // Wel een geschikte track, maar (nog) geen opgevangen timedtext: eerst

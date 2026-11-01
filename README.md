@@ -186,6 +186,8 @@ Staat de track al goed en is alleen de weergave uit (het menu toont hem aangevin
 
 Twee dingen voorkomen sindsdien dat onze overlay een leeg venster claimt: de woord-voor-woord-data wordt opnieuw opgebouwd als die ooit ontbreekt (`boost.runs`, anders viel de weergave terug op de blokken), en de overlay verbergt YouTube's venster alleen zolang de **speeltijd binnen het bereik van de opgevangen track** valt (`boostCoversTime`). Daarbuiten — vóór de eerste of ná de laatste caption, of bij een track die niet de hele video dekt — komt YouTube's eigen venster terug in plaats van dat je naar een leeg venster kijkt.
 
+Daarbovenop houdt de **900 ms-poll** de weergave in de hand: is er niets (meer) te tekenen, dan geeft hij YouTube's venster onmiddellijk terug (`stopBoost('no-blocks')`), en staat de frame-lus stil terwijl het tabblad zichtbaar is (geen frame in 3 s), dan vraagt hij de lus opnieuw aan (`diag.boost.restarts`). Zo kan een ingeklapte of opgeschorte `requestAnimationFrame` de ondertiteling niet meer bevriezen. In **Diagnose kopiëren** zie je dat aan `drawing.frameAgeMs` (leeftijd van het laatste frame) en `boost.restarts`.
+
 ### 5.3 Taalkeuze: waar komt "de taal van de audio" vandaan?
 
 De volgorde (in `L.detectAudioLanguage()`, allemaal puur en getest):

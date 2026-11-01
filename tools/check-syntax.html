@@ -230,6 +230,15 @@
       const noReload = !/scheduleVideoPageReload|AUTO_RELOAD_VIDEO_PAGE|autoReloadTimer|location\.reload\(\)/.test(agent);
       record('page-agent.js: ververst de pagina nooit meer (auto-reload verwijderd)', noReload,
         noReload ? undefined : 'auto-reload hoort volledig verwijderd te zijn: een reload zette de caption-weergave uit');
+
+      // Nooit een verborgen YouTube-venster zonder eigen inhoud (2026-11-01):
+      // niets te tekenen -> captions teruggeven; en de frame-lus wordt vanuit
+      // de poll herstart als hij stilstaat.
+      const releasesOwn = /stopBoost\('no-blocks'\)/.test(agent) &&
+        /function boostCoversTime\s*\(/.test(agent) &&
+        /diag\.boost\.restarts\+\+/.test(agent);
+      record("page-agent.js: geeft YouTube's venster terug als er niets te tekenen is of de lus stilstaat", releasesOwn,
+        releasesOwn ? undefined : "verwacht stopBoost('no-blocks'), boostCoversTime() en de watchdog (restarts++)");
     }
 
     /**
