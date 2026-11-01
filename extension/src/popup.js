@@ -97,10 +97,11 @@ function labelBoost(diag) {
   if (!diag) return { text: 'onbekend', cls: 'muted' };
   const d = diag.drawing || {};
   if (!d.cboostOn) return { text: 'uit (optie Caption Boost)', cls: 'muted' };
-  // Een page agent die niet meer loopt (pagina niet ververst na ⟳) houdt
-  // rafActive op true staan; de leeftijd van het laatste frame verraadt het.
+  // Een page agent zonder recente frames (tabblad op de achtergrond, of de
+  // extensie is herladen zonder de pagina te verversen) houdt rafActive op
+  // true staan; de leeftijd van het laatste frame verraadt het.
   if (typeof d.frameAgeMs === 'number' && d.frameAgeMs > 10000) {
-    return { text: 'bevroren (ververs de pagina)', cls: 'err' };
+    return { text: 'stil (' + Math.round(d.frameAgeMs / 1000) + ' s geen frame)', cls: 'err' };
   }
   if (d.rafActive) return { text: 'eigen weergave actief', cls: 'ok' };
   const last = diag.boost && diag.boost.lastStop;
@@ -214,15 +215,15 @@ async function render() {
     : L.describePlan(plan);
   setText('action', actionText, plan.action === 'apply' ? 'warn' : (plan.action === 'none' ? 'ok' : 'err'));
 
-  // Een page agent uit een vorige versie van de extensie (na ⟳ in
-  // brave://extensions, zónder de pagina te verversen) antwoordt nog wel, maar
-  // zijn timers en frame-lus staan stil: er wordt niets meer bijgewerkt tot de
-  // pagina ververst. Dat is aan de leeftijd van het laatste frame te zien.
+  // Een page agent zonder recente frames: het tabblad stond op de achtergrond
+  // (Chrome pauzeert rAF en knijpt timers af) of de extensie is herladen
+  // zonder de pagina te verversen. Sinds 2026-11-01 hervat de agent zelf bij
+  // visibilitychange/focus; blijft het stil, dan is verversen de oplossing.
   const frameAge = st.diag && st.diag.drawing ? st.diag.drawing.frameAgeMs : null;
   if (typeof frameAge === 'number' && frameAge > 10000) {
-    setText('action', 'ververs dit tabblad (extensie is herladen)', 'warn');
-    $('diagHint').textContent = 'De page agent van dit tabblad is van een vorige versie van de extensie en loopt niet meer (laatste frame ' +
-      Math.round(frameAge / 1000) + ' s geleden). Ververs de pagina (F5) zodat de nieuwe versie start.';
+    setText('action', 'tabblad was inactief - video 10 s vooraan laten spelen', 'warn');
+    $('diagHint').textContent = 'Het laatste frame is ' + Math.round(frameAge / 1000) +
+      ' s oud: in een tabblad op de achtergrond pauzeert Chrome de frame-lus en de poll. Kom terug naar dit tabblad; de extensie hervat vanzelf. Blijft het stil, ververs dan de pagina (F5) — dat is nodig na een herlaadbeurt van de extensie (⟳).';
   }
 }
 

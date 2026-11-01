@@ -69,7 +69,7 @@
     videoId: null,
     timedtext: { requests: 0, stored: 0, ignored: Object.create(null) },
     lastTrack: null,
-    boost: { starts: 0, stops: 0, restarts: 0, nothingVisible: 0, active: false, since: 0, lastStop: null, stops: Object.create(null) },
+    boost: { starts: 0, stops: 0, restarts: 0, manualFrames: 0, nothingVisible: 0, active: false, since: 0, lastStop: null, byReason: Object.create(null) },
     frames: { count: 0, maxGapMs: 0, slowFrames: 0, lastGapMs: 0, lastAt: 0, hiddenFrames: 0 },
     own: { on: 0, off: 0 },
     repairs: 0,
@@ -1166,11 +1166,16 @@
       var ro = new ResizeObserver(function () {
         markPlayerSizeStale();
         applyBoostStyle();
+        // Een opgegeven track ("er kwam niets in beeld") is meestal een
+        // geometrieprobleem; juist bij een maatwijziging is een nieuwe poging
+        // de moeite waard.
+        boost.gaveUpKey = null;
       });
       ro.observe(p);
       document.addEventListener('fullscreenchange', function () {
         markPlayerSizeStale();
         applyBoostStyle();
+        boost.gaveUpKey = null;
       });
       boostSizeWatch.ok = true;
     } catch (e) { /* ignore */ }
@@ -1475,7 +1480,7 @@
     if (boost.rafActive || boost.ownsCaptions) {
       diag.boost.stops++;
       diag.boost.lastStop = { reason: reason || 'unknown', at: Date.now(), videoId: diag.videoId };
-      if (reason) diag.boost.stops[reason] = (diag.boost.stops[reason] || 0) + 1;
+      if (reason) diag.boost.byReason[reason] = (diag.boost.byReason[reason] || 0) + 1;
     }
     diag.boost.active = false;
     boost.rafActive = false;
@@ -2501,7 +2506,10 @@
       if (!boost.rafActive) {
         boost.rafActive = true;
         boost.frame = 0;
-        boost.rafAt = 0;
+        // Niet 0: de watchdog (hieronder) moet ook kunnen zien dat rAF ná deze
+        // aanvraag nooit een frame leverde. Met 0 bleef die controle eeuwig
+        // stil en stond de ondertiteling voorgoed stil (bugmelding 2026-11-01).
+        boost.rafAt = Date.now();
         diag.boost.starts++;
         diag.boost.active = true;
         diag.boost.since = Date.now();
@@ -2512,9 +2520,17 @@
         // (rAF zweeg, bv. door occlusie of throttling). Zonder deze herstart
         // bleef de laatste regel staan en hield onze overlay YouTube's venster
         // verborgen — de "bevroren ondertiteling" van 2026-11-01.
-        try { if (boost.rafHandle) cancelAnimationFrame(boost.rafHandle); } catch (e) { /* ignore */ }
-        boost.rafHandle = requestAnimationFrame(renderBoost);
         diag.boost.restarts++;
+        // Eerst meteen één frame tekenen: de herstart komt pas bij de volgende
+        // rAF, en loopt rAF in dit tabblad helemaal niet (occlusie), dan is dit
+        // de enige frame die er komt — één regel per poll in plaats van een
+        // leeg venster boven een verborgen YouTube-venster.
+        try { renderBoostFrame(); } catch (e) { /* renderBoostFrame ruimt zelf op */ }
+        if (boost.rafActive) {
+          diag.boost.manualFrames++;
+          try { if (boost.rafHandle) cancelAnimationFrame(boost.rafHandle); } catch (e) { /* ignore */ }
+          boost.rafHandle = requestAnimationFrame(renderBoost);
+        }
         dbg('frame-lus stond stil - opnieuw aangevraagd');
       }
     } else {
@@ -2822,5 +2838,27 @@
     setTimeout(loop, tickDelay());
   }
   loop();
+
+  /**
+   * Terug naar dit tabblad? Meteen doortikken.
+   *
+   * Chrome pauzeert `requestAnimationFrame` en knijpt `setTimeout` af (tot één
+   * keer per minuut) in een tabblad dat op de achtergrond staat. Zonder deze
+   * listener bleef de ondertiteling na het terugschakelen dus tientallen
+   * seconden stil — de metingen van 2026-11-01 lieten `frameAgeMs` van 31, 45
+   * en 71 s zien met `restarts: 0`, puur omdat de poll nog niet aan de beurt
+   * was. Eén `tick()` zet de blokken, geeft YouTube's venster terug of herstart
+   * de frame-lus; daarna loopt alles weer.
+   */
+  function wakeUp() {
+    if (document.hidden) return;
+    try { tick(); } catch (e) { /* ignore */ }
+  }
+  try {
+    document.addEventListener('visibilitychange', wakeUp);
+    window.addEventListener('focus', wakeUp);
+    window.addEventListener('pageshow', wakeUp);
+  } catch (e) { /* ignore */ }
+
   dbg('page agent geladen');
 })();

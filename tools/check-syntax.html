@@ -247,6 +247,25 @@
         /function boostHitTest\s*\(/.test(agent);
       record('page-agent.js: geeft de ondertiteling terug als er tekst in de DOM staat maar niets in het venster', nothingVisible,
         nothingVisible ? undefined : "verwacht boostWordsInView(), stopBoost('nothing-visible') en boostHitTest()");
+
+      // Chrome pauzeert rAF en knijpt timers af in een achtergrondtabblad; bij
+      // terugkomst moet de poll meteen draaien (gemeten frameAgeMs 31/45/71 s).
+      const wakesUp = /function wakeUp\s*\(/.test(agent) &&
+        /addEventListener\('visibilitychange', wakeUp\)/.test(agent) &&
+        /addEventListener\('focus', wakeUp\)/.test(agent);
+      record('page-agent.js: hervat direct als het tabblad weer zichtbaar wordt (visibilitychange/focus)', wakesUp,
+        wakesUp ? undefined : 'verwacht wakeUp() op visibilitychange en focus');
+
+      // Een stilstaande rAF-lus mag geen leeg venster achterlaten: de watchdog
+      // tekent zelf één frame (manualFrames) en een maatwijziging ruimt een
+      // eerdere opgave ("niets in beeld") op.
+      const manualFrame = /diag\.boost\.manualFrames\+\+/.test(agent) && /manualFrames: 0/.test(agent);
+      record('page-agent.js: de watchdog tekent zelf een frame als rAF stilstaat', manualFrame,
+        manualFrame ? undefined : 'verwacht manualFrames in diag.boost en manualFrames++ in de watchdog');
+
+      const retryAfterResize = (agent.match(/boost\.gaveUpKey = null;/g) || []).length >= 3;
+      record('page-agent.js: een maatwijziging (resize/fullscreen) ruimt een eerdere opgave op', retryAfterResize,
+        retryAfterResize ? undefined : 'verwacht boost.gaveUpKey = null in de ResizeObserver en fullscreenchange');
     }
 
     /**
