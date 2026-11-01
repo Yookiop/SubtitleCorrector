@@ -468,6 +468,11 @@
    * Gebruiker zet zelf ondertitels uit -> niet steeds opnieuw aanzetten
    * ------------------------------------------------------------------ */
   document.addEventListener('click', function (ev) {
+    // Alleen een échte klik van de gebruiker telt. De page agent zet de
+    // ondertiteling bij de reparatie zelf één keer uit/aan (synthetische
+    // klik); dat mag deze video niet als "gebruiker wil ze uit" markeren,
+    // want dan doet de extensie daarna niets meer (bug 2026-11-01).
+    if (ev.isTrusted === false) return;
     var btn = ev.target && ev.target.closest ? ev.target.closest('.ytp-subtitles-button') : null;
     if (!btn) return;
     if (!settings.respectUserOff) return;

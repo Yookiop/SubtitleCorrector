@@ -97,6 +97,7 @@
       uptimeS: Math.round((Date.now() - diag.bootAt) / 1000),
       videoId: id,
       current: cur,
+      captionsOn: captionsDisplayed(),
       trackKey: key,
       trackCaptured: !!(key && boostTracks[key]),
       boostStoredKeys: Object.keys(boostTracks),
@@ -250,11 +251,52 @@
     };
   }
 
+  /** Het CC-knopje van YouTube; `aria-pressed` is de echte aan/uit-stand. */
+  function ccButton() {
+    return document.querySelector('.ytp-subtitles-button');
+  }
+
+  /**
+   * Staat de ondertitel-weergave écht aan?
+   *
+   * `getOption('captions','track')` is hier niet genoeg: een gekozen track
+   * betekent niet dat YouTube hem ook toont. Zet de speler een track terwijl
+   * de weergave uit staat (wat `setOption` en het settings-menu doen), dan
+   * blijft de track-optie gevuld en staat het CC-knopje op `aria-pressed=false`
+   * — de ondertitel is dan in het menu aangevinkt maar nergens te zien
+   * (bugmelding 2026-11-01). Het knopje is de bron van waarheid; zonder knop
+   * valt het terug op de track-optie.
+   */
+  function captionsDisplayed() {
+    var btn = ccButton();
+    if (btn) {
+      var pressed = btn.getAttribute('aria-pressed');
+      if (pressed === 'true') return true;
+      if (pressed === 'false') return false;
+    }
+    return !!readCurrentTrack();
+  }
+
   function captionsOn() {
-    if (readCurrentTrack()) return true;
-    var btn = document.querySelector('.ytp-subtitles-button');
-    if (btn) return btn.getAttribute('aria-pressed') === 'true';
-    return false;
+    return captionsDisplayed();
+  }
+
+  /**
+   * Zet de caption-weergave aan of uit via het CC-knopje en controleer dat het
+   * gelukt is. `apply()` en de reparatie (`reRequestCaptions`) mogen niet op de
+   * track-optie alleen vertrouwen: die blijft gevuld als de weergave uit staat.
+   */
+  async function setCaptionsDisplayed(on, settleMs) {
+    var want = !!on;
+    var wait = settleMs || 600;
+    for (var i = 0; i < 3; i++) {
+      if (captionsDisplayed() === want) return true;
+      var btn = ccButton();
+      if (!btn) break;
+      clickEl(btn);
+      await sleep(wait);
+    }
+    return captionsDisplayed() === want;
   }
 
   /** Alle bekende tracks (bron: audioTrack.captionTracks + getOption tracklist). */
@@ -644,6 +686,18 @@
     return true;
   }
 
+  /**
+   * De track staat goed én YouTube toont hem ook. Zonder die tweede controle
+   * meldde `apply()` succes terwijl het CC-knopje uit stond: het menu toonde
+   * een aangevinkte ondertitel, maar er kwam niets in beeld.
+   */
+  async function applyConfirmed(st, target, attempts) {
+    if (!verifyState(st, target)) return false;
+    if (await setCaptionsDisplayed(true)) return true;
+    attempts.push('captions-off');
+    return false;
+  }
+
   /* ------------------------------------------------------------------ *
    * Toepassen
    * ------------------------------------------------------------------ */
@@ -668,8 +722,8 @@
       }
       await sleep(700);
       var st1 = readCurrentTrack();
-      if (verifyState(st1, target)) {
-        return { ok: true, method: 'api', attempts: attempts, before: before, after: st1, target: target };
+      if (await applyConfirmed(st1, target, attempts)) {
+        return { ok: true, method: 'api', attempts: attempts, before: before, after: readCurrentTrack(), target: target, captionsOn: true };
       }
     }
 
@@ -678,8 +732,8 @@
     attempts.push('menu:' + (menuRes.reason || 'clicked'));
     await sleep(400);
     var st2 = readCurrentTrack();
-    if (verifyState(st2, target)) {
-      return { ok: true, method: 'menu', clicked: menuRes.clicked, attempts: attempts, before: before, after: st2, target: target };
+    if (await applyConfirmed(st2, target, attempts)) {
+      return { ok: true, method: 'menu', clicked: menuRes.clicked, attempts: attempts, before: before, after: readCurrentTrack(), target: target, captionsOn: true };
     }
 
     // 3. Handmatige track van dezelfde taal als terugval (prioriteit 2).
@@ -694,8 +748,8 @@
         } catch (e) { /* ignore */ }
         await sleep(700);
         var st3 = readCurrentTrack();
-        if (verifyState(st3, manual)) {
-          return { ok: true, method: 'api', fallback: 'manual', attempts: attempts, before: before, after: st3, target: manual };
+        if (await applyConfirmed(st3, manual, attempts)) {
+          return { ok: true, method: 'api', fallback: 'manual', attempts: attempts, before: before, after: readCurrentTrack(), target: manual, captionsOn: true };
         }
       }
     }
@@ -710,6 +764,7 @@
       attempts: attempts,
       before: before,
       after: readCurrentTrack(),
+      captionsOn: captionsDisplayed(),
       expected: target,
       checkedMenuItem: checked
     };
@@ -2154,26 +2209,34 @@
    * Alleen als er echt gespeeld wordt en het tabblad zichtbaar is: een
    * reparatie in een verborgen tabblad kan niemand zien en zou alleen de
    * ondertiteling van dat tabblad laten knipperen.
+   *
+   * De tweede klik gebeurt op basis van het CC-knopje (`aria-pressed`) en
+   * wordt herhaald tot de weergave echt aan staat. Vroeger hing hij aan
+   * `readCurrentTrack()`; die blijft een track teruggeven terwijl de weergave
+   * uit staat, waardoor de reparatie de ondertiteling uitzette en nooit meer
+   * aanzette (bugmelding 2026-11-01).
    */
-  var boostRepairTimer = null;
+  var boostRepairBusy = false;
 
   function reRequestCaptions() {
     var p = player();
     var ps = safe(function () { return p && p.getPlayerState ? p.getPlayerState() : -1; }, -1);
     if (ps !== 1 || document.hidden) return false;
-    var btn = document.querySelector('.ytp-subtitles-button');
-    if (!btn || !readCurrentTrack()) return false;
-    clickEl(btn);                       // ondertiteling uit
-    if (boostRepairTimer) {
-      try { clearTimeout(boostRepairTimer); } catch (e) { /* ignore */ }
-    }
-    boostRepairTimer = setTimeout(function () {
-      boostRepairTimer = null;
-      var b = document.querySelector('.ytp-subtitles-button');
-      if (!b) return;
-      if (readCurrentTrack()) return;    // staat alweer aan (YouTube herstelde zichzelf)
-      clickEl(b);                        // weer aan -> speler vraagt de track opnieuw op
-    }, 700);
+    if (boostRepairBusy) return false;
+    if (!ccButton()) return false;
+    if (!readCurrentTrack() && !captionsDisplayed()) return false;
+    boostRepairBusy = true;
+    (async function () {
+      try {
+        await setCaptionsDisplayed(false, 400);
+        await sleep(500);
+        // Weer aan (en controleer het): de speler vraagt de track dan opnieuw
+        // op, en de weergave blijft niet per ongeluk uit staan.
+        await setCaptionsDisplayed(true, 400);
+      } finally {
+        boostRepairBusy = false;
+      }
+    })();
     return true;
   }
 
@@ -2605,14 +2668,15 @@
     }
 
     var cur = readCurrentTrack();
-    var key = captionKey(cur);
+    var on = captionsDisplayed();
+    var key = captionKey(cur) + (on ? '|on' : '|off');
     if (key !== lastCaptionKey) {
       lastCaptionKey = key;
       post({
         type: 'captionChanged',
         videoId: lastVideoId,
         current: cur,
-        captionsOn: !!cur,
+        captionsOn: on,
         translated: !!(cur && cur.translated)
       });
     }
