@@ -69,7 +69,7 @@
     videoId: null,
     timedtext: { requests: 0, stored: 0, ignored: Object.create(null) },
     lastTrack: null,
-    boost: { starts: 0, stops: 0, restarts: 0, active: false, since: 0, lastStop: null, stops: Object.create(null) },
+    boost: { starts: 0, stops: 0, restarts: 0, nothingVisible: 0, active: false, since: 0, lastStop: null, stops: Object.create(null) },
     frames: { count: 0, maxGapMs: 0, slowFrames: 0, lastGapMs: 0, lastAt: 0, hiddenFrames: 0 },
     own: { on: 0, off: 0 },
     repairs: 0,
@@ -143,6 +143,18 @@
         blocksTo: boost.blocks && boost.blocks.length ? boost.blocks[boost.blocks.length - 1].end : null,
         playerTime: tNow,
         frameAgeMs: boost.rafAt ? Date.now() - boost.rafAt : null,
+        // Geometrie: staat de tekst ook écht in het venster, en ligt er niets
+        // van YouTube bovenop?
+        windowShift: boost.windowShift,
+        visible: boostWordsInView(),
+        boxRect: (function () {
+          try {
+            var r = boost.box.getBoundingClientRect();
+            return { top: Math.round(r.top), bottom: Math.round(r.bottom), height: Math.round(r.height), width: Math.round(r.width) };
+          } catch (e) { return null; }
+        })(),
+        hitAtBox: boostHitTest(),
+        gaveUp: !!boost.gaveUpKey,
         overlayConnected: !!(boost.overlay && boost.overlay.isConnected),
         overlayVisible: boostDisplayed(),
         text: boost.box ? String(boost.box.textContent || '').slice(-140) : ''
@@ -915,6 +927,8 @@
     windowShift: -1,      // laatst gezette venster-verschuiving in px (-1 = opnieuw meten)
     lastWordTop: null,    // bovenkant (px) van het laatst gezette woord (alleen voor de meting)
     lastWordEl: null,     // element van het laatst gezette woord (zelfde-frame vergelijking)
+    invisible: 0,         // frames op rij met tekst in de DOM maar niets in het venster
+    gaveUpKey: null,      // trackKey waarvoor we stopten: er kwam niets in beeld
     lineChanged: false,   // laatste woord begon een nieuwe regel -> venster opnieuw meten
     currentTrack: null,   // track uit de 900ms-poll; niet opnieuw via de player-API per frame
     ownsCaptions: false,  // wij tekenen de ondertitel -> YouTube's eigen venster verborgen
@@ -972,6 +986,9 @@
       if (at !== -1) boostTrackOrder.splice(at, 1);
       boostTrackOrder.push(key);
       boostTracks[key] = { at: Date.now(), events: events, blocks: blocks, runs: runs };
+      // Nieuwe/verversde trackdata voor deze sleutel: een eerdere "ik gaf op"
+      // (niets in beeld) mag opnieuw geprobeerd worden.
+      if (boost.gaveUpKey === key) boost.gaveUpKey = null;
       diag.timedtext.stored++;
       diag.lastTrack = { key: key, at: Date.now(), events: events.length, blocks: blocks.length, runs: runs.length };
       while (boostTrackOrder.length > BOOST_MAX_TRACKS) {
@@ -1224,7 +1241,10 @@
         st.id = 'sc-caption-style';
         st.textContent =
           '.sc-boost-on .ytp-caption-window-container{display:none!important}' +
-          '#sc-caption-overlay{position:absolute;left:0;right:0;bottom:3.5%;text-align:center;pointer-events:none;z-index:45;display:none;' +
+          // `z-index` hoog genoeg om boven YouTube's eigen lagen te liggen
+          // (captions 40, chrome ~60). Met 45 kon een nieuwe YouTube-laag er in
+          // 2026 bovenop komen: dan tekent de lus wel, maar zie je niets.
+          '#sc-caption-overlay{position:absolute;left:0;right:0;bottom:3.5%;text-align:center;pointer-events:none;z-index:2147483000;display:none;' +
           'font-weight:500;line-height:1.4;font-family:Roboto,Arial,sans-serif;' +
           '--sc-caption-bg:rgba(8,8,8,1)}' +
           '#sc-caption-overlay.sc-on{display:block}' +
@@ -1369,6 +1389,7 @@
       return;
     }
     boost.overlay.classList.remove('sc-on');
+    boost.invisible = 0;
     if (boost.box) {
       boost.box.style.height = '';
       boost.box.style.fontSize = ''; // het font krimpt nooit
@@ -1810,6 +1831,34 @@
   }
 
   /**
+   * Wat ligt er op het midden van ons captionvlak? Als dat niet ons eigen
+   * blokje is, heeft YouTube er iets bovenop gelegd (z-index) en zie je onze
+   * tekst dus nooit — ook al tekent de lus. `pointer-events` staat normaal op
+   * `none` (elementFromPoint slaat ons dan over), daarom heel even aan.
+   */
+  function boostHitTest() {
+    var box = boost.box;
+    var el = boost.overlay;
+    if (!box || !el) return null;
+    var r = null;
+    try { r = box.getBoundingClientRect(); } catch (e) { return null; }
+    if (!(r.width > 4 && r.height > 4)) return null;
+    var prev = el.style.pointerEvents;
+    var hit = null;
+    try {
+      el.style.pointerEvents = 'auto';
+      hit = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2));
+    } catch (e) { hit = null; }
+    try { el.style.pointerEvents = prev; } catch (e) { /* ignore */ }
+    if (!hit) return null;
+    return {
+      ours: el === hit || el.contains(hit),
+      tag: hit.tagName || null,
+      cls: String(hit.className || '').slice(0, 80)
+    };
+  }
+
+  /**
    * Extra verschuiving (px) zodat de regel die NET boven het venster staat er
    * niet in schildert (zie L.captionTopKeepOut voor de berekening).
    *
@@ -2214,6 +2263,32 @@
     return t >= first - 1 && t <= last + BOOST_HOLD;
   }
 
+  /**
+   * Hoeveel woordblokjes staan er écht ín het venster? De box klipt
+   * (`overflow:hidden`), dus een verkeerde verschuiving of hoogte kan alle
+   * tekst buiten beeld schuiven terwijl de DOM vol staat. Dat is van buitenaf
+   * onzichtbaar ("hij tekent wel") en daarom is dit de harde controle: staat er
+   * tekst in de DOM maar geen enkel blokje in het venster, dan geven we de
+   * ondertiteling terug aan YouTube in plaats van een leeg venster te claimen.
+   */
+  function boostWordsInView() {
+    var box = boost.box;
+    if (!box) return { total: 0, inView: 0 };
+    var spans = null;
+    try { spans = box.querySelectorAll('.sc-caption-word'); } catch (e) { spans = null; }
+    if (!spans || !spans.length) return { total: 0, inView: 0 };
+    var br = null;
+    try { br = box.getBoundingClientRect(); } catch (e) { return { total: spans.length, inView: 0 }; }
+    var inView = 0;
+    for (var i = 0; i < spans.length; i++) {
+      var r = null;
+      try { r = spans[i].getBoundingClientRect(); } catch (e) { r = null; }
+      if (!r || !(r.height > 0)) continue;
+      if (r.bottom > br.top + 1 && r.top < br.bottom - 1 && r.right > br.left && r.left < br.right) inView++;
+    }
+    return { total: spans.length, inView: inView };
+  }
+
   function renderBoostFrame() {
     var p = player();
     var cur = boost.currentTrack;
@@ -2258,6 +2333,27 @@
     if (!boost.ownsCaptions) ownCaptions(true);
     if (BOOST_WORD_BY_WORD) renderWordFrame(t);
     else renderBlockFrame(t);
+    // Harde controle: staat er tekst in de DOM maar geen enkel blokje in het
+    // venster, dan klopt de geometrie niet (verschuiving/hoogte). Beter dan een
+    // leeg venster claimen (bugmelding 2026-11-01). Niet elke frame: de meting
+    // leest alle woordblokjes (zie de prestatieronde van 2026-10-15), dus dit
+    // gebeurt om de 10 frames.
+    if (boost.frame % 10 === 0 && boost.shownOnce && boostDisplayed()) {
+      var vis = boostWordsInView();
+      if (vis.total > 0 && vis.inView === 0) {
+        boost.invisible++;
+        if (boost.invisible >= 3) {
+          diag.boost.nothingVisible++;
+          // Voor deze track opgeven: anders start de poll de lus elke 900 ms
+          // opnieuw en knippert YouTube's venster aan/uit.
+          boost.gaveUpKey = boost.trackKey;
+          stopBoost('nothing-visible');
+          return;
+        }
+      } else {
+        boost.invisible = 0;
+      }
+    }
   }
 
   /**
@@ -2385,6 +2481,10 @@
     if (boost.blocks && boost.blocks.length) {
       boost.missingSince = 0;
       boost.repairs = 0;
+      // Voor deze track hebben we al opgegeven omdat er niets in beeld kwam
+      // (zie renderBoostFrame): YouTube's venster staat, dus niets doen tot de
+      // track wijzigt of er nieuwe timedtext binnenkomt.
+      if (boost.gaveUpKey === key) return;
       refreshBoostStyle(false);
       ensureBoostDom();
       watchPlayerSize();

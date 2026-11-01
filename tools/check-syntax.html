@@ -239,6 +239,14 @@
         /diag\.boost\.restarts\+\+/.test(agent);
       record("page-agent.js: geeft YouTube's venster terug als er niets te tekenen is of de lus stilstaat", releasesOwn,
         releasesOwn ? undefined : "verwacht stopBoost('no-blocks'), boostCoversTime() en de watchdog (restarts++)");
+
+      // Tekent de lus wél maar staat er niets in het venster (verkeerde
+      // verschuiving/hoogte), dan na een paar frames opgeven.
+      const nothingVisible = /function boostWordsInView\s*\(/.test(agent) &&
+        /stopBoost\('nothing-visible'\)/.test(agent) &&
+        /function boostHitTest\s*\(/.test(agent);
+      record('page-agent.js: geeft de ondertiteling terug als er tekst in de DOM staat maar niets in het venster', nothingVisible,
+        nothingVisible ? undefined : "verwacht boostWordsInView(), stopBoost('nothing-visible') en boostHitTest()");
     }
 
     /**
