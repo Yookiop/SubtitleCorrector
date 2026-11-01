@@ -204,6 +204,7 @@
         /getAttribute\('aria-pressed'\)/.test(agent) &&
         /async function setCaptionsDisplayed\s*\(/.test(agent) &&
         /await applyConfirmed\(/.test(agent) &&
+        /method:\s*'display'/.test(agent) &&
         (agent.match(/setCaptionsDisplayed\(\s*true/g) || []).length >= 2;
       record('page-agent.js: caption-weergave wordt echt aangezet (CC-knop, aria-pressed)', displayOn,
         displayOn ? undefined : 'verwacht captionsDisplayed() + setCaptionsDisplayed(true) in apply() en de reparatie');
@@ -211,6 +212,20 @@
       const trustedClicks = /ev\.isTrusted\s*===\s*false/.test(content);
       record('content.js: synthetische CC-klikken tellen niet als "gebruiker zette ze uit"', trustedClicks,
         trustedClicks ? undefined : 'verwacht een isTrusted-check in de click-listener op .ytp-subtitles-button');
+
+      // De zelftherapie mag niet vechten over auto vs. handmatig in dezelfde
+      // taal (2026-11-01): dat verschil ontstaat juist zodra de auto-track
+      // gekozen wordt, en elke 12 s het menu opnieuw openen voelt als freeze.
+      const noKindFight = /var wrongLang = /.test(content) &&
+        /L\.sameLang\(d\.current\.languageCode, wanted\.languageCode\)/.test(content) &&
+        !/captionMatchesTarget\(d\.current, wanted\)/.test(content);
+      record('content.js: zelftherapie vecht niet over auto/handmatig in dezelfde taal', noKindFight,
+        noKindFight ? undefined : 'verwacht een wrongLang-check met sameLang() i.p.v. captionMatchesTarget()');
+
+      const redisplay = /function handleCaptionsWentOff\s*\(/.test(content) &&
+        /redisplayTimer/.test(content) && /optedOut\[vid\]/.test(content);
+      record('content.js: een caption-reset na onze correctie wordt één keer hersteld (niet tegen de gebruiker in)', redisplay,
+        redisplay ? undefined : 'verwacht handleCaptionsWentOff() met optedOut-check en redisplayTimer');
 
       const reloadCalls = (agent.match(/scheduleVideoPageReload\(/g) || []).length;
       record('page-agent.js: pagina verversen is laatste redmiddel, niet elke video (' + reloadCalls + ' aanroepen)',

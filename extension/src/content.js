@@ -64,7 +64,9 @@
     lastCaptureAt: 0,
     subtitlesOff: false,
     fixCooldown: Object.create(null),   // videoId -> tijdstip laatste zelfcorrectie
-    fixTries: Object.create(null)       // videoId -> aantal zelfcorrecties
+    fixTries: Object.create(null),      // videoId -> aantal zelfcorrecties
+    redisplayTries: Object.create(null),// videoId -> aantal keer "weer aan" na een reset
+    redisplayTimer: null
   };
 
   // Laag 4 (audio-analyse) is zwaar; nooit vaker dan één keer per 45 s automatisch.
@@ -153,6 +155,9 @@
         state.waitingPlayback = null;
         state.waitingVerify = null;
         state.fixTries = Object.create(null);
+        state.redisplayTries = Object.create(null);
+        clearTimeout(state.redisplayTimer);
+        state.redisplayTimer = null;
         clearTimeout(state.verifyTimer);
         state.verifyTimer = null;
         setBadge(state.subtitlesOff ? 'off' : '');
@@ -190,11 +195,13 @@
         // YouTube zet soms zelf een andere track: het onthoudt je laatste
         // ondertitelkeuze en past die op de volgende video toe (Nederlandse
         // video -> Engelse video bleef zo op Nederlands staan), of het zet een
-        // vertaling aan of draait onze keuze terug. Alles wat niet de track is
-        // die wij willen, is reden voor één nieuwe poging — met een cooldown en
+        // vertaling aan of draait onze keuze terug. Alleen een andere taal of
+        // een vertaling is reden voor één nieuwe poging — met een cooldown en
         // een maximum, zodat we niet met YouTube gaan vechten.
         if (d.captionsOn && settings.autoApply && settings.enabled) {
           handleUnexpectedCaption(d);
+        } else if (!d.captionsOn && settings.autoApply && settings.enabled && settings.forceSubtitlesOn) {
+          handleCaptionsWentOff(d);
         }
         break;
 
@@ -222,17 +229,25 @@
   var FIX_MAX_TRIES = 4;
 
   /**
-   * Reageert op een `captionChanged` van de page agent. Alleen als captions aan
-   * staan en de track niet is wat de laatste planning wilde (of er een
-   * vertaling actief is) plannen we één nieuwe correctie.
+   * Reageert op een `captionChanged` van de page agent.
+   *
+   * Alleen een **andere taal** of een actieve **vertaling** is reden om opnieuw
+   * te corrigeren. Niet het verschil tussen de auto-track en de handmatige
+   * track van dezelfde taal: dat verschil is precies wat er ontstaat zodra
+   * YouTube (of de gebruiker) de auto-gegenereerde ondertitel kiest, en het
+   * leverde een gevecht op waarin de extensie elke 12 s het settings-menu
+   * opende om de track opnieuw te zetten (max. 4x) — dat voelt als een freeze
+   * en laat de ondertiteling uiteindelijk uit staan (bugmelding 2026-11-01).
    */
   function handleUnexpectedCaption(d) {
     var vid = d.videoId || state.videoId;
     if (!vid || vid !== (state.lastResult && state.lastResult.videoId)) return;
     var wanted = state.lastResult.plan ? state.lastResult.plan.target : null;
-    var unexpected = !L.captionMatchesTarget(d.current, wanted);
     var translated = !!(d.current && d.current.translated);
-    if (!unexpected && !(translated && settings.fixTranslation)) return;
+    // Zelfde taal (auto of handmatig) is goed genoeg; alleen een verkeerde
+    // taal of een vertaling moet weg.
+    var wrongLang = !!(d.current && wanted && !L.sameLang(d.current.languageCode, wanted.languageCode));
+    if (!wrongLang && !(translated && settings.fixTranslation)) return;
 
     var now = Date.now();
     var last = state.fixCooldown[vid] || 0;
@@ -246,6 +261,34 @@
         (translated ? ' vertaald' : '') + ') - opnieuw corrigeren, poging ' + (tries + 1));
     }
     scheduleAuto(vid, autoDelay(900), true);
+  }
+
+  /**
+   * De ondertiteling ging uit terwijl wij hem kort daarvoor gezet hadden —
+   * bijvoorbeeld omdat YouTube na een audio-wissel (auto-dub uitzetten) zijn
+   * caption-track opnieuw opbouwt en de weergave daarbij uitzet. Dat mag één
+   * keer hersteld worden, maar nooit tegen de gebruiker in: een echte klik op
+   * het CC-knopje markeert de video als `optedOut`, en `run()` stopt daarop.
+   * Daarom wachten we 1,5 s (de click-listener heeft 350 ms nodig) en
+   * controleren we het op dat moment opnieuw.
+   */
+  function handleCaptionsWentOff(d) {
+    var vid = d.videoId || state.videoId;
+    if (!vid || vid !== (state.lastResult && state.lastResult.videoId)) return;
+    if (state.optedOut[vid] || state.subtitlesOff) return;
+    var fixed = state.fixed[vid];
+    if (!fixed || Date.now() - fixed.at > 20000) return;
+    var tries = state.redisplayTries[vid] || 0;
+    if (tries >= 2) return;
+    state.redisplayTries[vid] = tries + 1;
+    clearTimeout(state.redisplayTimer);
+    state.redisplayTimer = setTimeout(function () {
+      state.redisplayTimer = null;
+      if (state.optedOut[vid] || state.subtitlesOff) return;
+      if (!settings.autoApply || !settings.enabled) return;
+      if (settings.debug) console.log('[SC] ondertiteling ging uit na onze correctie - opnieuw aanzetten');
+      run('auto');
+    }, 1500);
   }
 
   /**
@@ -722,6 +765,14 @@
         var usedAuto = !!(res.target ? res.target.isAutoGenerated : plan.target.isAutoGenerated);
         state.fixed[videoId] = { sig: plan.lang + '|' + (usedAuto ? 'asr' : 'man'), at: Date.now(), lang: plan.lang };
         setBadge(L.shortLabel(plan.lang) + (usedAuto ? '' : '*'));
+        // De zelftherapie hierboven vergelijkt `captionChanged` met het doel
+        // van de laatste planning. Is de auto-track niet gelukt en hebben we
+        // de handmatige track gezet, dan moet dít het doel zijn — anders ziet
+        // de extensie haar eigen uitkomst als "onverwacht" en opent ze elke
+        // 12 s opnieuw het settings-menu (max. 4x), wat als een freeze voelt.
+        if (res.target && state.lastResult && state.lastResult.plan) {
+          state.lastResult.plan.target = res.target;
+        }
       }
       if (settings.showToast) {
         if (trigger === 'verify') {
