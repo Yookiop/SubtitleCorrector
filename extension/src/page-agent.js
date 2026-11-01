@@ -793,7 +793,7 @@
    * sessionStorage ververst het vangnet niet — liever niet verversen dan een
    * lus.
    * ------------------------------------------------------------------ */
-  var AUTO_RELOAD_VIDEO_PAGE = 1;      // 0 = uit, 1 = aan
+  var AUTO_RELOAD_VIDEO_PAGE = 0;      // 0 = uit, 1 = aan
   var AUTO_RELOAD_DELAY_MS = 2000;     // wachttijd na het openen van de pagina
   var AUTO_RELOAD_MARK = 'sc-auto-reload';
 
