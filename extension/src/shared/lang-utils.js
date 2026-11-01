@@ -126,6 +126,51 @@
    * De `id` zelf is base64-protobuf met daarin de taal (laatste redmiddel).
    * ------------------------------------------------------------------ */
 
+  /* ------------------------------------------------------------------ *
+   * Video's buiten de playlist openen (optie openVideosOutsidePlaylist)
+   *
+   * Open je een video uit een playlist in een nieuw tabblad, dan krijgt dat
+   * tabblad de playlist-parameters mee (&list=, &index=, &pp=) en houdt
+   * YouTube er een playlist bij — dat is precies het trage geval. Deze
+   * helper haalt die parameters uit de URL; de rest (v=, t=, …) blijft
+   * staan, zodat een tijdstempel niet verloren gaat.
+   * ------------------------------------------------------------------ */
+
+  var YOUTUBE_HOSTS = { 'youtube.com': 1, 'www.youtube.com': 1, 'm.youtube.com': 1 };
+
+  /** Parameters die alleen bestaan om binnen een playlist te navigeren. */
+  var PLAYLIST_PARAMS = ['list', 'index', 'pp', 'start_radio'];
+
+  /**
+   * YouTube-watch-URL zonder playlist-parameters.
+   *
+   * @param {string} href  volledige URL (bv. tab.pendingUrl)
+   * @returns {string|null} opgeschoonde URL, of null als er niets te halen
+   *   valt (geen watch-URL, geen video-id of geen playlist-parameter)
+   */
+  function urlWithoutPlaylist(href) {
+    var s = String(href == null ? '' : href);
+    if (!s) return null;
+    var u;
+    try {
+      u = new URL(s);
+    } catch (e) {
+      return null;
+    }
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+    if (!YOUTUBE_HOSTS[u.hostname]) return null;
+    if (u.pathname !== '/watch') return null;
+    if (!u.searchParams.get('v')) return null;
+    var stripped = false;
+    PLAYLIST_PARAMS.forEach(function (key) {
+      if (u.searchParams.has(key)) {
+        u.searchParams.delete(key);
+        stripped = true;
+      }
+    });
+    return stripped ? u.toString() : null;
+  }
+
   /** "en.4" -> "en"; base64-protobuf -> taal; "und" -> null */
   function decodeAudioTrackLang(id) {
     if (!id || typeof id !== 'string') return null;
@@ -1712,6 +1757,7 @@
     stripTranslationSuffix: stripTranslationSuffix,
     isTranslatedLabel: isTranslatedLabel,
     queryHasPlaylist: queryHasPlaylist,
+    urlWithoutPlaylist: urlWithoutPlaylist,
     shouldUseAudioFallback: shouldUseAudioFallback,
     hotkeyAction: hotkeyAction,
     decodeAudioTrackLang: decodeAudioTrackLang,

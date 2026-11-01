@@ -6,11 +6,22 @@
  *   - de lokale bridge pollen (health) voor de popup
  *   - op verzoek de tab-audio opnemen via een offscreen document en de
  *     samples naar de bridge sturen voor taalherkenning (EN/NL)
+ *   - een video die je uit een playlist in een nieuw tabblad opent, zonder
+ *     playlist-parameters laden (optie openVideosOutsidePlaylist)
  *
  * De opname gebeurt in een offscreen document omdat een service worker geen
  * getUserMedia/MediaRecorder heeft. Reden 'USER_MEDIA' + 'AUDIO_PLAYBACK'.
  */
 'use strict';
+
+// De pure logica (taalnormalisatie, caption-planning, URL-opruiming) staat in
+// lang-utils.js. De service worker laadt hem met importScripts; de
+// Firefox-variant zet hem als eerste in background.scripts (zie
+// manifest.firefox.json), want daar bestaat importScripts niet.
+if (typeof importScripts === 'function' && !globalThis.SCLang) {
+  importScripts('/src/shared/lang-utils.js');
+}
+const L = globalThis.SCLang || null;
 
 // Firefox levert `browser` (promise-gebaseerd) én een `chrome`-namespace die
 // alleen callbacks kent; Chrome levert alleen `chrome` (met promises). Deze
@@ -69,6 +80,79 @@ async function setTabDisabled(tabId, off) {
   else disabledTabs.delete(tabId);
   persistDisabledTabs();
 }
+
+/* ------------------------------------------------------------------ *
+ * Video's buiten de playlist openen (optie openVideosOutsidePlaylist)
+ *
+ * YouTube's playlist-parameters (&list=, &index=, &pp=) zetten een video in
+ * playlist-modus, en dat is het trage geval. Open je zo'n video met
+ * ctrl+klik / middelste muisklik in een nieuw tabblad, dan haalt deze
+ * listener de parameters er meteen weer af: het tabblad speelt alleen de
+ * video, zonder playlist.
+ *
+ * Alleen gloednieuwe tabbladen. Klik je binnen hetzelfde tabblad van de
+ * playlist door naar een video, dan blijft de playlist staan — anders zou
+ * je vaste playlist-tabblad zijn playlist kwijtraken.
+ * ------------------------------------------------------------------ */
+const NEW_TAB_WINDOW_MS = 8000;
+const freshTabs = new Map(); // tabId -> { at, armed }  (armed = eerste URL van dit tabblad nog niet gezien)
+
+let outsidePlaylistOn = false;
+const outsidePlaylistReady = ext.storage.sync
+  .get({ openVideosOutsidePlaylist: false })
+  .then((s) => { outsidePlaylistOn = !!(s && s.openVideosOutsidePlaylist); })
+  .catch(() => {});
+
+try {
+  ext.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'sync' || !changes || !changes.openVideosOutsidePlaylist) return;
+    outsidePlaylistOn = !!changes.openVideosOutsidePlaylist.newValue;
+  });
+} catch (e) { /* ignore */ }
+
+function pruneFreshTabs(now) {
+  freshTabs.forEach((info, id) => {
+    if (now - info.at > NEW_TAB_WINDOW_MS) freshTabs.delete(id);
+  });
+}
+
+async function openOutsidePlaylist(tabId, rawUrl) {
+  if (!L || typeof L.urlWithoutPlaylist !== 'function') return false;
+  const target = L.urlWithoutPlaylist(rawUrl);
+  if (!target) return false;
+  await outsidePlaylistReady;
+  if (!outsidePlaylistOn) return false;
+  if (!freshTabs.has(tabId)) return false;
+  // Eén keer per tabblad: de opgeschoonde URL bevat geen playlist-parameters
+  // meer, dus een redirect-lus kan hier niet ontstaan.
+  freshTabs.delete(tabId);
+  try {
+    await ext.tabs.update(tabId, { url: target });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+ext.tabs.onCreated.addListener((tab) => {
+  if (!tab || tab.id == null) return;
+  const now = Date.now();
+  pruneFreshTabs(now);
+  // Chrome geeft de bestemming van een ctrl+klik mee als pendingUrl. Zonder
+  // URL (Firefox, sommige lege tabbladen) is het tabblad "armed": de eerste
+  // navigatie die binnenkomt mag dan nog opgeschoond worden.
+  const url = tab.pendingUrl || tab.url || '';
+  freshTabs.set(tab.id, { at: now, armed: !url });
+  if (url) openOutsidePlaylist(tab.id, url);
+});
+
+ext.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (!changeInfo || !changeInfo.url) return;
+  const info = freshTabs.get(tabId);
+  if (!info || !info.armed) return;
+  info.armed = false;
+  openOutsidePlaylist(tabId, changeInfo.url);
+});
 
 /* ------------------------------------------------------------------ *
  * Badge
@@ -296,6 +380,7 @@ ext.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 ext.tabs.onRemoved.addListener((tabId) => {
   if (tabId === lastTrackedTab) lastTrackedTab = null;
+  freshTabs.delete(tabId);
   if (disabledTabs.has(tabId)) {
     disabledTabs.delete(tabId);
     persistDisabledTabs();

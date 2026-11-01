@@ -26,6 +26,7 @@
     audioFallback: true,
     captionPriority: true,
     audioFallbackInPlaylists: false,
+    openVideosOutsidePlaylist: false,
     captionBoost: true,
     captionSize: 130,
     captionLines: 2,

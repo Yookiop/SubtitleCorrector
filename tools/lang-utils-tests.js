@@ -134,6 +134,28 @@
     eq(L.queryHasPlaylist(''), false);
   });
 
+  test('urlWithoutPlaylist haalt de playlist-parameters uit een watch-URL', function (L) {
+    eq(
+      L.urlWithoutPlaylist('https://www.youtube.com/watch?v=XV7zMtRLHKs&list=PLIQs9ZbAWu6g&index=2&pp=iAQB0gcJCSsMAYcqIYzvsAgC'),
+      'https://www.youtube.com/watch?v=XV7zMtRLHKs'
+    );
+    eq(L.urlWithoutPlaylist('https://m.youtube.com/watch?v=abc&list=PL1&index=3'), 'https://m.youtube.com/watch?v=abc');
+    // Alleen de playlist-parameters verdwijnen; een tijdstempel blijft staan.
+    eq(L.urlWithoutPlaylist('https://www.youtube.com/watch?v=abc&list=PL1&index=3&t=42s'), 'https://www.youtube.com/watch?v=abc&t=42s');
+  });
+
+  test('urlWithoutPlaylist laat alles met rust wat geen losse video is', function (L) {
+    eq(L.urlWithoutPlaylist('https://www.youtube.com/watch?v=abc'), null, 'geen playlist-parameters');
+    eq(L.urlWithoutPlaylist('https://www.youtube.com/playlist?list=PL123'), null, 'playlist-pagina');
+    eq(L.urlWithoutPlaylist('https://www.youtube.com/watch?list=PL123'), null, 'geen video-id');
+    eq(L.urlWithoutPlaylist('https://example.com/watch?v=abc&list=PL123'), null, 'andere host');
+    eq(L.urlWithoutPlaylist('https://www.youtube.com/shorts/abc?list=PL123'), null, 'geen watch-pagina');
+    eq(L.urlWithoutPlaylist('chrome://newtab/'), null);
+    eq(L.urlWithoutPlaylist(''), null);
+    eq(L.urlWithoutPlaylist(null), null);
+    eq(L.urlWithoutPlaylist('geen url'), null);
+  });
+
   test('shouldUseAudioFallback: in playlist standaard alleen via hotkey', function (L) {
     var auto = L.shouldUseAudioFallback({
       enabled: true, trigger: 'auto', inPlaylist: true, captionPriority: true,

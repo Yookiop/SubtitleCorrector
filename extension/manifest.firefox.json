@@ -15,7 +15,7 @@
     "http://localhost:*/*"
   ],
   "background": {
-    "scripts": ["src/background.js"]
+    "scripts": ["src/shared/lang-utils.js", "src/background.js"]
   },
   "action": {
     "default_title": "Subtitle Corrector",

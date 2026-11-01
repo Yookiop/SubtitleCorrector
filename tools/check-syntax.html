@@ -346,9 +346,46 @@
         contentOk ? undefined : 'verwacht disableAutoDub + ask(\'setOriginalAudio\') in run()');
     }
 
+    /**
+     * Optie "Video's buiten de playlist openen" (2026-11-01): de service
+     * worker moet lang-utils kunnen laden (importScripts / background.scripts),
+     * naar nieuwe tabbladen luisteren en de optie op de gebruikelijke 3
+     * plekken hebben staan.
+     */
+    async function checkOutsidePlaylist() {
+      const bg = await (await fetch('../extension/src/background.js', { cache: 'no-store' })).text();
+      const loadsUtils = /importScripts\(\s*'\/src\/shared\/lang-utils\.js'\s*\)/.test(bg);
+      record('background.js: laadt de pure logica met importScripts (lang-utils.js)', loadsUtils,
+        loadsUtils ? undefined : "verwacht importScripts('/src/shared/lang-utils.js') in background.js");
+
+      const listens = /ext\.tabs\.onCreated\.addListener/.test(bg) && /ext\.tabs\.onUpdated\.addListener/.test(bg) &&
+        /L\.urlWithoutPlaylist\(/.test(bg) && /openVideosOutsidePlaylist/.test(bg);
+      record('background.js: nieuwe tabbladen worden opgeschoond (tabs.onCreated/onUpdated + urlWithoutPlaylist)',
+        listens, listens ? undefined : 'verwacht tabs.onCreated/onUpdated, L.urlWithoutPlaylist() en de optie openVideosOutsidePlaylist');
+
+      let ff = null;
+      try {
+        ff = await (await fetch('../extension/manifest.firefox.json', { cache: 'no-store' })).json();
+      } catch (e) { /* hieronder als fout gemeld */ }
+      const bgScripts = (ff && ff.background && ff.background.scripts) || [];
+      const ffOrder = bgScripts.indexOf('src/shared/lang-utils.js') === 0 && bgScripts.indexOf('src/background.js') > 0;
+      record('firefox: background.scripts laadt lang-utils.js vóór background.js (geen importScripts)',
+        ffOrder, ffOrder ? undefined : 'verwacht ["src/shared/lang-utils.js", "src/background.js"]');
+
+      const content = await (await fetch('../extension/src/content.js', { cache: 'no-store' })).text();
+      const optionsJs = await (await fetch('../extension/src/options.js', { cache: 'no-store' })).text();
+      const optionsHtml = await (await fetch('../extension/src/options.html', { cache: 'no-store' })).text();
+      const inContent = /openVideosOutsidePlaylist:\s*false/.test(content);
+      const inOptions = /openVideosOutsidePlaylist:\s*false/.test(optionsJs) && /'openVideosOutsidePlaylist'/.test(optionsJs);
+      const inHtml = /id="openVideosOutsidePlaylist"/.test(optionsHtml);
+      record('optie openVideosOutsidePlaylist staat op de 3 plekken (content-defaults, options.js, options.html)',
+        inContent && inOptions && inHtml,
+        (inContent ? '' : 'content.js-default ontbreekt; ') + (inOptions ? '' : 'options.js ontbreekt; ') +
+        (inHtml ? '' : 'options.html-checkbox ontbreekt'));
+    }
+
     (async function () {
-      for (const rel of SCRIPTS) await checkScript(rel);
-      await checkManifest();
+      for (const rel of SCRIPTS) await checkScript(rel);      await checkManifest();
       try {
         await checkFirefoxManifest();
       } catch (e) {
@@ -358,6 +395,11 @@
         await checkAutoDub();
       } catch (e) {
         record('auto-dub-check', false, String(e.message || e));
+      }
+      try {
+        await checkOutsidePlaylist();
+      } catch (e) {
+        record('outside-playlist-check', false, String(e.message || e));
       }
       try {
         await checkOpaqueBackground();
