@@ -227,9 +227,9 @@
       record('content.js: een caption-reset na onze correctie wordt één keer hersteld (niet tegen de gebruiker in)', redisplay,
         redisplay ? undefined : 'verwacht handleCaptionsWentOff() met optedOut-check en redisplayTimer');
 
-      const reloadCalls = (agent.match(/scheduleVideoPageReload\(/g) || []).length;
-      record('page-agent.js: pagina verversen is laatste redmiddel, niet elke video (' + reloadCalls + ' aanroepen)',
-        reloadCalls <= 2, reloadCalls <= 2 ? undefined : 'scheduleVideoPageReload() hoort alleen in maybeRepairTrack() te staan');
+      const noReload = !/scheduleVideoPageReload|AUTO_RELOAD_VIDEO_PAGE|autoReloadTimer|location\.reload\(\)/.test(agent);
+      record('page-agent.js: ververst de pagina nooit meer (auto-reload verwijderd)', noReload,
+        noReload ? undefined : 'auto-reload hoort volledig verwijderd te zijn: een reload zette de caption-weergave uit');
     }
 
     /**

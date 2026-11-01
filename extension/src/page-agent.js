@@ -116,6 +116,8 @@
     var cur = readCurrentTrack();
     var id = currentVideoId();
     var key = cur && id ? boostKey(id, L.baseLang(cur.languageCode), cur.kind === 'asr' ? 'asr' : '') : null;
+    var pNow = player();
+    var tNow = safe(function () { return pNow && pNow.getCurrentTime ? pNow.getCurrentTime() : null; }, null);
     return {
       at: new Date().toISOString(),
       uptimeS: Math.round((Date.now() - diag.bootAt) / 1000),
@@ -132,6 +134,14 @@
         blockKey: boost.blockKey,
         runKey: boost.runKey,
         words: boost.wordCount,
+        // Wat de weergave tot zijn beschikking heeft, en of de speeltijd
+        // daarbinnen valt (buiten bereik -> YouTube's venster moet terug).
+        blocks: boost.blocks ? boost.blocks.length : -1,
+        runs: boost.runs ? boost.runs.length : -1,
+        coversTime: boostCoversTime(boost.blocks, tNow),
+        blocksFrom: boost.blocks && boost.blocks.length ? boost.blocks[0].start : null,
+        blocksTo: boost.blocks && boost.blocks.length ? boost.blocks[boost.blocks.length - 1].end : null,
+        playerTime: tNow,
         overlayConnected: !!(boost.overlay && boost.overlay.isConnected),
         overlayVisible: boostDisplayed(),
         text: boost.box ? String(boost.box.textContent || '').slice(-140) : ''
@@ -147,8 +157,7 @@
       lastAudioSwitch: diag.lastAudioSwitch,
       apply: diag.apply,
       docHidden: document.hidden,
-      pageVisibility: document.visibilityState,
-      autoReload: { enabled: AUTO_RELOAD_VIDEO_PAGE, done: autoReloadVideoId, pending: !!autoReloadTimer }
+      pageVisibility: document.visibilityState
     };
   }
 
@@ -819,33 +828,6 @@
   }
 
   /* ------------------------------------------------------------------ *
-   * Laatste redmiddel: video-pagina verversen
-   *
-   * YouTube's eigen ondertitelvenster loopt in playlists soms 1-2 s achter en
-   * plopt dan in blokken. Normaal lossen we dat op door de timedtext-track
-   * zelf op te vangen en tekenen (zie Caption Boost hieronder). Komt die track
-   * ook na de gerichte reparatie (ondertiteling één keer uit/aan) niet binnen,
-   * dan is een pagina-refresh de enige reset die overblijft: daarna vraagt de
-   * speler de track opnieuw op.
-   *
-   * Sinds 2026-10-31 hangt dit aan die voorwaarde en niet meer aan een
-   * video-wissel. Vóór die wijziging ververste de extensie élke video (ook in
-   * een playlist, waar de video zonder pagina-load wisselt): 2 s na de start
-   * een volledige reload en daarna ~5 s YouTube's eigen venster — precies de
-   * achterstand die het vangnet moest oplossen.
-   *
-   *     var AUTO_RELOAD_VIDEO_PAGE = 0;   ->   1
-   *
-   * Waarborgen: per video wordt er maar één keer ververst (een markering in
-   * sessionStorage overleeft de reload, dus geen refresh-lus) en zonder
-   * sessionStorage ververst het vangnet niet — liever niet verversen dan een
-   * lus.
-   * ------------------------------------------------------------------ */
-  var AUTO_RELOAD_VIDEO_PAGE = 0;      // 0 = uit, 1 = aan
-  var AUTO_RELOAD_DELAY_MS = 2000;     // wachttijd na het openen van de pagina
-  var AUTO_RELOAD_MARK = 'sc-auto-reload';
-
-  /* ------------------------------------------------------------------ *
    * Caption Boost: eigen ondertitelweergave
    *
    * YouTube's eigen caption-venster loopt in playlists soms 1-2 s achter en
@@ -898,20 +880,20 @@
    * opgevraagd. Gebeurt dat niet (de speler denkt hem al te hebben, een
    * mislukt verzoek, een extensie die de respons tegenhield), dan bleef
    * YouTube's eigen venster staan — en dat loopt in playlists 1-2 s achter.
-   * In plaats van de hele pagina te verversen (duur: reload + ~5 s geen
-   * eigen ondertiteling) zet de page agent de ondertiteling één keer uit en
-   * weer aan, precies wat een gebruiker doet. De speler vraagt de track dan
-   * opnieuw op en onze XHR-hook vangt hem alsnog op (live geverifieerd
-   * 2026-10-31: verzoeken 2 -> 3, daarna tekent de overlay direct weer).
+   * De page agent zet de ondertiteling dan één keer uit en weer aan, precies
+   * wat een gebruiker doet. De speler vraagt de track dan opnieuw op en onze
+   * XHR-hook vangt hem alsnog op (live geverifieerd 2026-10-31: verzoeken
+   * 2 -> 3, daarna tekent de overlay direct weer).
    *
-   * Pas als dat twee keer niet lukt valt hij terug op het oude vangnet: één
-   * keer de pagina verversen (AUTO_RELOAD_VIDEO_PAGE).
+   * Er wordt NIET meer ververst als dat niet lukt (2026-11-01): een
+   * pagina-reload zette de caption-weergave juist uit, waardoor de
+   * ondertiteling onzichtbaar bleef. Na twee pogingen geeft de page agent het
+   * op en laat hij YouTube's eigen venster staan.
    * ------------------------------------------------------------------ */
   var BOOST_REPAIR_AFTER_MS = 7000;    // s zonder track voordat we ingrijpen
   var BOOST_REPAIR_RETRY_MS = 10000;   // minimale tijd tussen twee pogingen
   var BOOST_REPAIR_MAX = 2;            // pogingen per video
   var BOOST_TRACK_SETTLE_MS = 3000;    // track moet zo lang stabiel zijn (menu-automatisering niet storen)
-  var BOOST_RELOAD_AFTER_MS = 20000;   // laatste redmiddel: pagina verversen
 
   var boost = {
     videoId: null,
@@ -2212,10 +2194,28 @@
     if (boost.rafActive) boost.rafHandle = requestAnimationFrame(renderBoost);
   }
 
+  /**
+   * Dekken de opgevangen blokken de huidige speeltijd? Tijdens een stilte
+   * *binnen* de track is dat zo (dan verbergen we YouTube's venster bewust),
+   * maar vóór de eerste of ná de laatste caption niet. In dat geval moet
+   * YouTube's eigen venster terugkomen: een lege eigen overlay boven een
+   * verborgen YouTube-venster is precies "de ondertitel lijkt aan maar je ziet
+   * niets" (bugmelding 2026-11-01).
+   */
+  function boostCoversTime(blocks, t) {
+    if (!blocks || !blocks.length) return false;
+    var first = blocks[0] && blocks[0].start;
+    var last = blocks[blocks.length - 1] && blocks[blocks.length - 1].end;
+    if (typeof first !== 'number' || !isFinite(first)) return false;
+    if (typeof last !== 'number' || !isFinite(last)) last = first;
+    return t >= first - 1 && t <= last + BOOST_HOLD;
+  }
+
   function renderBoostFrame() {
     var p = player();
     var cur = boost.currentTrack;
-    if (!CAPTION_BOOST_ENABLED || !p || !cur || !boostSupported(cur) || isAdShowingInDom() || !boost.blocks) {
+    if (!CAPTION_BOOST_ENABLED || !p || !cur || !boostSupported(cur) || isAdShowingInDom() ||
+        !boost.blocks || !boost.blocks.length) {
       stopBoost('no-track-or-ad');
       return;
     }
@@ -2244,6 +2244,15 @@
     }
 
     var t = safe(function () { return p.getCurrentTime(); }, 0);
+    // Buiten het bereik van de opgevangen track: niets te tekenen, dus geef
+    // YouTube's venster terug in plaats van een leeg venster te claimen. De
+    // lus blijft draaien (goedkoop) zodat we het bij een seek vanzelf weer
+    // overnemen.
+    if (!boostCoversTime(boost.blocks, t)) {
+      if (boost.ownsCaptions) { hideOnce(); ownCaptions(false); }
+      return;
+    }
+    if (!boost.ownsCaptions) ownCaptions(true);
     if (BOOST_WORD_BY_WORD) renderWordFrame(t);
     else renderBlockFrame(t);
   }
@@ -2290,10 +2299,9 @@
 
   /**
    * Vangnet in de poll: hoort er getekend te worden maar is de track van deze
-   * video nooit opgevangen, dan eerst de ondertiteling één keer uit/aan zetten
-   * en pas als dat niets oplevert (en AUTO_RELOAD_VIDEO_PAGE aan staat) de
-   * pagina verversen. Zo verversen we niet meer bij élke video — dat kostte
-   * een reload plus enkele seconden YouTube's eigen venster per video.
+   * video nooit opgevangen, dan zet de page agent de ondertiteling één keer
+   * uit/aan (max. BOOST_REPAIR_MAX keer). De pagina wordt nooit ververst: dat
+   * zette de caption-weergave juist uit (bugmelding 2026-11-01).
    */
   function maybeRepairTrack(cur, id) {
     var now = Date.now();
@@ -2316,11 +2324,6 @@
         diag.lastRepair = { at: now, videoId: id, attempt: boost.repairs, track: cur ? cur.languageCode + '/' + (cur.kind || '') : null };
         dbg('track niet opgevangen - ondertiteling een keer uit/aan (poging ' + boost.repairs + ')');
       }
-      return;
-    }
-    if (boost.repairs >= BOOST_REPAIR_MAX && waited >= BOOST_RELOAD_AFTER_MS) {
-      dbg('track komt ook na reparatie niet binnen - pagina verversen');
-      scheduleVideoPageReload(id);
     }
   }
 
@@ -2352,13 +2355,23 @@
     }
     if (!boost.blocks) {
       var rec = boostTracks[key];
-      if (rec) {
-        boost.blocks = rec.blocks;
-        // Woord-voor-woord: de runs komen uit dezelfde opgevangen track.
-        boost.runs = rec.runs || L.buildCaptionRuns(L.buildCaptionWords(rec.events || []), BOOST_SILENCE_GAP);
+      if (rec && rec.blocks && rec.blocks.length) boost.blocks = rec.blocks;
+    }
+    // De runs horen bij de blokken en worden los opgebouwd: als die stap ooit
+    // halverwege afbreekt (fout in de parser), bleef `runs` null terwijl
+    // `blocks` al gezet was — en dan viel de weergave voorgoed terug op de
+    // blokken (bugmelding 2026-11-01: `drawing.words: 0`, `renderLag: null`).
+    if (boost.blocks && !boost.runs) {
+      var recRuns = boostTracks[key];
+      if (recRuns) {
+        try {
+          boost.runs = recRuns.runs || L.buildCaptionRuns(L.buildCaptionWords(recRuns.events || []), BOOST_SILENCE_GAP);
+        } catch (e) {
+          boost.runs = null;
+        }
       }
     }
-    if (boost.blocks) {
+    if (boost.blocks && boost.blocks.length) {
       boost.missingSince = 0;
       boost.repairs = 0;
       refreshBoostStyle(false);
@@ -2368,8 +2381,12 @@
       // en blijft uit tot stopBoost() (dus ook tijdens een stilte). Anders zet
       // YouTube's (in playlists 1-2 s achterlopende) renderer tijdens elke
       // pauze zijn oude regel terug — precies het "de ondertiteling loopt
-      // achter" dat je dan ziet.
-      ownCaptions(true);
+      // achter" dat je dan ziet. Buiten het bereik van de track niet: dan
+      // heeft onze overlay niets te tekenen en moet YouTube's venster blijven
+      // staan (zie renderBoostFrame).
+      if (boostCoversTime(boost.blocks, safe(function () { return player().getCurrentTime(); }, 0))) {
+        ownCaptions(true);
+      }
       if (!boost.rafActive) {
         boost.rafActive = true;
         boost.frame = 0;
@@ -2610,85 +2627,6 @@
     return cur.languageCode + '|' + cur.kind + '|' + (cur.translated ? 'tr:' + cur.translatedTo : 'orig');
   }
 
-  /* ------------------------------------------------------------------ *
-   * Vangnet: video-pagina verversen (zie AUTO_RELOAD_VIDEO_PAGE)
-   * ------------------------------------------------------------------ */
-  var autoReloadVideoId = null;   // video waarvoor al gepland/ververst is
-  var autoReloadTimer = null;
-
-  /** Staat er een video-pagina open (watch/shorts/live)? */
-  function onVideoPage() {
-    try {
-      if (/^\/(watch|shorts|live)\b/.test(location.pathname)) return true;
-      return /[?&]v=[A-Za-z0-9_-]{6,}/.test(location.search);
-    } catch (e) {
-      return false;
-    }
-  }
-
-  /**
-   * De markering in sessionStorage: welke video is er (net) ververst?
-   * `null` = geen opslag beschikbaar. Dan ververst het vangnet NIET: zonder
-   * markering zou de verse pagina zichzelf meteen weer verversen (lus).
-   */
-  function autoReloadMarkRead() {
-    try {
-      var raw = window.sessionStorage.getItem(AUTO_RELOAD_MARK);
-      if (!raw) return { id: '', at: 0 };
-      var o = JSON.parse(raw);
-      if (!o || typeof o !== 'object') return { id: '', at: 0 };
-      return { id: String(o.id || ''), at: Number(o.at) || 0 };
-    } catch (e) {
-      return null;
-    }
-  }
-
-  function autoReloadMarkWrite(id) {
-    try {
-      window.sessionStorage.setItem(AUTO_RELOAD_MARK, JSON.stringify({ id: id, at: Date.now() }));
-      return true;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  function autoReloadMarkClear() {
-    try { window.sessionStorage.removeItem(AUTO_RELOAD_MARK); } catch (e) { /* ignore */ }
-  }
-
-  /**
-   * Plan één verversing voor deze video (alleen als AUTO_RELOAD_VIDEO_PAGE aan
-   * staat). De markering wordt vóór het verversen gezet en overleeft de reload:
-   * de verse pagina ziet hem, ruimt hem op en ververst niet opnieuw. Zo kan de
-   *zelfde video later gewoon weer ververst worden en is er nooit een lus.
-   */
-  function scheduleVideoPageReload(id) {
-    if (!AUTO_RELOAD_VIDEO_PAGE || !id || !onVideoPage()) return;
-    if (autoReloadVideoId === id) return;
-    autoReloadVideoId = id;
-    var mark = autoReloadMarkRead();
-    if (mark === null) return;
-    // Al ververst voor deze video (markering < 60 s oud)? Dan niets doen en de
-    // markering opruimen, zodat dezelfde video later wél weer ververst kan
-    // worden. Een oude markering telt niet (de reload kan mislukt zijn).
-    if (mark.id === id && Date.now() - mark.at < 60000) {
-      autoReloadMarkClear();
-      dbg('auto-reload: al ververst voor', id);
-      return;
-    }
-    if (autoReloadTimer) {
-      try { clearTimeout(autoReloadTimer); } catch (e) { /* ignore */ }
-      autoReloadTimer = null;
-    }
-    autoReloadTimer = setTimeout(function () {
-      autoReloadTimer = null;
-      if (currentVideoId() !== id) return;      // intussen een andere video
-      if (!autoReloadMarkWrite(id)) return;     // geen opslag -> niet verversen
-      dbg('auto-reload: pagina verversen voor', id);
-      try { location.reload(); } catch (e) { /* ignore */ }
-    }, AUTO_RELOAD_DELAY_MS);
-  }
-
   function tick() {
     var p = player();
     if (!p) return;
@@ -2698,9 +2636,6 @@
       lastVideoId = id;
       dbg('videoChanged', id);
       post({ type: 'videoChanged', videoId: id, title: safe(function () { return p.getVideoData().title; }, null) });
-      // Het vangnet (pagina verversen) hangt NIET meer aan een video-wissel:
-      // dat verversde élke video in een playlist. Het draait nu pas als de
-      // track ook na de reparatie in boostTick() niet binnenkomt.
     }
 
     var ad = isAd();
