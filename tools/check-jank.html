@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <title>Subtitle Corrector - haperingmeting (jank)</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; padding: 24px; font: 14px/1.5 "Segoe UI", system-ui, sans-serif; background: #14161c; color: #e8eef7; }
+    h1 { font-size: 18px; margin: 0 0 6px; }
+    .sub { color: #93a1b5; margin-bottom: 18px; max-width: 950px; }
+    #summary { font-size: 15px; font-weight: 600; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; display: inline-block; }
+    .pass { background: #12331f; color: #56e39f; border: 1px solid #1e5a37; }
+    .fail { background: #3a1414; color: #ff9a9a; border: 1px solid #6a2020; }
+    ul { list-style: none; padding: 0; margin: 0; max-width: 950px; }
+    li { padding: 7px 10px; border-bottom: 1px solid #232936; display: flex; gap: 10px; }
+    li .mark { width: 18px; flex: 0 0 18px; font-weight: 700; }
+    li.ok .mark { color: #56e39f; }
+    li.err .mark { color: #ff7a7a; }
+    li .err-msg { color: #ff9a9a; font-size: 12.5px; margin-top: 3px; white-space: pre-wrap; }
+    code { font-family: Consolas, monospace; background: #232936; padding: 1px 5px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Subtitle Corrector - haperingmeting (jank)</h1>
+  <div class="sub">
+    Laadt de echte <code>page-agent.js</code> en controleert of de haperingmeting werkt: een kunstmatige lange frame
+    moet als <code>jank.worst</code> in de diagnose komen, met een geldig tijdstip, met de juiste bron in
+    <code>worst.scripts</code> — en zonder dat de tijd van die blokkade aan onze eigen code wordt toegeschreven.
+    Draai dit via een lokale server, bv.<br>
+    <code>python -m http.server 8099</code> → <code>http://localhost:8099/tools/check-jank.html</code>
+  </div>
+  <div id="summary">bezig...</div>
+  <ul id="results"></ul>
+
+  <script src="../extension/src/shared/lang-utils.js"></script>
+  <script src="../extension/src/page-agent.js"></script>
+  <script>
+    const results = [];
+    function record(name, ok, error) { results.push({ name, ok: !!ok, error: ok ? '' : (error || 'onwaar') }); }
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    function diag() {
+      try { return window.__scDiag ? window.__scDiag() : null; } catch (e) { return null; }
+    }
+
+    function hasLoaf() {
+      try { return PerformanceObserver.supportedEntryTypes.indexOf('long-animation-frame') !== -1; }
+      catch (e) { return false; }
+    }
+
+    /**
+     * Een lange frame forceren: de rAF-callback 140 ms bezet houden. rAF hoort
+     * bij de animatieframe, dus dit is precies het werk dat LoAF toeschrijft
+     * (een blokkade in een timer zou buiten de frame vallen).
+     */
+    function blockFrame(ms) {
+      return new Promise((resolve) => {
+        requestAnimationFrame(() => {
+          const t0 = performance.now();
+          while (performance.now() - t0 < ms) { /* spin */ }
+          resolve(performance.now() - t0);
+        });
+      });
+    }
+
+    async function main() {
+      const d0 = diag();
+      record('window.__scDiag() geeft een momentopname', d0 && typeof d0 === 'object', 'verwacht een object');
+      record('jank-object staat in de diagnose', !!(d0 && d0.jank), 'verwacht diag.jank');
+      record('jank heeft longFrames/totalBlockingMs/mineMs/own.maxMs/worst',
+        !!(d0 && d0.jank && typeof d0.jank.longFrames === 'number' && typeof d0.jank.totalBlockingMs === 'number' &&
+          typeof d0.jank.mineMs === 'number' && d0.jank.own && typeof d0.jank.own.maxMs === 'number' &&
+          'worst' in d0.jank),
+        'verwacht longFrames, totalBlockingMs, mineMs, own.maxMs en worst in diag.jank');
+      record('frames heeft maxGapAt en maxGapVideoS',
+        !!(d0 && d0.frames && 'maxGapAt' in d0.frames && 'maxGapVideoS' in d0.frames),
+        'verwacht maxGapAt en maxGapVideoS in diag.frames');
+
+      if (!hasLoaf()) {
+        // Firefox: geen long-animation-frame. De eigen frame-meting (own.maxMs)
+        // blijft daar wél werken; alleen de toeschrijving per hapering vervalt.
+        record('runtime-meting overgeslagen: deze browser heeft geen long-animation-frame', true);
+      } else {
+        record('jank.supported is true in deze browser', d0.jank.supported === true,
+          'PerformanceObserver meldt de API wel, maar diag.jank.supported staat op false');
+        const before = d0.jank.longFrames;
+        const blocked = await Promise.race([blockFrame(140), sleep(3000).then(() => null)]);
+        if (blocked === null) {
+          record('kunstmatige lange frame', false, 'rAF vuurde niet binnen 3 s - staat dit tabblad op de achtergrond?');
+        } else {
+          await sleep(600);
+          const d1 = diag();
+          const w = d1 && d1.jank ? d1.jank.worst : null;
+          record('de kunstmatige lange frame (' + Math.round(blocked) + ' ms) is geteld',
+            !!d1 && d1.jank.longFrames > before,
+            'verwacht longFrames > ' + before + ', kreeg ' + (d1 && d1.jank ? d1.jank.longFrames : '?'));
+          record('jank.worst.ms >= 50', !!(w && w.ms >= 50), 'verwacht worst.ms >= 50, kreeg ' + (w ? w.ms : 'null'));
+          record('jank.worst.at is een geldig tijdstip', !!(w && !isNaN(Date.parse(w.at))),
+            'verwacht een ISO-tijdstip, kreeg ' + (w ? w.at : 'null'));
+          record('jank.worst.scripts is een lijst', !!(w && Array.isArray(w.scripts)), 'verwacht worst.scripts als array');
+          record('jank.worst.scripts schrijft de blokkade aan deze pagina toe (bron-URL per script)',
+            !!(w && Array.isArray(w.scripts) && w.scripts.some((s) => /check-jank/.test(s.src))),
+            'verwacht een regel voor check-jank.html in worst.scripts, kreeg ' + JSON.stringify(w && w.scripts));
+          record('onze eigen tijd blijft klein (mineMs < 50 van de ' + Math.round(blocked) + ' ms)',
+            !!d1 && d1.jank.mineMs < 50, 'verwacht mineMs < 50, kreeg ' + (d1 && d1.jank ? d1.jank.mineMs : '?'));
+          record('jank.own.frames blijft 0 zonder speler (de frame-lus draait hier niet)',
+            !!d1 && d1.jank.own.frames === 0, 'verwacht own.frames 0, kreeg ' + (d1 && d1.jank ? d1.jank.own.frames : '?'));
+          record('jank.worst.videoS is null zonder YouTube-speler', !!(w && w.videoS === null),
+            'verwacht videoS null, kreeg ' + (w ? w.videoS : 'null'));
+        }
+      }
+
+      const li = (r) => {
+        const el = document.createElement('li');
+        el.className = r.ok ? 'ok' : 'err';
+        el.innerHTML = '<span class="mark">' + (r.ok ? '\u2713' : '\u2717') + '</span><span>' +
+          r.name + (r.ok ? '' : '<div class="err-msg">' + r.error + '</div>') + '</span>';
+        return el;
+      };
+      const list = document.getElementById('results');
+      results.forEach((r) => list.appendChild(li(r)));
+
+      const failed = results.filter((r) => !r.ok).length;
+      const summary = document.getElementById('summary');
+      summary.textContent = (results.length - failed) + ' / ' + results.length + ' ok' + (failed ? ' - ' + failed + ' GEFAALD' : ' - alles goed');
+      summary.className = failed ? 'fail' : 'pass';
+      document.title = (failed ? 'FAIL ' : 'PASS ') + (results.length - failed) + '/' + results.length + ' - Subtitle Corrector jank-check';
+    }
+
+    main();
+  </script>
+</body>
+</html>

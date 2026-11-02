@@ -1002,24 +1002,30 @@
         return true;
       }
       if (msg.type === 'popupState') {
-        // De diagnose van de page agent (waarom tekent hij wel/niet) gaat mee
-        // naar de popup. Hij is async, dus het antwoord komt pas als die
-        // binnen is; zonder antwoord stuurt de popup gewoon `diag: null`.
-        ask('diag', null, 3000).then(
-          function (diag) { sendResponse(buildPopupState(diag)); },
-          function () { sendResponse(buildPopupState(null)); }
-        );
+        // De diagnose van de page agent (waarom tekent hij wel/niet) én een
+        // VERSE probe gaan mee naar de popup. `state.lastProbe` is de probe van
+        // de laatste automatische ronde en kan minuten oud zijn: in het log van
+        // 2026-11-02 stond daardoor `probe.current.translated: true`
+        // ("Nederlands >> Engels") naast `diag.current.translated: false` — twee
+        // momentopnames door elkaar, waardoor het leek of er nog een vertaling
+        // actief was. Beide zijn async, dus het antwoord komt pas als ze allebei
+        // binnen zijn; zonder antwoord gaat er `null` mee.
+        Promise.all([
+          ask('diag', null, 3000).catch(function () { return null; }),
+          ask('probe', null, 3000).catch(function () { return null; })
+        ]).then(function (r) { sendResponse(buildPopupState(r[0], r[1])); },
+          function () { /* tab gesloten */ });
         return true;
       }
       return false;
     });
   } catch (e) { /* ignore */ }
 
-  function buildPopupState(diag) {
+  function buildPopupState(diag, probe) {
     return {
       ok: true,
       videoId: state.videoId,
-      probe: state.lastProbe,
+      probe: probe || state.lastProbe,
       result: state.lastResult,
       verify: state.videoId ? state.verify[state.videoId] || null : null,
       diag: diag,

@@ -70,7 +70,18 @@
     timedtext: { requests: 0, stored: 0, ignored: Object.create(null) },
     lastTrack: null,
     boost: { starts: 0, stops: 0, restarts: 0, manualFrames: 0, nothingVisible: 0, active: false, since: 0, lastStop: null, byReason: Object.create(null) },
-    frames: { count: 0, maxGapMs: 0, slowFrames: 0, lastGapMs: 0, lastAt: 0, hiddenFrames: 0 },
+    frames: { count: 0, maxGapMs: 0, maxGapAt: null, maxGapVideoS: null, slowFrames: 0, lastGapMs: 0, lastAt: 0, hiddenFrames: 0 },
+    // Haperingen van de pagina (zie installJankWatch): het enige wat hard kan
+    // maken of "de video loopt achter op het geluid" door ons komt of door
+    // YouTube/de decoder.
+    jank: {
+      supported: false,
+      longFrames: 0,        // lange frames (LoAF): main thread > 50 ms bezig
+      totalBlockingMs: 0,   // som van de blokkerende tijd daarvan
+      mineMs: 0,            // deel daarvan in onze eigen page-agent
+      worst: null,          // zwaarste hapering, met de scripts die erin liepen
+      own: { frames: 0, maxMs: 0, over16: 0 } // onze eigen frame-body (elke browser)
+    },
     own: { on: 0, off: 0 },
     repairs: 0,
     lastRepair: null,
@@ -163,6 +174,7 @@
       timedtext: diag.timedtext,
       boost: diag.boost,
       frames: diag.frames,
+      jank: diag.jank,
       own: diag.own,
       repairs: diag.repairs,
       lastRepair: diag.lastRepair,
@@ -196,6 +208,118 @@
     if (run.start !== boost.runKey) return { t: t, run: -2, pending: 0, have: boost.wordCount };
     var n = L.captionWordIndex(run.words, ts, 0);
     return { t: t, run: idx, want: n, have: boost.wordCount, pending: Math.max(0, n - boost.wordCount) };
+  }
+
+  /**
+   * Haperingen van de pagina toeschrijven ("de video loopt achter op het geluid").
+   *
+   * Een lange frame op de main thread laat YouTube's beeld stilstaan terwijl het
+   * geluid doorloopt — precies dat symptoom. Onze eigen frame-lus kan zo'n frame
+   * veroorzaken, maar YouTube's speler net zo goed, en van buitenaf is dat niet
+   * te zien. `long-animation-frame` (Chrome 123+; Firefox heeft hem niet) geeft
+   * per hapering de duur, de blokkerende tijd, de tijd die naar style/layout
+   * ging en WELKE scripts erin liepen (bron-URL). `jank.mineMs` is het deel van
+   * onze eigen page-agent, `jank.own.maxMs` de langste eigen frame-body (die
+   * meting werkt in elke browser). Zo zegt de volgende diagnose WIE er hing in
+   * plaats van alleen DAT er gehikt werd (bugmelding 2026-11-02).
+   */
+  var JANK_MAX_SCRIPTS = 4;
+
+  function nowMs() {
+    try { return performance.now(); } catch (e) { return Date.now(); }
+  }
+
+  /** Speeltijd van de speler (s), of null als er geen speler is. */
+  function playerTimeNow() {
+    var p = player();
+    var t = safe(function () { return p && p.getCurrentTime ? p.getCurrentTime() : null; }, null);
+    return typeof t === 'number' && isFinite(t) ? Math.round(t * 100) / 100 : null;
+  }
+
+  function perfSupports(type) {
+    try {
+      var t = PerformanceObserver.supportedEntryTypes;
+      return !!t && t.indexOf(type) !== -1;
+    } catch (e) { return false; }
+  }
+
+  /** `chrome-extension://<id>/src/page-agent.js` -> `page-agent.js`. */
+  function shortSource(url) {
+    var s = String(url || '');
+    if (!s) return '?';
+    var at = s.lastIndexOf('/');
+    return at === -1 ? s.slice(0, 60) : s.slice(at + 1);
+  }
+
+  function isOwnSource(url) {
+    return /\/page-agent\.js(\?|$)/.test(String(url || ''));
+  }
+
+  function noteJankFrame(e) {
+    var ms = Math.round(e.duration || 0);
+    diag.jank.longFrames++;
+    diag.jank.totalBlockingMs += Math.round(e.blockingDuration || 0);
+    var own = 0;
+    var scripts = [];
+    var list = e.scripts || [];
+    for (var i = 0; i < list.length; i++) {
+      var s = list[i];
+      if (!(s.duration > 0)) continue;
+      if (isOwnSource(s.sourceURL)) own += s.duration;
+      if (scripts.length < JANK_MAX_SCRIPTS) {
+        scripts.push({ src: shortSource(s.sourceURL || s.invoker), ms: Math.round(s.duration) });
+      }
+    }
+    own = Math.round(own);
+    diag.jank.mineMs += own;
+    // Alles ná de eerste render-stap is style/layout: precies het werk dat onze
+    // DOM-wijzigingen (metingen per woord) kunnen uitlokken.
+    var styleMs = 0;
+    if (typeof e.styleAndLayoutStart === 'number' && e.styleAndLayoutStart > 0) {
+      styleMs = Math.round(Math.max(0, e.startTime + (e.duration || 0) - e.styleAndLayoutStart));
+    }
+    var end = (e.startTime || 0) + (e.duration || 0);
+    var rec = {
+      at: new Date(performance.timeOrigin + (e.startTime || 0)).toISOString(),
+      agoMs: Math.round(nowMs() - end),
+      ms: ms,
+      blockingMs: Math.round(e.blockingDuration || 0),
+      styleMs: styleMs,
+      ownMs: own,
+      videoS: playerTimeNow(),
+      scripts: scripts
+    };
+    if (!diag.jank.worst || rec.ms > diag.jank.worst.ms) diag.jank.worst = rec;
+  }
+
+  function installJankWatch() {
+    if (typeof PerformanceObserver !== 'function' || !perfSupports('long-animation-frame')) return;
+    try {
+      var po = new PerformanceObserver(function (list) {
+        var es = list.getEntries();
+        for (var i = 0; i < es.length; i++) {
+          try { noteJankFrame(es[i]); } catch (e) { /* ignore */ }
+        }
+      });
+      po.observe({ type: 'long-animation-frame', buffered: true });
+      diag.jank.supported = true;
+    } catch (e) { /* ignore */ }
+  }
+
+  /**
+   * De haperingsteller op nul zetten bij een videowissel of bij play: het laden
+   * van een YouTube-pagina levert zelf lange frames op, en die zeggen niets over
+   * de video die je nú kijkt (`tick()` roept dit aan als de video-id verandert of
+   * de speler op spelen springt).
+   */
+  function resetJank() {
+    diag.jank.longFrames = 0;
+    diag.jank.totalBlockingMs = 0;
+    diag.jank.mineMs = 0;
+    diag.jank.worst = null;
+    diag.jank.own.frames = 0;
+    diag.jank.own.maxMs = 0;
+    diag.jank.own.over16 = 0;
   }
 
   try {
@@ -535,6 +659,7 @@
 
     return {
       ok: true,
+      at: new Date().toISOString(),
       videoId: currentVideoId(),
       title: (vd && vd.title) || null,
       adShowing: isAd(),
@@ -1411,8 +1536,15 @@
    * weergave.
    */
   function ownCaptions(on) {
-    boost.ownsCaptions = !!on;
-    if (on) diag.own.on++; else diag.own.off++;
+    on = !!on;
+    // Alleen een échte wissel telt: de 900ms-poll zet de klasse elke ronde
+    // opnieuw (voor het geval YouTube hem weghaalt), en met een teller per
+    // aanroep stond er in het log "own.on: 32" terwijl de stand nooit
+    // veranderde (log 2026-11-02).
+    if (boost.ownsCaptions !== on) {
+      if (on) diag.own.on++; else diag.own.off++;
+      boost.ownsCaptions = on;
+    }
     var p = player();
     if (!p || !p.classList) return;
     if (on) p.classList.add('sc-boost-on');
@@ -2234,7 +2366,15 @@
     if (diag.frames.lastAt) {
       var gap = now - diag.frames.lastAt;
       diag.frames.lastGapMs = gap;
-      if (gap > diag.frames.maxGapMs) diag.frames.maxGapMs = gap;
+      if (gap > diag.frames.maxGapMs) {
+        diag.frames.maxGapMs = gap;
+        // Wanneer (en hoe ver in de video) zat die hapering? Zonder tijdstip
+        // kun je in het log niet zien of hij bij de ondertitelwissel, de
+        // menu-automatisering of een videowissel hoorde (bugmelding 2026-11-02:
+        // `maxGapMs: 390` zonder enig aanknopingspunt).
+        diag.frames.maxGapAt = new Date().toISOString();
+        diag.frames.maxGapVideoS = playerTimeNow();
+      }
       // > 150 ms = er zijn frames overgeslagen: de weergave kan dan zichtbaar
       // achter de audio aanlopen (rAF staat stil, pagina is te druk).
       if (gap > 150) diag.frames.slowFrames++;
@@ -2242,12 +2382,20 @@
     diag.frames.lastAt = now;
     diag.frames.count++;
     if (document.hidden) diag.frames.hiddenFrames++;
+    var t0 = nowMs();
     try {
       renderBoostFrame();
     } catch (e) {
       stopBoost('frame-error');
       return;
     }
+    // Onze eigen frame-body meten: dit is het deel dat wij zelf blokkeren. De
+    // rest van een hapering (style/layout/paint na onze DOM-wijzigingen, of werk
+    // van YouTube) staat in diag.jank.
+    var ownMs = nowMs() - t0;
+    diag.jank.own.frames++;
+    if (ownMs > diag.jank.own.maxMs) diag.jank.own.maxMs = Math.round(ownMs * 10) / 10;
+    if (ownMs > 16) diag.jank.own.over16++;
     if (boost.rafActive) boost.rafHandle = requestAnimationFrame(renderBoost);
   }
 
@@ -2341,9 +2489,11 @@
     // Harde controle: staat er tekst in de DOM maar geen enkel blokje in het
     // venster, dan klopt de geometrie niet (verschuiving/hoogte). Beter dan een
     // leeg venster claimen (bugmelding 2026-11-01). Niet elke frame: de meting
-    // leest alle woordblokjes (zie de prestatieronde van 2026-10-15), dus dit
-    // gebeurt om de 10 frames.
-    if (boost.frame % 10 === 0 && boost.shownOnce && boostDisplayed()) {
+    // leest alle woordblokjes (zie de prestatieronde van 2026-10-15). Om de 30
+    // frames (± 0,5 s) is ruim genoeg — drie metingen op rij beslissen nog
+    // steeds binnen ± 1,5 s — en scheelt de helft van de geforceerde layouts
+    // ten opzichte van om de 10 (haperingmeting 2026-11-02).
+    if (boost.frame % 30 === 0 && boost.shownOnce && boostDisplayed()) {
       var vis = boostWordsInView();
       if (vis.total > 0 && vis.inView === 0) {
         boost.invisible++;
@@ -2749,6 +2899,7 @@
   }
 
   installTimedtextHooks();
+  installJankWatch();
 
   /* ------------------------------------------------------------------ *
    * Events naar de content script
@@ -2771,6 +2922,10 @@
     var id = currentVideoId();
     if (id && id !== lastVideoId) {
       lastVideoId = id;
+      // Haperingen van de vorige video (en van het laden van de pagina) zeggen
+      // niets over deze video: teller op nul, zodat "Prestatie" in de popup bij
+      // deze video hoort (haperingmeting 2026-11-02).
+      resetJank();
       dbg('videoChanged', id);
       post({ type: 'videoChanged', videoId: id, title: safe(function () { return p.getVideoData().title; }, null) });
     }
@@ -2784,6 +2939,10 @@
     var ps = safe(function () { return p.getPlayerState(); }, -1);
     if (ps !== lastState) {
       lastState = ps;
+      // Play = een nieuwe afspeelsessie: de haperingsteller op nul, zodat
+      // "Prestatie" over het kijken gaat en niet over het laden van de pagina
+      // (die levert zelf lange frames op; haperingmeting 2026-11-02).
+      if (ps === 1) resetJank();
       post({ type: 'playerState', state: ps, videoId: lastVideoId });
     }
 
