@@ -1022,6 +1022,76 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * Loopt onze weergave achter? Vergelijking met YouTube's eigen venster
+   *
+   * De eigen diagnose (`diagRenderLag`) vergelijkt de getekende woorden met de
+   * track op dezelfde klok, dus die kan niet zien of de *track* of de *klok*
+   * zelf niet klopt: hij meldt altijd 0 zolang wij doen wat de track zegt.
+   * YouTube's eigen captionvenster is een tweede, onafhankelijke weergave van
+   * dezelfde ondertitel. Staat daar tekst die wij nog niet getoond hebben, dan
+   * lopen wij áchter — hoe dan ook (verkeerde klok, een tweede/nieuwere versie
+   * van de track, een vastgelopen lus). Andersom zegt het niets: YouTube's
+   * venster loopt in playlists juist 1-2 s achter, en dat is precies waarom
+   * Caption Boost bestaat (bugmelding 2026-11-05).
+   * ------------------------------------------------------------------ */
+
+  /** Woord vergelijkbaar maken: kleine letters, zonder leestekens en quotes. */
+  function captionWordKey(text) {
+    return String(text == null ? '' : text)
+      .toLowerCase()
+      .replace(/[\u2018\u2019\u02bc\u00b4]/g, "'")
+      .replace(/[^a-z0-9'\u00c0-\u024f]+/g, '')
+      .replace(/^'+|'+$/g, '');
+  }
+
+  /** Alle woorden van een tekst, genormaliseerd (">>" valt weg). */
+  function captionTextWords(text) {
+    return String(text == null ? '' : text)
+      .replace(/>>/g, ' ')
+      .split(/\s+/)
+      .map(captionWordKey)
+      .filter(function (w) { return !!w; });
+  }
+
+  /**
+   * Hoeveel woorden loopt een tweede weergave vóór op de onze?
+   *
+   * @param {Array}  words   woorden van de huidige run (`[{text}]`)
+   * @param {number} shown   hoeveel daarvan al getoond zijn
+   * @param {string} ytText  tekst die de andere weergave nu toont
+   * @param {object} opts    tail (aantal woorden dat moet matchen, default 4),
+   *                         window (hoe ver terug we zoeken, default 400)
+   * @returns {{ahead:number, matched:boolean, idx:number}}
+   *          `matched: false` = de tekst hoort niet bij deze run (andere cue,
+   *          vertaling, "[Music]"); dan weten we niets en melden we niets.
+   */
+  function captionAheadWords(words, shown, ytText, opts) {
+    var list = words || [];
+    var tail = captionTextWords(ytText);
+    if (!list.length || !tail.length) return { ahead: 0, matched: false, idx: -1 };
+    opts = opts || {};
+    var want = Number(opts.tail);
+    want = isFinite(want) && want > 0 ? Math.round(want) : 4;
+    if (tail.length > want) tail = tail.slice(tail.length - want);
+    var back = Number(opts.window);
+    back = isFinite(back) && back > 0 ? Math.round(back) : 400;
+    var have = Number(shown);
+    have = isFinite(have) && have > 0 ? Math.round(have) : 0;
+    var from = Math.max(0, list.length - back);
+    var last = tail[tail.length - 1];
+    for (var i = list.length - 1; i >= from; i--) {
+      if (captionWordKey(list[i] && list[i].text) !== last) continue;
+      var all = true;
+      for (var k = tail.length - 1, j = i; k >= 0; k--, j--) {
+        if (j < 0 || captionWordKey(list[j] && list[j].text) !== tail[k]) { all = false; break; }
+      }
+      if (!all) continue;
+      return { ahead: Math.max(0, i + 1 - have), matched: true, idx: i };
+    }
+    return { ahead: 0, matched: false, idx: -1 };
+  }
+
+  /* ------------------------------------------------------------------ *
    * Sprekerswissel (">>") in auto-ondertitels
    *
    * YouTube's auto-ondertitels zetten een ">>" vóór de woorden van een nieuwe
@@ -1797,6 +1867,9 @@
     CAPTION_REVEAL_PER_FRAME: CAPTION_REVEAL_PER_FRAME,
     CAPTION_REVEAL_JUMP: CAPTION_REVEAL_JUMP,
     captionRevealPace: captionRevealPace,
+    captionWordKey: captionWordKey,
+    captionTextWords: captionTextWords,
+    captionAheadWords: captionAheadWords,
     captionWindowShift: captionWindowShift,
     captionWindowShiftLines: captionWindowShiftLines,
     captionWindowShiftMeasured: captionWindowShiftMeasured,

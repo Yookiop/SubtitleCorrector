@@ -1219,6 +1219,68 @@
   });
 
   /* ------------------------------------------------------------------ *
+   * "Loopt onze weergave achter?" — vergelijking met YouTube's eigen venster
+   * (sinds 2026-11-05)
+   * ------------------------------------------------------------------ */
+  function aheadRun() {
+    // "we are going to need some more supplies" — 8 woorden, elk met een tijd
+    var txt = ['we', 'are', 'going', 'to', 'need', 'some', 'more', 'supplies'];
+    return txt.map(function (w, i) { return { t: i * 0.4, end: (i + 1) * 0.4, text: w }; });
+  }
+
+  test('captionAheadWords: YouTube\'s venster staat verder -> wij lopen achter', function (L) {
+    var run = aheadRun();
+    // wij hebben 4 woorden getoond, YouTube toont t/m "supplies" (8)
+    var r = L.captionAheadWords(run, 4, 'need some more supplies');
+    eq(r.matched, true);
+    eq(r.ahead, 4, 'vier woorden achter');
+    eq(r.idx, 7);
+    // YouTube toont alleen wat wij al hadden -> geen achterstand
+    eq(L.captionAheadWords(run, 8, 'need some more supplies').ahead, 0);
+    eq(L.captionAheadWords(run, 6, 'going to need').ahead, 0, 'iets terug in de tekst is geen achterstand');
+  });
+
+  test('captionAheadWords: onbekende tekst telt niet mee (geen valse melding)', function (L) {
+    var run = aheadRun();
+    eq(L.captionAheadWords(run, 2, '[Music]').matched, false, 'muziekmarkering');
+    eq(L.captionAheadWords(run, 2, 'iets heel anders').matched, false, 'andere cue/vertaling');
+    eq(L.captionAheadWords(run, 2, '').matched, false, 'leeg venster');
+    eq(L.captionAheadWords([], 2, 'need some more supplies').matched, false, 'geen run');
+    eq(L.captionAheadWords(run, 2, '[Music]').ahead, 0);
+  });
+
+  test('captionAheadWords: leestekens, hoofdletters en ">>" verstoren de match niet', function (L) {
+    var run = aheadRun();
+    var r = L.captionAheadWords(run, 3, '>> Need SOME more, supplies.');
+    eq(r.matched, true);
+    eq(r.ahead, 5);
+  });
+
+  test('captionAheadWords: pakt de laatste woorden en de laatste keer dat ze voorkwamen', function (L) {
+    // herhaalde tekst: "no no no no" — de match moet de achterste zijn
+    var words = [];
+    for (var i = 0; i < 12; i++) words.push({ t: i * 0.3, end: (i + 1) * 0.3, text: i % 2 ? 'no' : 'yes' });
+    var r = L.captionAheadWords(words, 2, 'no');
+    eq(r.matched, true);
+    eq(r.idx, 11, 'de laatste "no"');
+    eq(r.ahead, 10);
+    // tail=2 eist twee woorden op rij: "yes no" eindigt op idx 11, "no yes" op idx 10
+    eq(L.captionAheadWords(words, 2, 'yes no', { tail: 2 }).idx, 11);
+    eq(L.captionAheadWords(words, 2, 'no yes', { tail: 2 }).idx, 10);
+  });
+
+  test('captionWordKey/captionTextWords: normaliseren', function (L) {
+    eq(L.captionWordKey('  “Hello,”  '), 'hello');
+    eq(L.captionWordKey('>>'), '');
+    eq(L.captionWordKey("It's"), "it's");
+    eq(L.captionWordKey('café'), 'café', 'accenten blijven (NL/EN)');
+    var w = L.captionTextWords('Hello,   WORLD!');
+    eq(w.length, 2);
+    eq(w[0], 'hello');
+    eq(w[1], 'world');
+  });
+
+  /* ------------------------------------------------------------------ *
    * Dubbelcheck van de taalkeuze (sinds 2026-10-12)
    * ------------------------------------------------------------------ */
   test('languageCheck: de audio bevestigt de gekozen taal', function (L) {

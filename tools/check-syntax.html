@@ -227,9 +227,56 @@
       record('content.js: een caption-reset na onze correctie wordt één keer hersteld (niet tegen de gebruiker in)', redisplay,
         redisplay ? undefined : 'verwacht handleCaptionsWentOff() met optedOut-check en redisplayTimer');
 
-      const noReload = !/scheduleVideoPageReload|AUTO_RELOAD_VIDEO_PAGE|autoReloadTimer|location\.reload\(\)/.test(agent);
-      record('page-agent.js: ververst de pagina nooit meer (auto-reload verwijderd)', noReload,
-        noReload ? undefined : 'auto-reload hoort volledig verwijderd te zijn: een reload zette de caption-weergave uit');
+      // Verversen (2026-11-05): de page agent ververst NOOIT uit zichzelf — dat
+      // deed de oude auto-reload bij elke videowissel en zette de
+      // caption-weergave juist uit. Hij meldt het alleen, en voert de reload uit
+      // op verzoek van de content script (`reloadPage`), dat eerst de bedoeling
+      // bewaart.
+      const noAutoReload = !/scheduleVideoPageReload|AUTO_RELOAD_VIDEO_PAGE|autoReloadTimer/.test(agent);
+      const onRequestReload = /case 'reloadPage':/.test(agent) &&
+        (agent.match(/location\.reload\(\)/g) || []).length === 1;
+      record('page-agent.js: geen automatische reload, verversen alleen op verzoek van de content script', noAutoReload && onRequestReload,
+        noAutoReload && onRequestReload ? undefined :
+          'verwacht géén AUTO_RELOAD_VIDEO_PAGE/autoReloadTimer en precies één location.reload() in de reloadPage-tak');
+
+      // "Loopt de ondertiteling achter?" (2026-11-05): vergelijk met YouTube's
+      // eigen captionvenster (onafhankelijke tweede weergave), eerst de
+      // goedkope reparatie, daarna melden zodat de content script ververst.
+      const lagCheck = /function checkCaptionAhead\s*\(/.test(agent) &&
+        /L\.captionAheadWords\(/.test(agent) && /checkCaptionAhead\(ps, ad\)/.test(agent) &&
+        /captionLagPersist/.test(agent) && /function youtubeCaptionText\s*\(/.test(agent);
+      record('page-agent.js: meet of onze weergave achterloopt op YouTube\'s eigen venster', lagCheck,
+        lagCheck ? undefined : 'verwacht checkCaptionAhead() met L.captionAheadWords(), youtubeCaptionText() en de captionLagPersist-melding');
+
+      const noTrackReload = /captionsNeedReload/.test(agent) && /BOOST_RELOAD_AFTER_MS/.test(agent);
+      record('page-agent.js: vraagt om te verversen als de track na alle reparaties nog ontbreekt', noTrackReload,
+        noTrackReload ? undefined : 'verwacht captionsNeedReload + BOOST_RELOAD_AFTER_MS in maybeRepairTrack()');
+
+      const adopt = /rec\.sig !== boost\.dataSig/.test(agent) && /invalidateBoostText\(\)/.test(agent) &&
+        /diag\.trackHistory\.push/.test(agent);
+      record('page-agent.js: neemt een nieuwere versie van dezelfde track over (en bewaart de geschiedenis)', adopt,
+        adopt ? undefined : 'verwacht een sig-check in boostTick(), invalidateBoostText() bij overname en diag.trackHistory');
+
+      // Na een verversing moet de ondertiteling gegarandeerd terugkomen in de
+      // juiste taal: bedoeling bewaren (storage.session), hervatten, afdwingen
+      // met controle op probe.captionsOn en de track-taal.
+      const reloadFlow = /function reloadVideoPage\s*\(/.test(content) &&
+        /sc\.reloadIntent/.test(content) && /function resumeReloadIntent\s*\(/.test(content) &&
+        /function enforceReloadIntent\s*\(/.test(content) &&
+        /captionsOn === true/.test(content) && /sameLang\(cur\.languageCode, intent\.lang\)/.test(content);
+      record('content.js: verversen met bewaarde bedoeling en controle op track + weergave erna', reloadFlow,
+        reloadFlow ? undefined : 'verwacht reloadVideoPage/resumeReloadIntent/enforceReloadIntent met een captionsOn- en taalcontrole');
+
+      const reloadGuards = /settings\.autoReloadOnLag === false/.test(content) &&
+        /sc\.reloadedFor/.test(content) && /RELOAD_MIN_INTERVAL_MS/.test(content) &&
+        /state\.optedOut\[vid\]/.test(content);
+      record('content.js: verversen is begrensd (optie, één keer per video, interval, respecteert "zelf uitgezet")', reloadGuards,
+        reloadGuards ? undefined : 'verwacht autoReloadOnLag, sessionStorage-guard, RELOAD_MIN_INTERVAL_MS en de optedOut-check');
+
+      const forceRun = /state\.forceNext/.test(content) && /opts && opts\.force/.test(content) &&
+        /run\('reload', null, \{ force: true \}\)/.test(content);
+      record('content.js: na het verversen wordt de correctie geforceerd (state.fixed wordt genegeerd)', forceRun,
+        forceRun ? undefined : 'verwacht een force-optie in run() en run(\'reload\', null, { force: true })');
 
       // Nooit een verborgen YouTube-venster zonder eigen inhoud (2026-11-01):
       // niets te tekenen -> captions teruggeven; en de frame-lus wordt vanuit

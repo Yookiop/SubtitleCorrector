@@ -86,6 +86,18 @@
     // Zo niet, dan tekende de oude klok de ondertitel naast beeld en geluid
     // (zie playerTimeRaw()).
     clock: { samples: 0, at: null, mediaT: null, playerT: null, skewS: null, maxAbsSkewS: 0, worst: null },
+    // Elke opgevangen trackversie (met variant/first/last): laat zien of
+    // YouTube dezelfde track later met andere inhoud opnieuw levert.
+    trackHistory: [],
+    lastTrackAdopt: null,
+    // "Loopt de ondertiteling achter?" gemeten tegen YouTube's eigen venster
+    // (zie checkCaptionAhead) en de reparatie/verversing die daaruit volgde.
+    lagRepairs: 0,
+    lastLagRepair: null,
+    lagReports: 0,
+    lastLagReport: null,
+    reloadReports: 0,
+    lastReloadReport: null,
     own: { on: 0, off: 0 },
     repairs: 0,
     lastRepair: null,
@@ -202,6 +214,28 @@
         };
       })(),
       lastTrack: diag.lastTrack,
+      trackHistory: diag.trackHistory,
+      lastTrackAdopt: diag.lastTrackAdopt,
+      // Achterstand gemeten tegen YouTube's eigen venster (onafhankelijk van
+      // onze eigen klok), met de reparatie/verversing die daaruit volgde.
+      lagWatch: {
+        ahead: lagWatch.ahead,
+        best: lagWatch.best,
+        behindStreak: lagWatch.behindStreak,
+        checks: lagWatch.checks,
+        ytSeen: lagWatch.ytSeen,
+        repairs: lagWatch.repairs,
+        repairAt: lagWatch.repairAt || null,
+        reportedKey: lagWatch.reportedKey,
+        lastAt: lagWatch.lastAt ? new Date(lagWatch.lastAt).toISOString() : null,
+        ytText: lagWatch.lastYtText
+      },
+      lagRepairs: diag.lagRepairs,
+      lastLagRepair: diag.lastLagRepair,
+      lagReports: diag.lagReports,
+      lastLagReport: diag.lastLagReport,
+      reloadReports: diag.reloadReports,
+      lastReloadReport: diag.lastReloadReport,
       renderLag: diagRenderLag(),
       timedtext: diag.timedtext,
       boost: diag.boost,
@@ -390,6 +424,15 @@
       case 'state': return Promise.resolve({ videoId: currentVideoId(), current: readCurrentTrack(), captionsOn: captionsOn(), adShowing: isAd() });
       case 'diag': return Promise.resolve(diagSnapshot());
       case 'setOriginalAudio': return Promise.resolve(setOriginalAudio());
+      // Laatste redmiddel, alleen op verzoek van de content script: die bewaart
+      // eerst de bedoeling (welke taal er terug moet komen) en ververst dan pas.
+      // Wij antwoorden eerlijk eerst, zodat die opslag klaar is voordat de
+      // pagina weggaat.
+      case 'reloadPage':
+        setTimeout(function () {
+          try { location.reload(); } catch (e) { /* ignore */ }
+        }, 400);
+        return Promise.resolve({ ok: true });
       default: return Promise.resolve({ ok: false, reason: 'unknown-request:' + d.type });
     }
   }
@@ -1132,15 +1175,50 @@
    * XHR-hook vangt hem alsnog op (live geverifieerd 2026-10-31: verzoeken
    * 2 -> 3, daarna tekent de overlay direct weer).
    *
-   * Er wordt NIET meer ververst als dat niet lukt (2026-11-01): een
-   * pagina-reload zette de caption-weergave juist uit, waardoor de
-   * ondertiteling onzichtbaar bleef. Na twee pogingen geeft de page agent het
-   * op en laat hij YouTube's eigen venster staan.
+   * De page agent ververst de pagina zelf nooit meer (2026-11-01): een
+   * ongecontroleerde reload zette de caption-weergave juist uit. Lukt de
+   * reparatie niet, dan **meldt** hij dat (`captionsNeedReload`) en beslist de
+   * content script: die bewaart de bedoeling, ververst één keer en dwingt na de
+   * reload de juiste track én de weergave af (bugmelding 2026-11-05).
    * ------------------------------------------------------------------ */
   var BOOST_REPAIR_AFTER_MS = 7000;    // s zonder track voordat we ingrijpen
   var BOOST_REPAIR_RETRY_MS = 10000;   // minimale tijd tussen twee pogingen
   var BOOST_REPAIR_MAX = 2;            // pogingen per video
   var BOOST_TRACK_SETTLE_MS = 3000;    // track moet zo lang stabiel zijn (menu-automatisering niet storen)
+  var BOOST_RELOAD_AFTER_MS = 15000;   // s zonder track voordat we verversen voorstellen
+
+  /* ------------------------------------------------------------------ *
+   * "Loopt de ondertiteling achter?" (2026-11-05)
+   *
+   * De eigen diagnose (`diagRenderLag`) vergelijkt de getekende woorden met de
+   * track op dezelfde klok: hij meldt dus altijd 0 zolang wij doen wat de
+   * track zegt, ook als de track of de klok zelf niet klopt (precies de
+   * bugmeldingen van 2026-11-05: `pending: 0` terwijl de ondertiteling
+   * zichtbaar achterliep). YouTube's eigen captionvenster is een tweede,
+   * onafhankelijke weergave van dezelfde ondertitel: staat daar tekst die wij
+   * nog niet getoond hebben, dan lopen wij áchter — hoe dan ook. Andersom zegt
+   * het niets (YouTube loopt in playlists juist 1-2 s achter).
+   *
+   * Eerst de goedkope reparatie (ondertiteling uit/aan -> een verse track, die
+   * we meteen overnemen). Helpt dat niet, dan melden we het en ververst de
+   * content script de pagina één keer.
+   * ------------------------------------------------------------------ */
+  var BEHIND_WORDS = 5;              // zoveel woorden vóór = echt achter
+  var BEHIND_SAMPLES = 3;            // zoveel poll-rondes op rij (± 2,7 s)
+  var BEHIND_REPORT_AFTER_MS = 9000; // zo lang na de reparatie nog steeds achter -> melden
+
+  var lagWatch = {
+    checks: 0,          // hoeveel keer we YouTube's venster konden vergelijken
+    ahead: 0,           // laatste meting: woorden dat YouTube verder staat
+    best: 0,            // hoogste gemeten achterstand deze track
+    behindStreak: 0,    // opeenvolgende rondes met een echte achterstand
+    ytSeen: 0,          // rondes waarin YouTube's venster tekst had
+    repairs: 0,         // reparaties die deze meting uitlokte
+    repairAt: 0,        // tijdstip van die reparatie
+    reportedKey: null,  // track waarvoor we het al gemeld hebben
+    lastAt: null,
+    lastYtText: ''
+  };
 
   var boost = {
     videoId: null,
@@ -1170,7 +1248,10 @@
     missingSince: 0,      // sinds wanneer deze video geen opgevangen track heeft (0 = niets aan de hand)
     repairs: 0,           // reparatiepogingen (ondertiteling uit/aan) voor deze video
     repairAt: 0,          // tijdstip van de laatste reparatiepoging
-    trackStableSince: 0   // sinds wanneer de track-key onveranderd is
+    trackStableSince: 0,  // sinds wanneer de track-key onveranderd is
+    dataSig: null,        // vingerafdruk van de trackversie die we nu tekenen
+    dataAt: 0,            // wanneer die versie binnenkwam
+    reloadReported: null  // videoId waarvoor we verversen al voorstelden
   };
 
   var boostTracks = Object.create(null);
@@ -1219,7 +1300,16 @@
       var at = boostTrackOrder.indexOf(key);
       if (at !== -1) boostTrackOrder.splice(at, 1);
       boostTrackOrder.push(key);
-      boostTracks[key] = { at: Date.now(), events: events, blocks: blocks, runs: runs };
+      // Vingerafdruk van deze payload: dezelfde track kan met een ándere
+      // inhoud opnieuw binnenkomen (in de log van 2026-11-05: 53 blokken bij de
+      // eerste fetch, 58 bij een latere). Met de vingerafdruk ziet boostTick
+      // dat er een nieuwere versie is en neemt hij die over in plaats van de
+      // hele video op de eerste fetch te blijven tekenen.
+      var first = events.length ? events[0].start : 0;
+      var lastEv = events.length ? events[events.length - 1] : null;
+      var lastEnd = lastEv ? Math.round((lastEv.start + (lastEv.dur || 0)) * 1000) / 1000 : 0;
+      var sig = events.length + '|' + blocks.length + '|' + first + '|' + lastEnd;
+      boostTracks[key] = { at: Date.now(), events: events, blocks: blocks, runs: runs, sig: sig };
       // Nieuwe/verversde trackdata voor deze sleutel: een eerdere "ik gaf op"
       // (niets in beeld) mag opnieuw geprobeerd worden.
       if (boost.gaveUpKey === key) boost.gaveUpKey = null;
@@ -1230,6 +1320,9 @@
         events: events.length,
         blocks: blocks.length,
         runs: runs.length,
+        from: Math.round(first * 1000) / 1000,
+        to: lastEnd,
+        sig: sig,
         url: {
           v: v,
           lang: lang,
@@ -1238,6 +1331,11 @@
           tlang: urlParam(url, 'tlang') || ''
         }
       };
+      // Geschiedenis: welke versies van deze track kwamen er binnen? Zonder dit
+      // is in een log niet te zien of de eerste fetch kleiner/anders was dan de
+      // latere (precies de onduidelijkheid van 2026-11-05).
+      diag.trackHistory.push(diag.lastTrack);
+      while (diag.trackHistory.length > 8) diag.trackHistory.shift();
       while (boostTrackOrder.length > BOOST_MAX_TRACKS) {
         var old = boostTrackOrder.shift();
         if (old !== key) delete boostTracks[old];
@@ -2686,6 +2784,7 @@
       boost.missingSince = now;
       boost.repairs = 0;
       boost.repairAt = 0;
+      boost.reloadReported = null;
       return;
     }
     // De menu-automatisering van de content script kan net een track gezet
@@ -2702,6 +2801,131 @@
         dbg('track niet opgevangen - ondertiteling een keer uit/aan (poging ' + boost.repairs + ')');
       }
     }
+    // Alle reparaties zijn geweest en er is nog steeds geen track. Dit is het
+    // geval waarin alleen een verse pagina helpt (bugmelding 2026-11-05). Wij
+    // verversen zelf niet meer (dat zette de ondertiteling juist uit); we
+    // melden het en de content script bewaart de bedoeling, ververst één keer
+    // en dwingt daarna de juiste track én de weergave af.
+    if (boost.repairs >= BOOST_REPAIR_MAX && waited >= BOOST_RELOAD_AFTER_MS &&
+        !document.hidden && id && boost.reloadReported !== id) {
+      boost.reloadReported = id;
+      diag.reloadReports++;
+      diag.lastReloadReport = {
+        at: new Date().toISOString(),
+        videoId: id,
+        reason: 'no-track',
+        waitedMs: waited,
+        repairs: boost.repairs,
+        track: cur ? cur.languageCode + '/' + (cur.kind || '') : null
+      };
+      dbg('track komt niet binnen na ' + boost.repairs + ' reparaties - verversen voorstellen');
+      post({ type: 'captionsNeedReload', videoId: id, reason: 'no-track', waitedMs: waited, track: diag.lastReloadReport.track });
+    }
+  }
+
+  /**
+   * De tekst die YouTube's eigen captionvenster nú toont. Dat venster staat
+   * verborgen (`.sc-boost-on`), maar de segmenten worden gewoon bijgewerkt —
+   * precies daardoor is het een onafhankelijke tweede meting van dezelfde
+   * ondertitel. Zonder venster of zonder tekst: '' (dan weten we niets).
+   */
+  function youtubeCaptionText() {
+    var c = null;
+    try { c = document.querySelector('.ytp-caption-window-container'); } catch (e) { c = null; }
+    if (!c) return '';
+    var t = '';
+    try { t = String(c.textContent || ''); } catch (e) { return ''; }
+    t = t.replace(/\s+/g, ' ').trim();
+    return t.length > 400 ? t.slice(t.length - 400) : t;
+  }
+
+  /**
+   * Eén meting per poll: loopt YouTube's eigen venster vóór op onze weergave?
+   *
+   * `ps` en `ad` komen van `tick()` (al gelezen, geen extra player-calls).
+   * Staan we echt achter (BEHIND_SAMPLES rondes op rij ≥ BEHIND_WORDS woorden),
+   * dan eerst de goedkope reparatie — de speler vraagt de track dan opnieuw op
+   * en `boostTick()` neemt die nieuwe versie over. Helpt dat niet, dan melden we
+   * het aan de content script (`captionLagPersist`), dat de pagina één keer
+   * ververst en daarna de ondertiteling terugzet.
+   */
+  function checkCaptionAhead(ps, ad) {
+    if (!CAPTION_BOOST_ENABLED || SUBTITLES_OFF || ad || ps !== 1 || document.hidden) {
+      lagWatch.behindStreak = 0;
+      return;
+    }
+    if (!boost.rafActive || !boost.ownsCaptions || !boost.runs || !boost.runs.length) {
+      lagWatch.behindStreak = 0;
+      return;
+    }
+    var yt = youtubeCaptionText();
+    if (!yt) {
+      lagWatch.behindStreak = 0;
+      lagWatch.ahead = 0;
+      return;
+    }
+    var t = playerTimeRaw();
+    if (t === null) { lagWatch.behindStreak = 0; return; }
+    var ts = t + L.wordLeadSeconds(BOOST_SYNC_MS);
+    var idx = L.captionRunAt(boost.runs, ts, BOOST_LINGER);
+    if (idx < 0) { lagWatch.behindStreak = 0; lagWatch.ahead = 0; return; }
+    var run = boost.runs[idx];
+    // Wat er volgens de track gezegd is, niet wat er toevallig al in de DOM
+    // staat: de getemperde reveal mag geen achterstand veinzen.
+    var have = Math.max(boost.wordCount, L.captionWordIndex(run.words, ts, 0));
+    var res = L.captionAheadWords(run.words, have, yt, { tail: 4, window: 400 });
+    lagWatch.checks++;
+    lagWatch.ytSeen++;
+    lagWatch.lastAt = Date.now();
+    lagWatch.lastYtText = yt.slice(-140);
+    lagWatch.ahead = res.ahead;
+    if (res.ahead > lagWatch.best) lagWatch.best = res.ahead;
+    lagWatch.behindStreak = res.ahead >= BEHIND_WORDS ? lagWatch.behindStreak + 1 : 0;
+    if (lagWatch.behindStreak < BEHIND_SAMPLES) return;
+
+    var key = boost.trackKey;
+    var videoId = currentVideoId();
+    var now = Date.now();
+    if (!lagWatch.repairAt) {
+      // Eerste keer: de goedkope reparatie. Lukt die niet (geen CC-knop, geen
+      // zichtbaar tabblad), dan meteen door naar de melding hieronder.
+      lagWatch.repairAt = now;
+      if (reRequestCaptions()) {
+        lagWatch.repairs++;
+        diag.lagRepairs++;
+        diag.lastLagRepair = {
+          at: new Date().toISOString(),
+          videoId: videoId,
+          track: key,
+          behindWords: res.ahead,
+          streak: lagWatch.behindStreak
+        };
+        dbg('ondertiteling loopt achter (' + res.ahead + ' woorden) - ondertiteling uit/aan voor een verse track');
+        return;
+      }
+    }
+    if (now - lagWatch.repairAt < BEHIND_REPORT_AFTER_MS) return;
+    if (lagWatch.reportedKey === key) return;
+    lagWatch.reportedKey = key;
+    diag.lagReports++;
+    diag.lastLagReport = {
+      at: new Date().toISOString(),
+      videoId: videoId,
+      track: key,
+      behindWords: lagWatch.best,
+      ahead: res.ahead,
+      streak: lagWatch.behindStreak,
+      ytText: lagWatch.lastYtText
+    };
+    dbg('ondertiteling blijft achter (' + lagWatch.best + ' woorden) - verversen voorstellen');
+    post({
+      type: 'captionLagPersist',
+      videoId: videoId,
+      reason: 'lag',
+      behindWords: lagWatch.best,
+      track: key,
+      ytText: lagWatch.lastYtText
+    });
   }
 
   /**
@@ -2721,6 +2945,8 @@
     if (boost.videoId !== id || boost.trackKey !== key) {
       boost.blocks = null;
       boost.runs = null;
+      boost.dataSig = null;
+      boost.dataAt = 0;
       stopBoost('track-key-changed');
       boost.videoId = id;
       boost.trackKey = key;
@@ -2728,11 +2954,40 @@
       boost.repairs = 0;
       boost.repairAt = 0;
       boost.trackStableSince = Date.now();
+      lagWatch.ahead = 0;
+      lagWatch.best = 0;
+      lagWatch.behindStreak = 0;
+      lagWatch.repairAt = 0;
       diag.videoId = id;
     }
-    if (!boost.blocks) {
-      var rec = boostTracks[key];
-      if (rec && rec.blocks && rec.blocks.length) boost.blocks = rec.blocks;
+    // Dezelfde track kan met een ándere inhoud opnieuw binnenkomen (YouTube
+    // vraagt hem bv. na de reparatie opnieuw op, of levert een andere variant).
+    // Zonder deze overname bleef de hele video op de eerste fetch getekend —
+    // in het log van 2026-11-05 stonden 53 blokken in de weergave terwijl de
+    // laatst opgevangen track er 58 had. Alleen overnemen als de inhoud écht
+    // anders is (`sig`), anders knippert de tekst bij elke her-opslag.
+    var rec = boostTracks[key];
+    var fresh = !!(rec && rec.blocks && rec.blocks.length && rec.sig !== boost.dataSig);
+    if (fresh) {
+      var hadBlocks = !!(boost.blocks && boost.blocks.length);
+      boost.blocks = rec.blocks;
+      boost.runs = rec.runs && rec.runs.length ? rec.runs : null;
+      boost.dataSig = rec.sig;
+      boost.dataAt = rec.at;
+      // De tekst hoort bij de vórige versie: opnieuw opbouwen. Anders bleef de
+      // oude regel staan tot het volgende blok en klopten de woordtellers niet
+      // meer met de nieuwe run.
+      if (hadBlocks) invalidateBoostText();
+      diag.lastTrackAdopt = {
+        at: new Date().toISOString(),
+        videoId: id,
+        key: key,
+        sig: rec.sig,
+        blocks: rec.blocks.length,
+        runs: rec.runs ? rec.runs.length : 0,
+        replaced: hadBlocks
+      };
+      if (hadBlocks) dbg('nieuwe versie van de track overgenomen', key, rec.sig);
     }
     // De runs horen bij de blokken en worden los opgebouwd: als die stap ooit
     // halverwege afbreekt (fout in de parser), bleef `runs` null terwijl
@@ -3101,6 +3356,11 @@
     // Caption Boost: eigen weergave aan/uitzetten zodra de juiste track actief is.
     // De al gelezen waarden gaan mee (geen tweede ronde langs de player-API).
     boostTick(cur, id, ad);
+
+    // Loopt de weergave achter op YouTube's eigen (tweede) captionvenster?
+    // Alleen een diagnose + een melding; de goedkope reparatie en de
+    // verversing worden hierboven/hieronder geregeld (2026-11-05).
+    checkCaptionAhead(ps, ad);
 
     // Vangnet: een herlaadbeurt van de extensie kan '.sc-boost-on' op een open
     // pagina hebben achtergelaten. Zonder eigen weergave hoort YouTube's

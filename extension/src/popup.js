@@ -110,10 +110,23 @@ function labelBoost(diag) {
   return { text: "YouTube's venster" + why, cls: 'warn' };
 }
 
-/** Regel "Vertraging": hoeveel woorden staat de weergave achter op de klok? */
+/**
+ * Regel "Vertraging": hoeveel woorden staat de weergave achter?
+ *
+ * Twee maten, in deze volgorde:
+ *  - `lagWatch` vergelijkt met YouTube's eigen captionvenster (onafhankelijk
+ *    van onze eigen klok): staat daar tekst die wij nog niet hebben, dan lopen
+ *    wij écht achter. Dit is de maat die "loopt achter" kan bewijzen.
+ *  - `renderLag` vergelijkt met de track op onze eigen klok (0 = wij tekenen
+ *    wat de track zegt; zegt niets over een verkeerde track/klok).
+ */
 function labelLag(diag) {
   const lag = diag && diag.renderLag;
   if (!diag || !diag.drawing || !diag.drawing.rafActive || !lag) return { text: 'n.v.t.', cls: 'muted' };
+  const lw = diag.lagWatch;
+  if (lw && lw.behindStreak > 0 && lw.ahead > 0) {
+    return { text: lw.ahead + ' woorden achter (YouTube\'s venster staat verder)', cls: 'err' };
+  }
   const pending = typeof lag.pending === 'number' ? lag.pending : 0;
   const text = pending <= 1 ? 'bij (0-1 woord)' : pending + ' woorden achter';
   return { text: text, cls: pending <= 1 ? 'ok' : (pending <= 4 ? 'warn' : 'err') };
@@ -143,6 +156,31 @@ function labelClock(diag) {
   const worst = Math.round((c.maxAbsSkewS || 0) * 100) / 100;
   if (worst <= 0.25) return { text: 'gelijk aan beeld (' + c.source + ')', cls: 'ok' };
   return { text: 'media-element; API wijkt ' + worst + ' s af', cls: 'warn' };
+}
+
+/**
+ * Toelichting onder de diagnoseregels: wat heeft de extensie gedaan om de
+ * ondertiteling kloppend te krijgen (reparatie, verse track, verversing)?
+ */
+function diagHint(st, probe) {
+  const d = st.diag || {};
+  const vid = st.videoId || (probe && probe.videoId) || null;
+  if (st.recovering) {
+    return 'De pagina is ververst om de ondertiteling te herstellen; de extensie zet de juiste track en de weergave nu opnieuw aan.';
+  }
+  if (st.reloadedFor && st.reloadedFor === vid) {
+    return 'Deze video is één keer ververst om de ondertiteling te herstellen en daarna opnieuw ingesteld.';
+  }
+  if (d.reloadReports) {
+    return 'Gemeld dat de ondertiteling niet te herstellen was: de pagina wordt dan één keer ververst en daarna opnieuw ingesteld.';
+  }
+  if (d.lagRepairs) {
+    return 'Onze weergave liep achter op YouTube\'s venster; de ondertiteling is ' + d.lagRepairs + 'x uit/aan gezet voor een verse track.';
+  }
+  if (d.repairs) {
+    return 'De track kwam niet binnen; de ondertiteling is ' + d.repairs + 'x uit/aan gezet om hem opnieuw op te vragen.';
+  }
+  return 'Zegt of de ondertiteling uit onze eigen, op de tracktijd gesynchroniseerde weergave komt of uit YouTube\'s (soms achterlopende) venster.';
 }
 
 /** Regel "Prestatie": haperingen van de pagina — en of die van ons komen. */
@@ -234,10 +272,7 @@ async function render() {
   setText('track', cap.text, cap.cls);
   setText('jank', jank.text, jank.cls);
   setText('clock', clock.text, clock.cls);
-  const repairs = st.diag && st.diag.repairs;
-  $('diagHint').textContent = repairs
-    ? 'De track kwam niet binnen; de ondertiteling is ' + repairs + 'x uit/aan gezet om hem opnieuw op te vragen.'
-    : 'Zegt of de ondertiteling uit onze eigen, op de tracktijd gesynchroniseerde weergave komt of uit YouTube\'s (soms achterlopende) venster.';
+  $('diagHint').textContent = diagHint(st, probe);
 
   const det = L.detectAudioLanguage(probe);
   const plan = L.planFix(probe, {
