@@ -129,6 +129,22 @@ function labelCaptured(diag) {
   return { text: 'nee' + (why.length ? ' (' + why.join(', ') + ')' : ''), cls: 'warn' };
 }
 
+/**
+ * Regel "Klok": tekent de overlay op dezelfde tijd als beeld en geluid?
+ *
+ * De overlay leest de tijd uit het media-element zelf; `getCurrentTime()` van
+ * de player-API is een schil eromheen en kan na een in-page videowissel
+ * afwijken. Een grote `maxAbsSkewS` betekent dat de ondertitel op de oude klok
+ * structureel naast het beeld stond (bugmelding 2026-11-05).
+ */
+function labelClock(diag) {
+  const c = diag && diag.clock;
+  if (!c || !c.samples) return { text: 'n.v.t.', cls: 'muted' };
+  const worst = Math.round((c.maxAbsSkewS || 0) * 100) / 100;
+  if (worst <= 0.25) return { text: 'gelijk aan beeld (' + c.source + ')', cls: 'ok' };
+  return { text: 'media-element; API wijkt ' + worst + ' s af', cls: 'warn' };
+}
+
 /** Regel "Prestatie": haperingen van de pagina — en of die van ons komen. */
 function labelJank(diag) {
   const j = diag && diag.jank;
@@ -178,6 +194,7 @@ async function render() {
     setText('lag', '-');
     setText('track', '-');
     setText('jank', '-');
+    setText('clock', '-');
     $('apply').disabled = true;
     return;
   }
@@ -193,6 +210,7 @@ async function render() {
     setText('lag', '-');
     setText('track', '-');
     setText('jank', '-');
+    setText('clock', '-');
     $('apply').disabled = true;
     return;
   }
@@ -210,10 +228,12 @@ async function render() {
   const lag = labelLag(st.diag);
   const cap = labelCaptured(st.diag);
   const jank = labelJank(st.diag);
+  const clock = labelClock(st.diag);
   setText('boost', boost.text, boost.cls);
   setText('lag', lag.text, lag.cls);
   setText('track', cap.text, cap.cls);
   setText('jank', jank.text, jank.cls);
+  setText('clock', clock.text, clock.cls);
   const repairs = st.diag && st.diag.repairs;
   $('diagHint').textContent = repairs
     ? 'De track kwam niet binnen; de ondertiteling is ' + repairs + 'x uit/aan gezet om hem opnieuw op te vragen.'

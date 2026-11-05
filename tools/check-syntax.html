@@ -384,6 +384,52 @@
         (inHtml ? '' : 'options.html-checkbox ontbreekt'));
     }
 
+    // De ondertitel moet op de klok van het MEDIA-ELEMENT staan (bugmelding
+    // 2026-11-05: na een in-page videowissel liep de ondertitel achter en een
+    // refresh hielp). `player.getCurrentTime()` is een schil om het
+    // media-element heen en kan afwijken; de eigen diagnose meldde 0 omdat hij
+    // dezelfde klok gebruikte. Daarom: playerTimeRaw() leest `video.currentTime`
+    // (met de player-API als terugval), de frame-lus gebruikt die, en de
+    // diagnose vergelijkt beide klokken (`diag.clock`) en bewaart welke track
+    // er laatst is opgevangen (`lastTrack`, met de URL-parameters).
+    async function checkMediaClock() {
+      const agent = await (await fetch('../extension/src/page-agent.js', { cache: 'no-store' })).text();
+
+      const mediaSource = /function playerTimeRaw\(\)\s*\{[\s\S]*?var t = mediaTime\(\);[\s\S]*?return t !== null \? t : playerApiTime\(\);/.test(agent);
+      record('page-agent.js: de weergaveklok komt uit het media-element (playerTimeRaw -> mediaTime)', mediaSource,
+        mediaSource ? undefined : 'verwacht playerTimeRaw() die mediaTime() prefereert en op playerApiTime() terugvalt');
+
+      const mediaEl = /video\.html5-main-video/.test(agent);
+      record('page-agent.js: het media-element wordt via html5-main-video gevonden', mediaEl,
+        mediaEl ? undefined : "verwacht p.querySelector('video.html5-main-video')");
+
+      const frameLoop = /function renderBoostFrame\(\)\s*\{([\s\S]*?)\n  \}/.exec(agent);
+      const frameBody = frameLoop ? frameLoop[1] : '';
+      const frameUses = /var t = playerTimeRaw\(\);/.test(frameBody) && !/getCurrentTime\(\)/.test(frameBody);
+      record('page-agent.js: de frame-lus leest de tijd via playerTimeRaw() (geen getCurrentTime per frame)', frameUses,
+        frameUses ? undefined : 'verwacht `var t = playerTimeRaw();` in renderBoostFrame()');
+
+      const skew = /function noteClockSkew\s*\(/.test(agent) && /noteClockSkew\(\);/.test(agent) &&
+        /maxAbsSkewS/.test(agent);
+      record('page-agent.js: de poll vergelijkt de player-API met het media-element (diag.clock)', skew,
+        skew ? undefined : 'verwacht noteClockSkew() in tick() en maxAbsSkewS in de diagnose');
+
+      const diagFields = /clock:\s*\{[\s\S]{0,400}?source:/.test(agent) && /lastTrack: diag\.lastTrack/.test(agent) &&
+        /droppedVideoFrames/.test(agent);
+      record('page-agent.js: diagnose toont klok, media-statistieken en de laatst opgevangen track', diagFields,
+        diagFields ? undefined : 'verwacht clock{}, media{} (droppedVideoFrames) en lastTrack in diagSnapshot()');
+
+      const lastTrackUrl = /url:\s*\{[\s\S]{0,200}?tlang:/.test(agent);
+      record('page-agent.js: lastTrack bewaart de URL-parameters (v/lang/kind/variant/tlang)', lastTrackUrl,
+        lastTrackUrl ? undefined : 'verwacht url:{v, lang, kind, variant, tlang} in diag.lastTrack');
+
+      const popupHtml = await (await fetch('../extension/src/popup.html', { cache: 'no-store' })).text();
+      const popupJs = await (await fetch('../extension/src/popup.js', { cache: 'no-store' })).text();
+      const popupRow = /id="clock"/.test(popupHtml) && /function labelClock\(/.test(popupJs) && /setText\('clock'/.test(popupJs);
+      record('popup: regel "Klok" toont of de tekentijd gelijkloopt met beeld en geluid', popupRow,
+        popupRow ? undefined : "verwacht een #clock-row, labelClock() en setText('clock', ...)");
+    }
+
     (async function () {
       for (const rel of SCRIPTS) await checkScript(rel);      await checkManifest();
       try {
@@ -410,6 +456,11 @@
         await checkTimingFeatures();
       } catch (e) {
         record('timing-check (page-agent/content)', false, String(e.message || e));
+      }
+      try {
+        await checkMediaClock();
+      } catch (e) {
+        record('klok-check (page-agent/popup)', false, String(e.message || e));
       }
 
       const li = (r) => {

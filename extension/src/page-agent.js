@@ -82,6 +82,10 @@
       worst: null,          // zwaarste hapering, met de scripts die erin liepen
       own: { frames: 0, maxMs: 0, over16: 0 } // onze eigen frame-body (elke browser)
     },
+    // Loopt de player-API (`getCurrentTime()`) gelijk met het media-element?
+    // Zo niet, dan tekende de oude klok de ondertitel naast beeld en geluid
+    // (zie playerTimeRaw()).
+    clock: { samples: 0, at: null, mediaT: null, playerT: null, skewS: null, maxAbsSkewS: 0, worst: null },
     own: { on: 0, off: 0 },
     repairs: 0,
     lastRepair: null,
@@ -127,8 +131,7 @@
     var cur = readCurrentTrack();
     var id = currentVideoId();
     var key = cur && id ? boostKey(id, L.baseLang(cur.languageCode), cur.kind === 'asr' ? 'asr' : '') : null;
-    var pNow = player();
-    var tNow = safe(function () { return pNow && pNow.getCurrentTime ? pNow.getCurrentTime() : null; }, null);
+    var tNow = playerTimeRaw();
     return {
       at: new Date().toISOString(),
       uptimeS: Math.round((Date.now() - diag.bootAt) / 1000),
@@ -170,6 +173,35 @@
         overlayVisible: boostDisplayed(),
         text: boost.box ? String(boost.box.textContent || '').slice(-140) : ''
       },
+      // Klok: waarmee tekenen we, en loopt de player-API gelijk met het
+      // media-element? `skewS` = player-API min media-element (> 0 = de API
+      // liep voor, < 0 = de API liep achter en de ondertitel dus te laat).
+      clock: {
+        source: mediaTime() !== null ? 'media' : 'player-api',
+        at: diag.clock.at,
+        mediaT: diag.clock.mediaT,
+        playerT: diag.clock.playerT,
+        skewS: diag.clock.skewS,
+        samples: diag.clock.samples,
+        maxAbsSkewS: diag.clock.maxAbsSkewS,
+        worst: diag.clock.worst,
+        captionSyncMs: BOOST_SYNC_MS
+      },
+      media: (function () {
+        var v = mediaEl();
+        if (!v) return null;
+        var q = null;
+        try { q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : null; } catch (e) { q = null; }
+        return {
+          readyState: v.readyState,
+          playbackRate: v.playbackRate,
+          currentTime: Math.round(v.currentTime * 1000) / 1000,
+          duration: isFinite(v.duration) ? Math.round(v.duration * 1000) / 1000 : null,
+          totalVideoFrames: q ? q.totalVideoFrames : null,
+          droppedVideoFrames: q ? q.droppedVideoFrames : null
+        };
+      })(),
+      lastTrack: diag.lastTrack,
       renderLag: diagRenderLag(),
       timedtext: diag.timedtext,
       boost: diag.boost,
@@ -198,8 +230,7 @@
    */
   function diagRenderLag() {
     if (!boost.rafActive || !boost.runs) return null;
-    var p = player();
-    var t = safe(function () { return p && p.getCurrentTime ? p.getCurrentTime() : null; }, null);
+    var t = playerTimeRaw();
     if (t === null || !isFinite(t)) return null;
     var ts = t + L.wordLeadSeconds(BOOST_SYNC_MS);
     var idx = L.captionRunAt(boost.runs, ts, BOOST_LINGER);
@@ -231,8 +262,7 @@
 
   /** Speeltijd van de speler (s), of null als er geen speler is. */
   function playerTimeNow() {
-    var p = player();
-    var t = safe(function () { return p && p.getCurrentTime ? p.getCurrentTime() : null; }, null);
+    var t = playerTimeRaw();
     return typeof t === 'number' && isFinite(t) ? Math.round(t * 100) / 100 : null;
   }
 
@@ -375,6 +405,85 @@
     if (vd && vd.video_id) return vd.video_id;
     var m = /[?&]v=([A-Za-z0-9_-]{6,})/.exec(location.href);
     return m ? m[1] : null;
+  }
+
+  /**
+   * Het `<video>`-element van de speler, één keer opgezocht en daarna
+   * hergebruikt (per frame opzoeken is nodeloos werk). Raakt het element los
+   * (nieuwe speler, SPA-navigatie), dan zoeken we het opnieuw.
+   */
+  var mediaElRef = null;
+
+  function mediaEl() {
+    if (mediaElRef && mediaElRef.isConnected) return mediaElRef;
+    mediaElRef = null;
+    var p = player();
+    try {
+      mediaElRef = p ? (p.querySelector('video.html5-main-video') || p.querySelector('video')) : null;
+    } catch (e) { mediaElRef = null; }
+    return mediaElRef;
+  }
+
+  /** Speeltijd van het media-element zelf (beeld én geluid), of null. */
+  function mediaTime() {
+    var v = mediaEl();
+    if (!v || v.readyState < 1) return null;
+    var t = safe(function () { return v.currentTime; }, null);
+    return typeof t === 'number' && isFinite(t) && t >= 0 ? t : null;
+  }
+
+  /** Speeltijd volgens de player-API (`getCurrentTime()`). */
+  function playerApiTime() {
+    var p = player();
+    var t = safe(function () { return p && p.getCurrentTime ? p.getCurrentTime() : null; }, null);
+    return typeof t === 'number' && isFinite(t) ? t : null;
+  }
+
+  /**
+   * De tijd waarop Caption Boost tekent: die van het **media-element**, met de
+   * player-API als terugval.
+   *
+   * `getCurrentTime()` is een schil om het media-element heen en loopt na een
+   * in-page videowissel (en na een advertentie) niet altijd gelijk met het
+   * beeld en het geluid. Tekenen we op die tijd, dan staat de ondertitel
+   * structureel naast wat je hoort, en de eigen diagnose (`diagRenderLag`)
+   * meldt 0 — hij meet met dezelfde klok. Een pagina-refresh zette dat recht,
+   * waardoor het op een paginafout leek (bugmelding 2026-11-05).
+   */
+  function playerTimeRaw() {
+    var t = mediaTime();
+    return t !== null ? t : playerApiTime();
+  }
+
+  /**
+   * Eén keer per poll: hoeveel loopt de player-API naast het media-element?
+   * `skewS` = API min media, dus > 0 = de API loopt voor op beeld en geluid
+   * (de oude klok tekende te vroeg) en < 0 = de API loopt achter (te laat —
+   * precies de klacht "de ondertiteling loopt achter").
+   */
+  function noteClockSkew() {
+    var mt = mediaTime();
+    var pt = playerApiTime();
+    if (mt === null || pt === null) return;
+    var skew = Math.round((pt - mt) * 1000) / 1000;
+    diag.clock.samples++;
+    diag.clock.at = new Date().toISOString();
+    diag.clock.mediaT = Math.round(mt * 1000) / 1000;
+    diag.clock.playerT = Math.round(pt * 1000) / 1000;
+    diag.clock.skewS = skew;
+    var abs = Math.abs(skew);
+    if (abs > diag.clock.maxAbsSkewS) {
+      var v = mediaEl();
+      diag.clock.maxAbsSkewS = Math.round(abs * 1000) / 1000;
+      diag.clock.worst = {
+        at: new Date().toISOString(),
+        videoId: diag.videoId,
+        skewS: skew,
+        mediaT: diag.clock.mediaT,
+        playerT: diag.clock.playerT,
+        playbackRate: safe(function () { return v ? v.playbackRate : null; }, null)
+      };
+    }
   }
 
   /**
@@ -1115,7 +1224,20 @@
       // (niets in beeld) mag opnieuw geprobeerd worden.
       if (boost.gaveUpKey === key) boost.gaveUpKey = null;
       diag.timedtext.stored++;
-      diag.lastTrack = { key: key, at: Date.now(), events: events.length, blocks: blocks.length, runs: runs.length };
+      diag.lastTrack = {
+        key: key,
+        at: new Date().toISOString(),
+        events: events.length,
+        blocks: blocks.length,
+        runs: runs.length,
+        url: {
+          v: v,
+          lang: lang,
+          kind: urlParam(url, 'kind') || '',
+          variant: urlParam(url, 'variant') || '',
+          tlang: urlParam(url, 'tlang') || ''
+        }
+      };
       while (boostTrackOrder.length > BOOST_MAX_TRACKS) {
         var old = boostTrackOrder.shift();
         if (old !== key) delete boostTracks[old];
@@ -2474,7 +2596,8 @@
       invalidateLineHeightCache(); // de gemeten line-height hoort bij dit vangnet
     }
 
-    var t = safe(function () { return p.getCurrentTime(); }, 0);
+    var t = playerTimeRaw();
+    if (t === null || !isFinite(t)) t = 0;
     // Buiten het bereik van de opgevangen track: niets te tekenen, dus geef
     // YouTube's venster terug in plaats van een leeg venster te claimen. De
     // lus blijft draaien (goedkoop) zodat we het bij een seek vanzelf weer
@@ -2650,7 +2773,8 @@
       // achter" dat je dan ziet. Buiten het bereik van de track niet: dan
       // heeft onze overlay niets te tekenen en moet YouTube's venster blijven
       // staan (zie renderBoostFrame).
-      if (boostCoversTime(boost.blocks, safe(function () { return player().getCurrentTime(); }, 0))) {
+      var tNow = playerTimeRaw();
+      if (boostCoversTime(boost.blocks, tNow === null ? 0 : tNow)) {
         ownCaptions(true);
       }
       if (!boost.rafActive) {
@@ -2918,6 +3042,10 @@
   function tick() {
     var p = player();
     if (!p) return;
+
+    // Klokvergelijking: één keer per poll is genoeg (het is een diagnose, geen
+    // stuurwaarde) en zo blijft de frame-lus vrij van extra player-API-calls.
+    noteClockSkew();
 
     var id = currentVideoId();
     if (id && id !== lastVideoId) {
