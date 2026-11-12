@@ -1544,6 +1544,24 @@
 
   var boostSizeWatch = { ok: false };
 
+  var boostResizeTimer = null;
+
+  /**
+   * Na een maatwissel (fullscreen/theater) de tekst opnieuw opbouwen.
+   *
+   * Het venster is dan breder of hoger, dus de tekst wikkelt anders en de
+   * gemeten regels/verschuiving van vóór de wissel kloppen niet meer. Kort
+   * uitgesteld, zodat een animerende maatwissel niet bij elke tussenstap een
+   * nieuwe opbouw kost.
+   */
+  function invalidateOnResize() {
+    if (boostResizeTimer) { try { clearTimeout(boostResizeTimer); } catch (e) { /* ignore */ } }
+    boostResizeTimer = setTimeout(function () {
+      boostResizeTimer = null;
+      invalidateBoostText();
+    }, 160);
+  }
+
   function watchPlayerSize() {
     if (boostSizeWatch.ok) return;
     try {
@@ -1552,6 +1570,7 @@
       var ro = new ResizeObserver(function () {
         markPlayerSizeStale();
         applyBoostStyle();
+        invalidateOnResize();
         // Een opgegeven track ("er kwam niets in beeld") is meestal een
         // geometrieprobleem; juist bij een maatwijziging is een nieuwe poging
         // de moeite waard.
@@ -1561,6 +1580,7 @@
       document.addEventListener('fullscreenchange', function () {
         markPlayerSizeStale();
         applyBoostStyle();
+        invalidateOnResize();
         boost.gaveUpKey = null;
       });
       boostSizeWatch.ok = true;
@@ -1870,6 +1890,10 @@
   }
 
   function stopBoost(reason) {
+    if (boostResizeTimer) {
+      try { clearTimeout(boostResizeTimer); } catch (e) { /* ignore */ }
+      boostResizeTimer = null;
+    }
     if (boost.rafActive || boost.ownsCaptions) {
       diag.boost.stops++;
       diag.boost.lastStop = { reason: reason || 'unknown', at: Date.now(), videoId: diag.videoId };
@@ -2312,7 +2336,10 @@
    * is de harde garantie naast de berekening.
    *
    * De blokjes blijven in de layout staan (alleen `visibility`), zodat de
-   * metingen en de regelindeling niet veranderen.
+   * vervolgmeting in trimAboveWindow() dezelfde indeling ziet. Daarna gaan ze
+   * uit de DOM (zie trimAboveWindow): onzichtbare blokjes die in de flow
+   * blijven staan kunnen na een herindeling de eerste zichtbare regel
+   * inspringen (bugmelding 2026-11-12).
    */
   function applyHiddenAbove(m, range) {
     if (!m || !m.items || !m.index || !range) return;
@@ -2325,18 +2352,61 @@
   }
 
   /**
-   * Het onzichtbaar maken uitstellen tot de slide-up klaar is: tijdens het
-   * schuiven hoort de vertrekkende regel nog gewoon te zien, daarna nooit
-   * meer. Elke nieuwe wissel zet de teller opnieuw.
+   * De regels boven het venster na de slide-up uit de DOM halen (en de
+   * verschuiving compenseren).
+   *
+   * `visibility:hidden` alleen is niet genoeg: die blokjes blijven in de flow
+   * staan. Zodra de regelindeling opnieuw wordt berekend — een breder venster
+   * (fullscreen), een ander font of een andere maat — kunnen onzichtbare woorden
+   * op de EERSTE zichtbare regel terechtkomen en duwen ze de tekst naar rechts:
+   * regel 1 begint dan ineens ingesprongen (bugmelding 2026-11-12, alleen in
+   * fullscreen, herstelt bij de volgende regelwissel). Ze er helemaal uit halen
+   * kan geen kwaad: de verschuiving wordt met de GEMETEN afstand gecorrigeerd,
+   * precies zoals boostTrimAbove() doet, dus het beeld verspringt niet. De regel
+   * die tijdens de animatie omhoog schoof is dan al weg — dat is de bedoeling.
+   *
+   * Er wordt hier opnieuw gemeten (niet met de maten van vóór de animatie): na
+   * een maatwissel telt alleen de indeling zoals hij NU is.
    */
-  function scheduleHideAboveWindow(m, range) {
+  function trimAboveWindow() {
+    boostHideTimer = null;
+    var wrap = boost.scrollEl;
+    if (!wrap || !boost.wordCount || !boostDisplayed()) return;
+    var m = boostLineMetrics(boostLineHeightPx());
+    if (!m || !m.lines || !m.items || !m.index) return;
+    var range = L.captionVisibleGroupRange(m.lines, BOOST_LINES, true);
+    if (!range || !(range.first > 0)) {
+      // Niets boven het venster: wel de zichtbaarheid rechtzetten (een woord
+      // dat na een herindeling weer ín het venster valt moet weer te zien zijn).
+      applyHiddenAbove(m, { first: 0, last: m.lines - 1 });
+      return;
+    }
+    // Eerst onzichtbaar (valt de browser halverwege in paint, dan is er nog
+    // niets te zien), dan pas uit de flow.
+    applyHiddenAbove(m, range);
+    var keepEl = null;
+    for (var i = 0; i < m.items.length; i++) {
+      if (m.index[i] >= range.first) { keepEl = m.items[i].el; break; }
+    }
+    if (!keepEl || keepEl.parentNode !== wrap) return;
+    var px = 0;
+    try { px = m.tops[range.first] - m.tops[0]; } catch (e) { px = 0; }
+    if (!isFinite(px) || px <= 0) return;
+    while (wrap.firstChild && wrap.firstChild !== keepEl) wrap.removeChild(wrap.firstChild);
+    var shift = (boost.windowShift > 0 ? boost.windowShift : 0) - px;
+    boost.windowShift = Math.round(shift * 100) / 100;
+    setWordShift(boost.windowShift, false);
+  }
+
+  /**
+   * Het opruimen uitstellen tot de slide-up klaar is: tijdens het schuiven
+   * hoort de vertrekkende regel nog gewoon te zien, daarna nooit meer. Elke
+   * nieuwe wissel zet de teller opnieuw.
+   */
+  function scheduleHideAboveWindow(m) {
     clearHideTimer();
-    if (!m || !m.items || !m.index || !m.lines) return;
-    if (!range || !(range.first > 0)) return;
-    boostHideTimer = setTimeout(function () {
-      boostHideTimer = null;
-      applyHiddenAbove(m, range);
-    }, BOOST_WINDOW_SETTLE_MS);
+    if (!m || !m.lines || m.lines <= BOOST_LINES) return;
+    boostHideTimer = setTimeout(trimAboveWindow, BOOST_WINDOW_SETTLE_MS);
   }
 
   /**
@@ -2443,8 +2513,9 @@
       boost.windowShift = shift;
       setWordShift(shift, animate);
     }
-    // En na de slide-up: niets van de regels erboven mag nog zichtbaar zijn.
-    scheduleHideAboveWindow(m, range);
+    // En na de slide-up: niets van de regels erboven mag nog zichtbaar zijn (en
+    // ze gaan uit de flow, zodat een herindeling ze niet kan laten inspringen).
+    scheduleHideAboveWindow(m);
   }
 
   /**

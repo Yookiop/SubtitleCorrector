@@ -71,7 +71,10 @@
     kloppend houden: het venster wordt dan hoger (twee hele regels) en de verschuiving volgt de
     echte regelafstand, zodat de bovenste regel niet meer uit het venster loopt. Scenario C = de
     canvasmeting van de fontmaten klopt niet (de pagina tekent een ander font dan gemeten); de
-    gemeten controle houdt de regel erboven dan alsnog buiten.
+    gemeten controle houdt de regel erboven dan alsnog buiten. Scenario D = de box wordt breder
+    terwijl de tekst niet opnieuw wordt opgebouwd (zoals bij fullscreen of een fontwissel): de
+    onzichtbare woorden van de regels erboven mogen dan niet op de eerste zichtbare regel
+    belanden — die begint anders ineens ingesprongen (bugmelding 2026-11-12).
     De meting gebeurt per woord op een echte layout (1280x720, 130% grootte), met de woorden uit
     een lange doorlopende spraak (zoals een debatvideo zonder stiltes).<br>
     Extra's om zelf te proberen: <code>?nofix=1</code> (zonder de zwart-bleed),
@@ -616,6 +619,71 @@
         out.appendChild(t);
       }
 
+      /* ------------------------------------------------------------------ *
+       * D. Herindeling na een maatwissel (fullscreen): de eerste zichtbare
+       *    regel mag niet inspringen.
+       *
+       * `visibility:hidden` (applyHiddenAbove) houdt de blokjes van de regels
+       * boven het venster in de flow. Wordt het venster daarna breder
+       * (fullscreen), dan wikkelt de tekst anders en kunnen die onzichtbare
+       * woorden op de eerste ZICHTBARE regel terechtkomen — die begint dan
+       * ingesprongen (bugmelding 2026-11-12, alleen in fullscreen). De fix
+       * (trimAboveWindow) meet na de slide-up opnieuw en haalt de verborgen
+       * regels uit de DOM, met compensatie van de verschuiving.
+       * ------------------------------------------------------------------ */
+      function firstShownIndent() {
+        var contentLeft = box.getBoundingClientRect().left + (parseFloat(getComputedStyle(box).paddingLeft) || 0);
+        var spans = wrap.querySelectorAll('.sc-caption-word');
+        for (var i = 0; i < spans.length; i++) {
+          if (spans[i].style.visibility === 'hidden') continue;
+          var rg = document.createRange();
+          rg.selectNodeContents(spans[i]);
+          var r = rg.getBoundingClientRect();
+          if (!(r.width > 0)) continue;
+          return r.left - contentLeft;
+        }
+        return null;
+      }
+
+      /** `fix` = false: oud gedrag; true: opnieuw meten + verborgen regels uit de flow. */
+      function rewrapIndent(fix, count) {
+        buildStage();
+        var lh = parseFloat(getComputedStyle(wrap).lineHeight) || 0;
+        for (var n = 0; n < count && n < WORDS.length; n++) appendWord(WORDS[n]);
+        var m = boostMetrics(wrap.getBoundingClientRect().height, lh);
+        var range = L.captionVisibleGroupRange(m.lines, LINES, true);
+        for (var h = 0; h < m.items.length; h++) m.items[h].style.visibility = m.index[h] < range.first ? 'hidden' : '';
+        setShift(L.captionWindowShiftMeasured(m.tops, LINES));
+        void wrap.offsetHeight;
+
+        // De box wordt breder zonder dat de tekst opnieuw wordt opgebouwd: de
+        // tekst wikt dan anders (bredere box, ander font, andere maat) terwijl
+        // de verborgen regels en de verschuiving van vóór de wissel nog gelden.
+        box.style.width = '85%';
+        void wrap.offsetHeight;
+
+        if (fix) {
+          var lh2 = parseFloat(getComputedStyle(wrap).lineHeight) || lh;
+          var m2 = boostMetrics(wrap.getBoundingClientRect().height, lh2);
+          var r2 = L.captionVisibleGroupRange(m2.lines, LINES, true);
+          // Zoals applyHiddenAbove(): verbergen wat boven het venster staat én
+          // een woord dat na de herindeling weer in het venster valt juist
+          // zichtbaar maken.
+          for (var h2 = 0; h2 < m2.items.length; h2++) {
+            m2.items[h2].style.visibility = m2.index[h2] < r2.first ? 'hidden' : '';
+          }
+          var keepEl = null;
+          for (var k = 0; k < m2.items.length; k++) if (m2.index[k] >= r2.first) { keepEl = m2.items[k]; break; }
+          if (keepEl && m2.tops.length > r2.first) {
+            var px = m2.tops[r2.first] - m2.tops[0];
+            var shift = -parseFloat(wrap.style.top || '0');
+            while (wrap.firstChild && wrap.firstChild !== keepEl) wrap.removeChild(wrap.firstChild);
+            if (px > 0) setShift(shift - px);
+          }
+        }
+        return firstShownIndent();
+      }
+
       var ok = true;
       var parts = [];
       for (var q = 0; q < results.length; q++) {
@@ -635,10 +703,25 @@
           (r.noGuard ? ', zonder controle ' + fmt(r.noGuard.maxPoke) + 'px' : '') +
           ', sprong bij opruimen ' + fmt(r.newRes.maxGapJump) + 'px; oud: ' + fmt(r.oldRes.minGapText) + 'px / ' + r.oldRes.cutSteps + ')');
       }
+      // Waar de onzichtbare woorden belanden hangt af van waar de regelafbreking
+      // na de verbreding valt; zoek de woordstand waarin de oude aanpak de
+      // eerste regel echt laat inspringen (en bewijs daarna de fix op die stand).
+      var worst = { n: 0, px: 0 };
+      for (var wn = 8; wn <= 80 && wn <= WORDS.length; wn++) {
+        var wpx = rewrapIndent(false, wn);
+        if (wpx !== null && wpx > worst.px) worst = { n: wn, px: wpx };
+      }
+      var indentOld = worst.n ? worst.px : null;
+      var indentNew = worst.n ? rewrapIndent(true, worst.n) : null;
+      var rewrapOk = indentOld !== null && indentOld > 20 && indentNew !== null && Math.abs(indentNew) <= 1.5;
+      if (!rewrapOk) ok = false;
+      parts.push('D: ' + (rewrapOk ? 'OK' : 'FOUT') + ' (na ' + worst.n + ' woorden + verbreden: zonder opruimen ' +
+        fmt(indentOld) + 'px ingesprongen, met opruimen ' + fmt(indentNew) + 'px)');
+
       var v = document.getElementById('verdict');
       v.className = 'verdict ' + (ok ? 'pass' : 'fail');
       // Voor automatisering (Playwright/console): de ruwe metingen per scenario.
-      window.SC_CHECK = { ok: ok, results: results, fs: FS, keepLines: KEEP_LINES };
+      window.SC_CHECK = { ok: ok, results: results, fs: FS, keepLines: KEEP_LINES, rewrap: { old: indentOld, fix: indentNew } };
       v.innerHTML = (ok ? 'PASS' : 'FAIL') + ' &mdash; ' + parts.join(' &middot; ') +
         '<br><span style="font-weight:400">De oude berekening kapt in scenario B de bovenste regel af en zet de tekst scheef in het zwart (meer zwart boven dan onder); de inkt-layout houdt de tekst in beide scenario\'s heel en zet hem met evenveel zwart boven als onder in het venster. In scenario C kloppen de fontmaten niet: de layout alleen laat dan de onderkant van de vorige regel in het venster staan (witte puntjes/streepjes boven de bovenste regel, klacht 2026-10-31) — de gemeten controle (L.captionTopKeepOut) en het opruimen van oude regels houden het venster ook dan kloppend.</span>';
     })();
