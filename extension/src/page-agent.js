@@ -103,6 +103,9 @@
     lastRepair: null,
     audioSwitches: 0,
     lastAudioSwitch: null,
+    // Laatste ruststand van het rollende venster (settleWindow): hoeveel regels,
+    // wat de verschuiving werd en of de bovenrand bijgesteld moest worden.
+    settle: null,
     apply: { count: 0, last: null }
   };
 
@@ -180,6 +183,10 @@
           } catch (e) { return null; }
         })(),
         hitAtBox: boostHitTest(),
+        // Ruststand van het venster: laatste verschuiving en of de bovenrand
+        // bijgesteld moest worden (offset != 0 betekent dat de eerste regel
+        // niet vanzelf goed stond).
+        settle: diag.settle,
         gaveUp: !!boost.gaveUpKey,
         overlayConnected: !!(boost.overlay && boost.overlay.isConnected),
         overlayVisible: boostDisplayed(),
@@ -1194,7 +1201,7 @@
   var BOOST_WINDOW_RECHECK_FRAMES = 120;         // ± 2 s: venster/regelafstand opnieuw meten (vangnet)
   // s dat de slide-up duurt (CSS: `transition: top .2s`) + wat marge. Pas
   // daarna mag de regel die het venster uit schoof onzichtbaar gemaakt worden
-  // (zie scheduleHideAboveWindow): tijdens het schuiven hoort hij nog te zien.
+  // (zie settleWindow): tijdens het schuiven hoort hij nog te zien.
   var BOOST_WINDOW_SETTLE_MS = 240;
   // Aantal regels woordblokjes dat in de DOM blijft staan. Een run kan minuten
   // doorgaan zonder stilte; zonder grens groeit de DOM onbeperkt door en wordt
@@ -1278,6 +1285,7 @@
     runKey: null,         // starttijd van de run die nu in de DOM staat
     wordCount: 0,         // aantal woorden van die run dat al in de DOM staat
     windowShift: -1,      // laatst gezette venster-verschuiving in px (-1 = opnieuw meten)
+    shiftAt: 0,           // Date.now() van de laatste GEANIMEERDE verschuiving (ruststand wacht daarop)
     lastWordTop: null,    // bovenkant (px) van het laatst gezette woord (alleen voor de meting)
     lastWordEl: null,     // element van het laatst gezette woord (zelfde-frame vergelijking)
     invisible: 0,         // frames op rij met tekst in de DOM maar niets in het venster
@@ -1852,6 +1860,9 @@
     if (wrap.style.top === val) return;
     if (animate) {
       wrap.style.top = val;
+      // De ruststand (settleWindow) moet wachten tot deze overgang klaar is:
+      // een meting tijdens de slide-up ziet een tussenstand.
+      boost.shiftAt = Date.now();
       return;
     }
     wrap.style.transition = 'none';
@@ -1938,6 +1949,9 @@
     var box = boost.box;
     var wrap = boost.scrollEl;
     if (!box || !wrap) return;
+    // Een nog geplande ruststand van de woord-voor-woord-weergave hoort niet
+    // meer bij deze DOM.
+    clearHideTimer();
     // Elke sprekerswissel (">>") begint op een nieuwe regel; de markering zelf
     // blijft staan (die toont YouTube ook).
     buildBoostText(wrap, blk.text);
@@ -2292,7 +2306,7 @@
    * 2026-10-31). Daarom meet deze functie de echte onderkant en schuift hij het
    * venster bij. De uitkomst is nooit groter dan de marge, zodat de tekst niet
    * tegen de bovenrand komt; wat er daarna nog zou uitsteken vangt
-   * scheduleHideAboveWindow af.
+   * settleWindow() af.
    */
   function boostTopKeepOut(m, range, nextShiftPx, marginPx) {
     var box = boost.box;
@@ -2336,8 +2350,8 @@
    * is de harde garantie naast de berekening.
    *
    * De blokjes blijven in de layout staan (alleen `visibility`), zodat de
-   * vervolgmeting in trimAboveWindow() dezelfde indeling ziet. Daarna gaan ze
-   * uit de DOM (zie trimAboveWindow): onzichtbare blokjes die in de flow
+   * vervolgmeting in settleWindow() dezelfde indeling ziet. Daarna gaan ze
+   * uit de DOM (zie settleWindow): onzichtbare blokjes die in de flow
    * blijven staan kunnen na een herindeling de eerste zichtbare regel
    * inspringen (bugmelding 2026-11-12).
    */
@@ -2352,61 +2366,157 @@
   }
 
   /**
-   * De regels boven het venster na de slide-up uit de DOM halen (en de
-   * verschuiving compenseren).
+   * Afstand (px) tussen de bovenkant van het BOVENSTE woordblokje in de DOM en
+   * de bovenrand van het venster. 0 = zoals ontworpen (het zwarte blokje raakt
+   * de rand, de inkt staat `marginPx` lager); negatief = de regel staat te hoog
+   * (geen zwart meer boven de letters), positief = te laag.
    *
-   * `visibility:hidden` alleen is niet genoeg: die blokjes blijven in de flow
-   * staan. Zodra de regelindeling opnieuw wordt berekend — een breder venster
-   * (fullscreen), een ander font of een andere maat — kunnen onzichtbare woorden
-   * op de EERSTE zichtbare regel terechtkomen en duwen ze de tekst naar rechts:
-   * regel 1 begint dan ineens ingesprongen (bugmelding 2026-11-12, alleen in
-   * fullscreen, herstelt bij de volgende regelwissel). Ze er helemaal uit halen
-   * kan geen kwaad: de verschuiving wordt met de GEMETEN afstand gecorrigeerd,
-   * precies zoals boostTrimAbove() doet, dus het beeld verspringt niet. De regel
-   * die tijdens de animatie omhoog schoof is dan al weg — dat is de bedoeling.
-   *
-   * Er wordt hier opnieuw gemeten (niet met de maten van vóór de animatie): na
-   * een maatwissel telt alleen de indeling zoals hij NU is.
+   * Let op: dit is het bovenste blokje van de WRAPPER, niet "de eerste regel
+   * die het venster raakt". Vlak na het opruimen staat de inhoud nog op de oude
+   * verschuiving, dus de eerste zichtbare regel staat dan nog boven het venster;
+   * een filter "raakt het venster" slaat hem dan over en meet de regel
+   * eronder — met een correctie die precies één regel te klein is (bugmelding
+   * 2026-11-12, tweede ronde: de eerste regel stond één regel te hoog, geen
+   * zwart meer boven de letters). Daarom alleen gebruiken als de regels
+   * erboven weg zijn (of er nooit waren): dan ís het bovenste blokje de eerste
+   * zichtbare regel.
    */
-  function trimAboveWindow() {
-    boostHideTimer = null;
+  function boostTopLineOffset() {
+    var box = boost.box;
     var wrap = boost.scrollEl;
-    if (!wrap || !boost.wordCount || !boostDisplayed()) return;
-    var m = boostLineMetrics(boostLineHeightPx());
-    if (!m || !m.lines || !m.items || !m.index) return;
-    var range = L.captionVisibleGroupRange(m.lines, BOOST_LINES, true);
-    if (!range || !(range.first > 0)) {
-      // Niets boven het venster: wel de zichtbaarheid rechtzetten (een woord
-      // dat na een herindeling weer ín het venster valt moet weer te zien zijn).
-      applyHiddenAbove(m, { first: 0, last: m.lines - 1 });
-      return;
+    if (!box || !wrap) return null;
+    var boxTop = 0;
+    try { boxTop = box.getBoundingClientRect().top; } catch (e) { return null; }
+    var top = null;
+    var spans = null;
+    try { spans = wrap.querySelectorAll('.sc-caption-word'); } catch (e) { spans = null; }
+    if (!spans || !spans.length) return null;
+    for (var i = 0; i < spans.length; i++) {
+      if (spans[i].style && spans[i].style.visibility === 'hidden') continue;
+      var r = null;
+      try { r = spans[i].getBoundingClientRect(); } catch (e) { r = null; }
+      if (!r || !(r.height > 0)) continue;
+      if (top === null || r.top < top) top = r.top;
     }
-    // Eerst onzichtbaar (valt de browser halverwege in paint, dan is er nog
-    // niets te zien), dan pas uit de flow.
-    applyHiddenAbove(m, range);
-    var keepEl = null;
-    for (var i = 0; i < m.items.length; i++) {
-      if (m.index[i] >= range.first) { keepEl = m.items[i].el; break; }
-    }
-    if (!keepEl || keepEl.parentNode !== wrap) return;
-    var px = 0;
-    try { px = m.tops[range.first] - m.tops[0]; } catch (e) { px = 0; }
-    if (!isFinite(px) || px <= 0) return;
-    while (wrap.firstChild && wrap.firstChild !== keepEl) wrap.removeChild(wrap.firstChild);
-    var shift = (boost.windowShift > 0 ? boost.windowShift : 0) - px;
-    boost.windowShift = Math.round(shift * 100) / 100;
-    setWordShift(boost.windowShift, false);
+    if (top === null) return null;
+    return Math.round((top - boxTop) * 100) / 100;
   }
 
   /**
-   * Het opruimen uitstellen tot de slide-up klaar is: tijdens het schuiven
-   * hoort de vertrekkende regel nog gewoon te zien, daarna nooit meer. Elke
-   * nieuwe wissel zet de teller opnieuw.
+   * De stand van de wrapper zoals hij NU op de pagina staat (px omhoog).
+   *
+   * Niet `boost.windowShift` gebruiken voor een meting: dat is de laatst
+   * GEWENSTE stand. Tijdens de slide-up lopen die twee uiteen (de CSS-overgang
+   * is nog bezig) en na een fout ook — en dan rekent een correctie op de
+   * verkeerde basis (bugmelding 2026-11-12, tweede ronde).
    */
-  function scheduleHideAboveWindow(m) {
-    clearHideTimer();
-    if (!m || !m.lines || m.lines <= BOOST_LINES) return;
-    boostHideTimer = setTimeout(trimAboveWindow, BOOST_WINDOW_SETTLE_MS);
+  function boostCurrentShift() {
+    var px = 0;
+    try {
+      var top = parseFloat(boost.scrollEl && boost.scrollEl.style ? boost.scrollEl.style.top : '');
+      px = isFinite(top) ? -top : 0;
+    } catch (e) { px = 0; }
+    return px;
+  }
+
+  /**
+   * De ruststand van het rollende venster, `BOOST_WINDOW_SETTLE_MS` na de
+   * laatste wijziging (dus als de slide-up klaar is):
+   *
+   *  1. de regels boven het venster gaan onzichtbaar én uit de DOM. Alleen
+   *     `visibility:hidden` is niet genoeg: die blokjes blijven in de flow
+   *     staan, en zodra de regelindeling opnieuw wordt berekend (breder venster
+   *     in fullscreen, ander font, andere maat) kunnen ze op de EERSTE
+   *     zichtbare regel belanden en de tekst naar rechts duwen — regel 1 begint
+   *     dan ineens ingesprongen (bugmelding 2026-11-12). Weg ermee kan geen
+   *     kwaad: de stand wordt hieronder opnieuw uit een meting gezet.
+   *  2. de stand wordt daarna BEPAALD DOOR TE METEN: de bovenkant van het
+   *     bovenste blokje (na het opruimen is dat de eerste zichtbare regel) hoort
+   *     op de bovenrand te staan — daar komt de zwarte marge boven de inkt
+   *     vandaan. Dat is één correctie op de huidige stand in plaats van een
+   *     berekening die van fontmaten, padding en een oude verschuiving afhangt;
+   *     zo kan de eerste regel niet "te ver naar boven" blijven staan als er
+   *     íets in die keten niet klopt (bugmelding 2026-11-12, tweede ronde).
+   *
+   * Tijdens een lopende slide-up gebeurt er niets: de meting zou dan een
+   * tussenstand zien. De ruststand wordt dan even uitgesteld.
+   */
+  function settleWindow() {
+    boostHideTimer = null;
+    var wrap = boost.scrollEl;
+    if (!wrap || !boost.wordCount || !boostDisplayed()) return;
+    // Alleen in de woord-voor-woord-weergave: in de blokweergave staat het hele
+    // blok bewust bovenaan en mag er niets opgeruimd of verschoven worden.
+    if (!BOOST_WORD_BY_WORD) return;
+    var since = Date.now() - (boost.shiftAt || 0);
+    if (since >= 0 && since < BOOST_WINDOW_SETTLE_MS - 20) {
+      boostHideTimer = setTimeout(settleWindow, BOOST_WINDOW_SETTLE_MS - since);
+      return;
+    }
+    var lh = boostLineHeightPx();
+    var m = boostLineMetrics(lh);
+    if (!m || !m.lines || !m.items || !m.index) return;
+    var range = L.captionVisibleGroupRange(m.lines, BOOST_LINES, true);
+    applyHiddenAbove(m, range);
+    var removed = 0;
+    var cleared = !(range.first > 0);      // staat er niets (meer) boven het venster?
+    if (range.first > 0) {
+      var keepEl = null;
+      for (var i = 0; i < m.items.length; i++) {
+        if (m.index[i] >= range.first) { keepEl = m.items[i].el; break; }
+      }
+      if (keepEl && keepEl.parentNode === wrap) {
+        while (wrap.firstChild && wrap.firstChild !== keepEl) { wrap.removeChild(wrap.firstChild); removed++; }
+        cleared = true;
+      }
+    }
+    // Opnieuw meten (na het verwijderen) en de bovenrand erop leggen.
+    var m2 = boostLineMetrics(lh);
+    if (!m2 || !m2.lines || !m2.items.length) return;
+    var step = m2.advance > 0 ? m2.advance : lh;
+    var layout = boostVerticalLayout(step, BOOST_LINES);
+    applyBoostVerticalLayout(layout);
+    applyWordBleed(m2, true);
+    var cur = boostCurrentShift();
+    // Alleen als de regels erboven echt weg zijn, is het bovenste blokje de
+    // eerste zichtbare regel en mogen we daarop uitlijnen. Lukte het opruimen
+    // niet (onverwachte DOM), dan blijft de berekening uit de meting gelden.
+    var off = cleared ? boostTopLineOffset() : null;
+    var shift = cur;
+    if (off !== null) {
+      shift = Math.abs(off) > 0.5 ? cur + off : cur;
+    } else {
+      var lines = L.captionWindowShiftLines(m2.lines, step, BOOST_LINES);
+      var measured = m2.lines > 1 ? L.captionWindowShiftMeasured(m2.tops, BOOST_LINES) : 0;
+      if (measured > 0) lines = measured;
+      shift = lines + layout.shiftPx;
+    }
+    shift = Math.round(shift * 100) / 100;
+    boost.windowShift = shift;
+    setWordShift(shift, false);
+    diag.settle = {
+      at: new Date().toISOString(),
+      lines: m2.lines,
+      removed: removed,
+      shift: shift,
+      offset: off,
+      words: boost.wordCount
+    };
+  }
+
+  /**
+   * De ruststand uitstellen tot de slide-up klaar is: tijdens het schuiven
+   * hoort de vertrekkende regel nog gewoon te zien, daarna nooit meer.
+   *
+   * Een al geplande ruststand wordt NIET verzet: anders stelt een reeks snelle
+   * regelwissels hem steeds uit en blijven de regels erboven (in fullscreen
+   * zichtbaar naast de clip) veel te lang staan. `settleWindow()` meet op het
+   * moment van uitvoeren opnieuw, dus een vroege uitvoering is altijd goed.
+   */
+  function scheduleWindowSettle(m) {
+    if (!m || !m.lines) return;
+    if (boostHideTimer) return;
+    boostHideTimer = setTimeout(settleWindow, BOOST_WINDOW_SETTLE_MS);
   }
 
   /**
@@ -2514,8 +2624,9 @@
       setWordShift(shift, animate);
     }
     // En na de slide-up: niets van de regels erboven mag nog zichtbaar zijn (en
-    // ze gaan uit de flow, zodat een herindeling ze niet kan laten inspringen).
-    scheduleHideAboveWindow(m);
+    // ze gaan uit de flow, zodat een herindeling ze niet kan laten inspringen),
+    // waarna de stand en de bovenrand opnieuw gemeten worden.
+    scheduleWindowSettle(m);
   }
 
   /**

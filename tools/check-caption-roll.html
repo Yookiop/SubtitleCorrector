@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <title>Caption Boost - rollend venster: invarianten per ruststand</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; padding: 20px; font: 14px/1.5 "Segoe UI", system-ui, sans-serif; background: #14161c; color: #e8eef7; }
+    h1 { font-size: 18px; margin: 0 0 6px; }
+    h2 { font-size: 15px; margin: 18px 0 6px; }
+    .sub { color: #93a1b5; max-width: 1000px; }
+    .sub code { font-family: Consolas, monospace; background: #232936; padding: 1px 5px; border-radius: 4px; }
+    #verdict { font-size: 15px; font-weight: 600; padding: 10px 14px; border-radius: 8px; margin: 14px 0; display: inline-block; }
+    .pass { background: #12331f; color: #56e39f; border: 1px solid #1e5a37; }
+    .fail { background: #3a1414; color: #ff9a9a; border: 1px solid #6a2020; }
+    #stage { position: absolute; left: -4000px; top: 0; }
+    #movie_player { position: relative; width: 960px; height: 540px; background: #223; overflow: hidden; }
+    pre { background: #0b0d12; padding: 10px; border-radius: 8px; white-space: pre-wrap; max-height: 420px; overflow: auto; font: 12px/1.4 Consolas, monospace; }
+  </style>
+</head>
+<body>
+  <h1>Caption Boost &mdash; rollend venster: invarianten per ruststand</h1>
+  <div class="sub">
+    Laadt de <b>echte</b> <code>page-agent.js</code> en speelt 40 s doorlopende spraak af met de cadans van
+    YouTube (een woord per ~300 ms, af en toe een stilte = nieuwe run) op een <b>virtuele klok</b>: elke frame
+    is deterministisch en het hele spoor loopt in een seconde of wat. In het midden wordt de speler groter
+    (zoals fullscreen/theater), wat de tekst opnieuw opbouwt.<br><br>
+    Per <b>ruststand</b> (&plusmn; 0,4 s na de laatste verschuiving, dus na de slide-up en het opruimen) worden
+    drie dingen gecontroleerd:<br>
+    &bull; <b>geen onzichtbare woorden</b> meer in de flow (die duwden de eerste regel na een herindeling naar
+    rechts &mdash; bug 2026-11-12);<br>
+    &bull; <b>hoogstens 2 regels</b> in de DOM (de rest is weggeklipt of opgeruimd);<br>
+    &bull; de <b>bovenkant van het bovenste woordblokje staat op de bovenrand</b> van het venster
+    (&plusmn; 2 px). Staat hij hoger, dan is de eerste regel &ldquo;te ver naar boven&rdquo; uitgelijnd: geen
+    zwart meer boven de letters en de vorige regel schuift het venster in (bugmelding 2026-11-12, tweede ronde).
+  </div>
+  <div id="verdict">bezig...</div>
+  <div id="stage"><div id="movie_player" class="html5-video-player"><button class="ytp-subtitles-button" aria-pressed="true"></button></div></div>
+  <pre id="out"></pre>
+
+<script>
+  /* ------------------------------------------------------------------ *
+   * Virtuele klok: rAF en setTimeout worden handmatig bediend, zodat het
+   * harnas de tijd bepaalt (zelfde aanpak als de haperingmeting).
+   * ------------------------------------------------------------------ */
+  var realSetTimeout = window.setTimeout.bind(window);
+  var vnow = 0;
+  var rafQ = [];
+  var timers = [];
+  var tid = 1;
+  window.requestAnimationFrame = function (cb) { rafQ.push(cb); return tid++; };
+  window.cancelAnimationFrame = function () { /* het rafActive-flag van de agent regelt dit */ };
+  window.setTimeout = function (fn, ms) {
+    var id = tid++;
+    timers.push({ id: id, at: vnow + (typeof ms === 'number' ? ms : 0), fn: fn });
+    return id;
+  };
+  window.clearTimeout = function (id) {
+    for (var i = 0; i < timers.length; i++) if (timers[i].id === id) { timers.splice(i, 1); return; }
+  };
+  window.setInterval = function () { return tid++; };
+  performance.now = function () { return vnow; };
+  Date.now = function () { return 1700000000000 + vnow; };
+  function advanceFrame(ms) {
+    vnow += ms;
+    var due = [];
+    for (var i = timers.length - 1; i >= 0; i--) if (timers[i].at <= vnow) { due.push(timers[i]); timers.splice(i, 1); }
+    due.sort(function (a, b) { return a.at - b.at; });
+    for (var d = 0; d < due.length; d++) { try { due[d].fn(); } catch (e) { /* ignore */ } }
+    var q = rafQ; rafQ = [];
+    for (var r = 0; r < q.length; r++) { try { q[r](vnow); } catch (e) { /* ignore */ } }
+  }
+</script>
+
+<script src="../extension/src/shared/lang-utils.js"></script>
+<script>
+  /* Nep-YouTube-speler met een echte breedte/hoogte (een lege div geeft rects
+     van 0 en dan meet het harnas niets). */
+  var T0 = 10;
+  function nowVideo() { return T0 + vnow / 1000; }
+  var playerEl = document.getElementById('movie_player');
+  var CUR = { languageCode: 'en', kind: 'asr', vss_id: 'a.en', displayName: 'English (auto-generated)' };
+  var PR = {
+    videoDetails: { video_id: 'rollcheck01', title: 'test', channelId: 'UCtest', author: 'Test', lengthSeconds: 7200 },
+    captions: { playerCaptionsTracklistRenderer: {
+      captionTracks: [ { languageCode: 'en', kind: 'asr', vssId: 'a.en', displayName: 'English (auto-generated)' } ],
+      audioTracks: []
+    } }
+  };
+  playerEl.getVideoData = function () { return { video_id: 'rollcheck01', title: 'test', author: 'Test' }; };
+  playerEl.getPlayerResponse = function () { return PR; };
+  playerEl.getPlayerState = function () { return 1; };
+  playerEl.getAdState = function () { return 0; };
+  playerEl.getCurrentTime = function () { return nowVideo(); };
+  playerEl.getDuration = function () { return 7200; };
+  playerEl.getOption = function (a, b) {
+    if (a === 'captions' && b === 'track') return CUR;
+    if (a === 'captions' && b === 'tracklist') return [CUR];
+    return null;
+  };
+  playerEl.setOption = function () {};
+  playerEl.getAudioTrack = function () { return null; };
+  playerEl.getAvailableAudioTracks = function () { return []; };
+  playerEl.getSubtitlesUserSettings = function () {
+    return { color: '#ffffff', textOpacity: 1, background: '#080808', backgroundOpacity: 1, fontSizeIncrement: 0 };
+  };
+  playerEl.querySelector = function () { return null; };
+  /* Geen CSS-overgang: dit harnas meet de eindstand, niet de animatie. */
+  var st = document.createElement('style');
+  st.textContent = '#sc-caption-overlay .sc-caption-scroll{transition:none!important}';
+  document.head.appendChild(st);
+</script>
+<script src="../extension/src/page-agent.js"></script>
+<script>
+  (function () {
+    /* Transcript in de cadans van YouTube: één woord per 300 ms, af en toe een
+       sprekerswissel (">>") en elke derde herhaling een stilte van 2,5 s (dat
+       begint een nieuwe run en bouwt de DOM opnieuw op). */
+    var BASE = ('so I am going to pull him out and have him sit by until Furry gets here and then we can do that deal ' +
+      'he has got his foot on the brake this entire time and I do not know why that is happening right now ' +
+      '>> I am sorry sir I did not know it was not valid documentation and that is on me ' +
+      'we are in Wisconsin and the rules here are different from what you are used to back home ' +
+      'and then we can go to Kourend to unlock this song after the meeting is over today ' +
+      'the quick brown fox jumps over the lazy dog near the river bank at dawn every single morning ').split(' ');
+    var events = [];
+    var t = 0;
+    for (var rep = 0; rep < 10; rep++) {
+      for (var i = 0; i < BASE.length; i++) {
+        if (i === 0 && rep % 3 === 2) t += 2500;
+        events.push({ tStartMs: t, dDurationMs: 300, segs: [ { utf8: BASE[i] + ' ', tOffsetMs: 0 } ] });
+        t += 300;
+      }
+    }
+    /* De timedtext-hook van de agent leest dit antwoord (de echte fetch faalt
+       hier: dat is alleen de XHR die we nabootsen). */
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', 'https://www.youtube.com/api/timedtext?v=rollcheck01&lang=en&kind=asr&fmt=json3');
+    Object.defineProperty(xhr, 'response', { get: function () { return JSON.stringify({ events: events }); } });
+    try { xhr.send(); } catch (e) { /* ignore */ }
+    try { xhr.dispatchEvent(new Event('load')); } catch (e) { /* ignore */ }
+
+    function overlay() { return document.getElementById('sc-caption-overlay'); }
+    function boxEl() { var o = overlay(); return o ? o.querySelector('.sc-caption-box') : null; }
+    function wrapEl() { var o = overlay(); return o ? o.querySelector('.sc-caption-scroll') : null; }
+
+    /** Eén momentopname van het venster: regels, zichtbaarheid en de bovenrand. */
+    function sample() {
+      var o = overlay(), bx = boxEl(), wr = wrapEl();
+      if (!o || !bx || !wr || !o.classList.contains('sc-on')) return null;
+      var br = bx.getBoundingClientRect();
+      var spans = wr.querySelectorAll('.sc-caption-word');
+      if (!spans.length) return null;
+      var groups = [];
+      var hidden = 0;
+      var top = null;
+      for (var i = 0; i < spans.length; i++) {
+        var r = spans[i].getBoundingClientRect();
+        if (!(r.width > 0 && r.height > 0)) continue;
+        if (spans[i].style.visibility === 'hidden') { hidden++; continue; }
+        var hit = false;
+        for (var k = 0; k < groups.length; k++) if (Math.abs(groups[k] - r.top) < 6) { hit = true; break; }
+        if (!hit) groups.push(r.top);
+        if (top === null || r.top < top) top = r.top;
+      }
+      var inlineTop = parseFloat(wr.style.top);
+      var computedTop = null;
+      try { computedTop = parseFloat(getComputedStyle(wr).top); } catch (e) { computedTop = null; }
+      return {
+        lines: groups.length,
+        hidden: hidden,
+        words: spans.length,
+        shift: isFinite(inlineTop) ? -inlineTop : null,
+        animating: computedTop !== null && isFinite(inlineTop) && Math.abs(computedTop - inlineTop) > 0.6,
+        blockOffset: top === null ? null : Math.round((top - br.top) * 10) / 10
+      };
+    }
+
+    var out = document.getElementById('out');
+    var verdict = document.getElementById('verdict');
+    var lastShift = null;
+    var settleAt = -1e9;
+    var frames = 0;
+    var settled = 0;
+    var bad = [];
+    var worst = 0;
+    var resized = false;
+
+    function checkFrame() {
+      frames++;
+      var s = sample();
+      if (!s) return;
+      if (s.shift !== lastShift) { lastShift = s.shift; settleAt = vnow; return; }
+      if (s.animating || vnow - settleAt < 380) return;
+      settled++;
+      var off = s.blockOffset;
+      if (off !== null && Math.abs(off) > Math.abs(worst)) worst = off;
+      if (s.hidden > 0 || off === null || Math.abs(off) > 2 || s.lines > 2) {
+        bad.push({ frame: frames, t: Math.round(vnow), s: s });
+      }
+    }
+
+    var total = 2400;          // 40 s bij 60 fps
+    var step = 0;
+    function chunk() {
+      for (var i = 0; i < 300 && step < total; i++, step++) {
+        if (!resized && vnow > 12000) {
+          resized = true;
+          // Zoals fullscreen/theater: de speler (en dus het venster) wordt groter.
+          playerEl.style.width = '1280px';
+          playerEl.style.height = '720px';
+        }
+        advanceFrame(16.7);
+        checkFrame();
+      }
+      if (step < total) {
+        out.textContent = 'frame ' + step + '/' + total + ' · ruststanden: ' + settled + ' · fout: ' + bad.length;
+        realSetTimeout(chunk, 0);
+        return;
+      }
+      var ok = bad.length === 0 && settled > 50;
+      verdict.className = ok ? 'pass' : 'fail';
+      verdict.innerHTML = (ok ? 'PASS' : 'FAIL') + ' &mdash; ' + settled + ' ruststanden, ' + bad.length +
+        ' fout, grootste afwijking van de bovenrand ' + worst + ' px (toegestaan &plusmn; 2)';
+      var settleDiag = null;
+      try { settleDiag = window.__scDiag ? window.__scDiag().drawing.settle : null; } catch (e) { settleDiag = null; }
+      out.textContent = JSON.stringify({ frames: frames, settled: settled, badCount: bad.length, worstOffset: worst, firstBad: bad.slice(0, 5), lastSettle: settleDiag }, null, 1);
+      // Voor automatisering (Playwright/console): de ruwe uitslag.
+      window.SC_CHECK = { ok: ok, frames: frames, settled: settled, bad: bad, worstOffset: worst, lastSettle: settleDiag };
+      document.title = (ok ? 'PASS' : 'FAIL') + ' rollend venster: ' + settled + ' ruststanden, ' + bad.length + ' fout';
+    }
+    chunk();
+  })();
+</script>
+</body>
+</html>

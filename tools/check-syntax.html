@@ -313,6 +313,31 @@
       const retryAfterResize = (agent.match(/boost\.gaveUpKey = null;/g) || []).length >= 3;
       record('page-agent.js: een maatwijziging (resize/fullscreen) ruimt een eerdere opgave op', retryAfterResize,
         retryAfterResize ? undefined : 'verwacht boost.gaveUpKey = null in de ResizeObserver en fullscreenchange');
+
+      // Ruststand van het rollende venster (2026-11-12): de regels boven het
+      // venster gaan niet alleen onzichtbaar maar ook ÚIT de DOM (onzichtbare
+      // blokjes in de flow duwden de eerste regel na een herindeling naar
+      // rechts), en de stand wordt daarna opnieuw uit een meting gezet. Die
+      // meting moet het BOVENSTE blokje nemen (na het opruimen = de eerste
+      // zichtbare regel); een filter "raakt het venster" sloeg precies die regel
+      // over en zette het venster één regel te hoog (tweede bugmelding).
+      const settle = /function settleWindow\s*\(/.test(agent) &&
+        /scheduleWindowSettle\(m\)/.test(agent) &&
+        /wrap\.removeChild\(wrap\.firstChild\)/.test(agent);
+      record('page-agent.js: de ruststand ruimt de regels boven het venster op (settleWindow)', settle,
+        settle ? undefined : 'verwacht settleWindow() met het verwijderen van de kinderen vóór de eerste zichtbare regel');
+
+      const topLine = /function boostTopLineOffset\s*\(/.test(agent) &&
+        !/if \(r\.bottom <= boxTop \+ 0\.5\) continue;/.test(agent) &&
+        /var off = cleared \? boostTopLineOffset\(\) : null;/.test(agent);
+      record('page-agent.js: de ruststand lijnt op het bovenste blokje uit (geen filter op "raakt het venster")', topLine,
+        topLine ? undefined : 'verwacht boostTopLineOffset() op het bovenste woordblokje en `cleared ? ... : null` in settleWindow()');
+
+      const settleMeasured = /function boostCurrentShift\s*\(/.test(agent) &&
+        /boost\.shiftAt = Date\.now\(\)/.test(agent) &&
+        /BOOST_WINDOW_SETTLE_MS - since/.test(agent);
+      record('page-agent.js: de ruststand rekent op de stand die NU op de wrapper staat (en wacht op de slide-up)', settleMeasured,
+        settleMeasured ? undefined : 'verwacht boostCurrentShift(), boost.shiftAt in setWordShift() en de wachttijd in settleWindow()');
     }
 
     /**
