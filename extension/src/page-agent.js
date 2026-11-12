@@ -787,6 +787,46 @@
     };
   }
 
+  /**
+   * Kanaal van de video: `id` (UC...) + `name` + `handle`.
+   *
+   * `channelId` is de betrouwbare sleutel voor de vaste taal-uitzonderingen in
+   * `lang-utils.js` (Lubach = altijd Nederlands); naam en handle zijn er voor de
+   * diagnose en als extra herkenning. De player-response heeft ze meestal, maar
+   * vlak na een videowissel (of bij een video die nog laadt) kan dat ontbreken —
+   * dan valt deze functie terug op de kanaallink onder de video en op
+   * `microformat.playerMicroformatRenderer.ownerProfileUrl` (met de handle).
+   */
+  function readChannel() {
+    var p = player();
+    var pr = safe(function () { return p && p.getPlayerResponse ? p.getPlayerResponse() : null; }, null);
+    var vd = pr && pr.videoDetails ? pr.videoDetails : null;
+    var id = (vd && vd.channelId) || null;
+    var name = (vd && vd.author) || null;
+    var url = null;
+    if (!id || !name) {
+      var a = document.querySelector('ytd-watch-metadata #owner #channel-name a[href], #owner #channel-name a[href], ytd-video-owner-renderer #channel-name a[href]');
+      if (a) {
+        url = a.getAttribute('href') || null;
+        if (!name) name = String(a.textContent || '').trim() || null;
+        var byHref = url ? /\/channel\/(UC[\w-]+)/.exec(url) : null;
+        if (!id && byHref) id = byHref[1];
+      }
+    }
+    if (!url) {
+      url = safe(function () {
+        var mf = pr && pr.microformat && pr.microformat.playerMicroformatRenderer;
+        return (mf && mf.ownerProfileUrl) || null;
+      }, null);
+    }
+    var byHandle = url ? /\/@([\w.-]+)/.exec(url) : null;
+    return {
+      id: id,
+      name: name,
+      handle: byHandle ? '@' + byHandle[1] : null
+    };
+  }
+
   function uniq(arr) {
     var seen = {};
     return arr.filter(function (v) {
@@ -826,7 +866,8 @@
       tracks: supported,
       allTrackCount: tracks.length,
       asrLanguages: asrLanguages,
-      defaultAudioLanguage: defaultAudioLanguage
+      defaultAudioLanguage: defaultAudioLanguage,
+      channel: readChannel()
     };
   }
 

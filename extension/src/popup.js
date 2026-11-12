@@ -66,7 +66,8 @@ function labelAudio(probe) {
       'audio-track': 'audiotrack',
       'current-asr': 'ASR-track',
       'asr-track': 'ASR-track',
-      'default-audio-language': 'video-metadata'
+      'default-audio-language': 'video-metadata',
+      'channel-override': 'vast kanaal'
     }[det.source] || det.source;
     parts.push(L.shortLabel(det.lang) + ' (' + src + ')');
   } else {
@@ -79,6 +80,10 @@ function labelAudio(probe) {
 
 /** Regel "Dubbelcheck": wat heeft de audio-controle opgeleverd? */
 function labelVerify(rec, enabled) {
+  // Een vast kanaal (Lubach) heeft geen meting nodig: de taal staat hardcoded.
+  if (rec && rec.status === 'channel-locked') {
+    return { text: L.shortLabel(rec.found || rec.lang) + ' vast (kanaal)', cls: 'ok' };
+  }
   if (!enabled) return { text: 'uit', cls: 'muted' };
   if (!rec) return { text: 'nog niet gecheckt', cls: 'muted' };
   const found = L.shortLabel(rec.found || rec.lang);

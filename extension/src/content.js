@@ -939,8 +939,11 @@
 
       // Dubbelcheck: de taal kwam uit de metadata (geen audio-analyse) en er is
       // een ondertitel voor -> luister straks één keer na of dat echt klopt.
+      // Bij een vast kanaal (Lubach) staat de taal hardcoded: geen meting die
+      // hem later kan terugdraaien.
       if (!viaBridge && plan.lang && plan.action !== 'no-track' && plan.action !== 'unknown') {
-        scheduleVerify(videoId, plan.lang, VERIFY_DELAY_MS);
+        if (plan.source === 'channel-override') setVerifyStatus(videoId, 'channel-locked', { found: plan.lang });
+        else scheduleVerify(videoId, plan.lang, VERIFY_DELAY_MS);
       }
 
       if (plan.action === 'none') {
@@ -1041,7 +1044,8 @@
     if (!videoId || state.subtitlesOff) return;
 
     var rec = state.verify[videoId];
-    if (rec && (rec.status === 'confirmed' || rec.status === 'corrected' || rec.status === 'skipped')) return;
+    if (rec && (rec.status === 'confirmed' || rec.status === 'corrected' || rec.status === 'skipped' ||
+                rec.status === 'channel-locked')) return;
     if (rec && rec.attempts >= VERIFY_MAX_ATTEMPTS) return;
     rec = rec || { attempts: 0 };
     rec.lang = L.baseLang(lang) || rec.lang || null;
@@ -1088,7 +1092,8 @@
 
     var rec = state.verify[videoId];
     if (!rec || !rec.lang) return;
-    if (rec.status === 'confirmed' || rec.status === 'corrected' || rec.status === 'skipped') return;
+    if (rec.status === 'confirmed' || rec.status === 'corrected' || rec.status === 'skipped' ||
+        rec.status === 'channel-locked') return;
     if (rec.attempts >= VERIFY_MAX_ATTEMPTS) return;
 
     if (state.busy) {

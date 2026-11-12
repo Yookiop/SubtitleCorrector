@@ -251,6 +251,50 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * Vaste kanaal-uitzonderingen (sinds 2026-11-12)
+   *
+   * Bij sommige kanalen klopt YouTube's audio->ondertitel-koppeling niet: de
+   * spraak is Nederlands, maar de eerste caption-track van de audiotrack is
+   * een Engelse vertaling. Lubach (`0givJ0nJ6lI`, debuglog 2026-11-12):
+   * `audioTrack: null`, `audioTracks: []`, `audioCaption: {languageCode:"en"}`
+   * en twee handmatige tracks (`en`, `nl-NL`) -> gewicht 90 voor `en`, terwijl
+   * de video Nederlandse spraak heeft. De taal is daar een kanaal-eigenschap,
+   * geen video-eigenschap, dus staat hij hier vast. De uitzondering gaat
+   * vóór alle metadata (zie `detectAudioLanguage()` hieronder) en de
+   * audio-dubbelcheck in de content script wordt overgeslagen.
+   *
+   * Een kanaal toevoegen = één regel in de lijst. `channelId` is leidend;
+   * `handle` en `name` zijn terugvalopties voor als de probe geen channelId
+   * heeft (anders zou een gelijknamig kanaal de verkeerde taal krijgen).
+   * ------------------------------------------------------------------ */
+  var CHANNEL_LANG_OVERRIDES = [
+    { channelId: 'UCn7xknPbWDjGQCzBLhtubiA', handle: '@Lubach_official', name: 'LUBACH', lang: 'nl' }
+  ];
+
+  /**
+   * Vaste taal voor dit kanaal, of null.
+   *
+   * @param {Object} probe  page-agent probe, met `channel: {id, name, handle}`
+   * @returns {{lang:string, source:string, channel:string}|null}
+   */
+  function channelLanguageOverride(probe) {
+    var ch = probe && probe.channel;
+    if (!ch) return null;
+    var id = ch.id || null;
+    var handle = ch.handle ? String(ch.handle).toLowerCase() : null;
+    var name = ch.name ? String(ch.name).trim().toLowerCase() : null;
+    for (var i = 0; i < CHANNEL_LANG_OVERRIDES.length; i++) {
+      var o = CHANNEL_LANG_OVERRIDES[i];
+      var hit = false;
+      if (id) hit = !!o.channelId && o.channelId === id;
+      else if (handle) hit = !!o.handle && o.handle.toLowerCase() === handle;
+      else if (name) hit = !!o.name && o.name.toLowerCase() === name;
+      if (hit) return { lang: o.lang, source: 'channel-override', channel: id || handle || name };
+    }
+    return null;
+  }
+
+  /* ------------------------------------------------------------------ *
    * Audio-taal detectie uit player-metadata (zonder audio-analyse).
    *
    * Bronnen, op betrouwbaarheid:
@@ -271,6 +315,16 @@
    * telt helemaal niet mee — dat is een keuze van YouTube, niet de audio.
    * ------------------------------------------------------------------ */
   function detectAudioLanguage(probe) {
+    var fixed = channelLanguageOverride(probe);
+    if (fixed) {
+      return {
+        lang: fixed.lang,
+        source: 'channel-override',
+        ambiguous: false,
+        candidates: [{ lang: fixed.lang, source: 'channel-override', weight: 100 }]
+      };
+    }
+
     var cands = [];
     function push(code, source, weight) {
       var b = baseLang(code);
@@ -1833,6 +1887,8 @@
     decodeAudioTrackLang: decodeAudioTrackLang,
     decodeAudioTrackDubbed: decodeAudioTrackDubbed,
     pickCaptionTrack: pickCaptionTrack,
+    CHANNEL_LANG_OVERRIDES: CHANNEL_LANG_OVERRIDES,
+    channelLanguageOverride: channelLanguageOverride,
     detectAudioLanguage: detectAudioLanguage,
     languageCheck: languageCheck,
     planFix: planFix,
