@@ -2420,6 +2420,45 @@
   }
 
   /**
+   * De GEMETEN doelstand van het rollende venster: de verschuiving waarbij de
+   * bovenkant van het eerste blokje van de bovenste zichtbare regel precies op
+   * de bovenrand van het venster staat (daar komt de zwarte marge boven de inkt
+   * vandaan).
+   *
+   * Waarom niet rekenen: de berekende stand (`layout.shiftPx` uit de
+   * canvas-inktmaten, de halve regelafstand en de boxpadding) wijkt in de
+   * praktijk een paar px af van wat de browser tekent. Zette de animatie die
+   * berekende stand neer, dan stond de eerste regel tijdens en na de slide-up
+   * nét te hoog en verschoof de ruststand hem daarna een paar px omlaag — dat
+   * is de zichtbare "sprong" van bugmelding 2026-11-12 (derde ronde: "tijdens
+   * het omhoog verzetten is de 1e regel vaak wat te hoog en springt daarna naar
+   * de goede locatie"). Daarom landt de animatie meteen op de gemeten stand.
+   *
+   * De formule is onafhankelijk van de stand die er nu staat (de wrapper én de
+   * blokjes schuiven samen mee): `top` van de regel + de afstand van de wrapper
+   * tot de inhoud van het venster. Tijdens een lopende animatie klopt de
+   * uitkomst dus ook.
+   *
+   * @returns {number|null} px, of null als er niets te meten valt.
+   */
+  function boostMeasuredShift(m, range) {
+    var box = boost.box;
+    var wrap = boost.scrollEl;
+    if (!box || !wrap || !m || !m.tops || !range) return null;
+    if (range.first < 0 || range.first >= m.tops.length) return null;
+    var groupTop = m.tops[range.first];
+    var wrapTop = 0;
+    var padTop = 0;
+    try {
+      wrapTop = wrap.getBoundingClientRect().top;
+      padTop = parseFloat(getComputedStyle(box).paddingTop) || 0;
+    } catch (e) { return null; }
+    if (!isFinite(groupTop) || !isFinite(wrapTop)) return null;
+    var shift = groupTop - wrapTop + padTop;
+    return isFinite(shift) ? Math.round(shift * 100) / 100 : null;
+  }
+
+  /**
    * De ruststand van het rollende venster, `BOOST_WINDOW_SETTLE_MS` na de
    * laatste wijziging (dus als de slide-up klaar is):
    *
@@ -2484,7 +2523,12 @@
     var off = cleared ? boostTopLineOffset() : null;
     var shift = cur;
     if (off !== null) {
-      shift = Math.abs(off) > 0.5 ? cur + off : cur;
+      // Kleine afwijkingen laten staan: die zie je als een sprong van een paar
+      // px en de animatie is er juist op gezet om hier uit te komen
+      // (boostMeasuredShift). Alleen een ECHTE afwijking — een halve regel of
+      // meer, dus een verkeerde indeling — wordt hier bijgesteld.
+      var tol = Math.max(3, step * 0.45);
+      if (Math.abs(off) > tol) shift = cur + off;
     } else {
       var lines = L.captionWindowShiftLines(m2.lines, step, BOOST_LINES);
       var measured = m2.lines > 1 ? L.captionWindowShiftMeasured(m2.tops, BOOST_LINES) : 0;
@@ -2492,15 +2536,18 @@
       shift = lines + layout.shiftPx;
     }
     shift = Math.round(shift * 100) / 100;
+    var corrected = Math.abs(shift - cur) > 0.01;
     boost.windowShift = shift;
     setWordShift(shift, false);
     diag.settle = {
       at: new Date().toISOString(),
       lines: m2.lines,
       removed: removed,
+      wordCount: boost.wordCount,
+      was: cur,
       shift: shift,
-      offset: off,
-      words: boost.wordCount
+      corrected: corrected,
+      offset: off
     };
   }
 
@@ -2588,14 +2635,20 @@
     var lh = boostLineHeightPx();
     var h = 0;
     try { h = wrap.getBoundingClientRect().height; } catch (e) { h = 0; }
-    var m = boostLineMetrics(lh);
-    var lines = m.lines > 0 ? m.lines : L.captionLinesFromHeight(h, lh);
-    var step = m.advance > 0 ? m.advance : lh;
+    var first = boostLineMetrics(lh);
+    var lines = first.lines > 0 ? first.lines : L.captionLinesFromHeight(h, lh);
+    var step = first.advance > 0 ? first.advance : lh;
     // Hoogte + verticale padding van de blokjes uit de echte fontmaten; de tekst
     // komt met de marge (L.CAPTION_MARGIN_*) onder de bovenrand, zodat de inkt
     // optisch midden in het zwart staat en er boven én onder evenveel overblijft.
     var layout = boostVerticalLayout(step, BOOST_LINES);
     applyBoostVerticalLayout(layout);
+    // De verticale padding van de blokjes is nu gezet en die hoort bij de
+    // gemeten bovenkanten: een padding boven het blokje schuift zijn rect omhoog.
+    // Eerst opnieuw meten, anders rekent de gemeten doelstand met de padding van
+    // vóór deze layout (en landt de animatie er een paar px naast).
+    var m = boostLineMetrics(lh);
+    if (!m.lines) m = first;
     // Het zwart van regels die buiten het venster vallen mag niet in het venster
     // doorlopen (bugmelding 2026-09-20: een strook zwart naast het laatste woord
     // van de bovenste regel).
@@ -2613,6 +2666,12 @@
     // marge (layout zonder meting) is de minimummarge het plafond.
     var keepOutMax = layout.marginPx > 0 ? layout.marginPx : boostFontPx() * L.CAPTION_MARGIN_MIN_EM;
     shift = Math.round((shift + boostTopKeepOut(m, range, shift, keepOutMax)) * 100) / 100;
+    // En dán de GEMETEN stand als doel nemen: die legt het eerste blokje van de
+    // bovenste zichtbare regel precies op de bovenrand, zodat de slide-up meteen
+    // goed landt en de ruststand niets meer hoeft bij te stellen (de berekening
+    // hierboven is een benadering; zie boostMeasuredShift).
+    var measuredShift = boostMeasuredShift(m, range);
+    if (measuredShift !== null) shift = measuredShift;
     // Oude regels opruimen: de DOM groeit anders onbeperkt door in een lange run
     // (elke regelwissel meet alle blokjes en de browser schildert ze allemaal).
     var trimmed = boostTrimAbove(m);

@@ -338,6 +338,17 @@
         /BOOST_WINDOW_SETTLE_MS - since/.test(agent);
       record('page-agent.js: de ruststand rekent op de stand die NU op de wrapper staat (en wacht op de slide-up)', settleMeasured,
         settleMeasured ? undefined : 'verwacht boostCurrentShift(), boost.shiftAt in setWordShift() en de wachttijd in settleWindow()');
+
+      // De animatie moet meteen op de GEMETEN stand landen: de berekening uit de
+      // fontmaten is een benadering, en een na-correctie van een paar px in de
+      // ruststand is precies de zichtbare sprong van bugmelding 2026-11-12
+      // (derde ronde). De meting gebeurt NA applyBoostVerticalLayout(), want de
+      // padding van de blokjes schuift hun rect omhoog.
+      const measuredTarget = /var measuredShift = boostMeasuredShift\(m, range\);/.test(agent) &&
+        /if \(measuredShift !== null\) shift = measuredShift;/.test(agent) &&
+        /var m = boostLineMetrics\(lh\);\s*if \(!m\.lines\) m = first;/.test(agent);
+      record('page-agent.js: de slide-up landt meteen op de gemeten stand (geen na-correctie)', measuredTarget,
+        measuredTarget ? undefined : 'verwacht boostMeasuredShift() als doelstand in updateWordWindow() en een HERmeting na applyBoostVerticalLayout()');
     }
 
     /**

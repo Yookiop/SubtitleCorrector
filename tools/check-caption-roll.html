@@ -32,7 +32,11 @@
     &bull; <b>hoogstens 2 regels</b> in de DOM (de rest is weggeklipt of opgeruimd);<br>
     &bull; de <b>bovenkant van het bovenste woordblokje staat op de bovenrand</b> van het venster
     (&plusmn; 2 px). Staat hij hoger, dan is de eerste regel &ldquo;te ver naar boven&rdquo; uitgelijnd: geen
-    zwart meer boven de letters en de vorige regel schuift het venster in (bugmelding 2026-11-12, tweede ronde).
+    zwart meer boven de letters en de vorige regel schuift het venster in (bugmelding 2026-11-12, tweede ronde);<br>
+    &bull; <b>geen na-correctie</b>: de verschuiving mag niet veranderen terwijl er geen woord bij kwam en het
+    aantal regels gelijk bleef. Zo'n sprong (een paar px net na de slide-up) is precies wat je ziet als de
+    animatie op een berekende stand landt en de ruststand hem daarna bijstelt (bugmelding 2026-11-12, derde
+    ronde) &mdash; de animatie hoort meteen op de gemeten stand te landen.
   </div>
   <div id="verdict">bezig...</div>
   <div id="stage"><div id="movie_player" class="html5-video-player"><button class="ytp-subtitles-button" aria-pressed="true"></button></div></div>
@@ -178,24 +182,37 @@
     var out = document.getElementById('out');
     var verdict = document.getElementById('verdict');
     var lastShift = null;
+    var lastWords = null;
+    var lastLines = null;
     var settleAt = -1e9;
     var frames = 0;
     var settled = 0;
     var bad = [];
     var worst = 0;
     var resized = false;
+    var jumps = [];      // verschuiving zonder nieuw woord / nieuwe regel = een correctie ná de animatie
 
     function checkFrame() {
       frames++;
       var s = sample();
-      if (!s) return;
+      if (!s) { lastShift = null; lastWords = null; lastLines = null; return; }
+      // Een verschuiving terwijl er geen woord bij kwam en het aantal regels
+      // gelijk bleef = een na-correctie: precies de "sprong" die je ziet. De
+      // animatie hoort zelf al op de juiste stand te landen.
+      if (s.shift !== lastShift && lastShift !== null && s.words === lastWords && s.lines === lastLines) {
+        jumps.push({ frame: frames, t: Math.round(vnow), from: lastShift, to: s.shift, delta: Math.round((s.shift - lastShift) * 100) / 100 });
+      }
+      lastWords = s.words;
+      lastLines = s.lines;
       if (s.shift !== lastShift) { lastShift = s.shift; settleAt = vnow; return; }
       if (s.animating || vnow - settleAt < 380) return;
       settled++;
       var off = s.blockOffset;
       if (off !== null && Math.abs(off) > Math.abs(worst)) worst = off;
       if (s.hidden > 0 || off === null || Math.abs(off) > 2 || s.lines > 2) {
-        bad.push({ frame: frames, t: Math.round(vnow), s: s });
+        var d = null;
+        try { d = window.__scDiag ? window.__scDiag().drawing : null; } catch (e) { d = null; }
+        bad.push({ frame: frames, t: Math.round(vnow), s: s, diag: d ? { shift: d.windowShift, settle: d.settle, words: d.words, runKey: d.runKey, box: d.boxRect } : null });
       }
     }
 
@@ -217,16 +234,17 @@
         realSetTimeout(chunk, 0);
         return;
       }
-      var ok = bad.length === 0 && settled > 50;
+      var ok = bad.length === 0 && jumps.length === 0 && settled > 50;
       verdict.className = ok ? 'pass' : 'fail';
       verdict.innerHTML = (ok ? 'PASS' : 'FAIL') + ' &mdash; ' + settled + ' ruststanden, ' + bad.length +
-        ' fout, grootste afwijking van de bovenrand ' + worst + ' px (toegestaan &plusmn; 2)';
+        ' fout, ' + jumps.length + ' na-correcties, grootste afwijking van de bovenrand ' + worst +
+        ' px (toegestaan &plusmn; 2)';
       var settleDiag = null;
       try { settleDiag = window.__scDiag ? window.__scDiag().drawing.settle : null; } catch (e) { settleDiag = null; }
-      out.textContent = JSON.stringify({ frames: frames, settled: settled, badCount: bad.length, worstOffset: worst, firstBad: bad.slice(0, 5), lastSettle: settleDiag }, null, 1);
+      out.textContent = JSON.stringify({ frames: frames, settled: settled, badCount: bad.length, jumps: jumps.slice(0, 5), jumpCount: jumps.length, worstOffset: worst, firstBad: bad.slice(0, 5), lastSettle: settleDiag }, null, 1);
       // Voor automatisering (Playwright/console): de ruwe uitslag.
-      window.SC_CHECK = { ok: ok, frames: frames, settled: settled, bad: bad, worstOffset: worst, lastSettle: settleDiag };
-      document.title = (ok ? 'PASS' : 'FAIL') + ' rollend venster: ' + settled + ' ruststanden, ' + bad.length + ' fout';
+      window.SC_CHECK = { ok: ok, frames: frames, settled: settled, bad: bad, jumps: jumps, worstOffset: worst, lastSettle: settleDiag };
+      document.title = (ok ? 'PASS' : 'FAIL') + ' rollend venster: ' + settled + ' ruststanden, ' + bad.length + ' fout, ' + jumps.length + ' na-correcties';
     }
     chunk();
   })();
