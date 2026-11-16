@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <title>Subtitle Corrector - ondertitelmenu: vertaling wissen</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; padding: 20px; font: 14px/1.5 "Segoe UI", system-ui, sans-serif; background: #14161c; color: #e8eef7; }
+    h1 { font-size: 18px; margin: 0 0 6px; }
+    .sub { color: #93a1b5; max-width: 1000px; }
+    .sub code { font-family: Consolas, monospace; background: #232936; padding: 1px 5px; border-radius: 4px; }
+    #verdict { font-size: 15px; font-weight: 600; padding: 10px 14px; border-radius: 8px; margin: 14px 0; display: inline-block; }
+    .pass { background: #12331f; color: #56e39f; border: 1px solid #1e5a37; }
+    .fail { background: #3a1414; color: #ff9a9a; border: 1px solid #6a2020; }
+    #stage { position: absolute; left: -4000px; top: 0; }
+    #movie_player { position: relative; width: 960px; height: 540px; background: #223; overflow: visible; }
+    .ytp-chrome-bottom { position: absolute; bottom: 0; left: 0; right: 0; height: 40px; }
+    .ytp-right-controls { position: absolute; right: 0; bottom: 0; display: flex; }
+    .ytp-settings-menu { position: absolute; right: 40px; bottom: 50px; background: #222; padding: 6px; }
+    .ytp-menuitem { display: flex; gap: 12px; padding: 4px 10px; min-width: 240px; }
+    .ytp-menuitem-content { margin-left: auto; color: #aaa; }
+    pre { background: #0b0d12; padding: 10px; border-radius: 8px; white-space: pre-wrap; font: 12px/1.4 Consolas, monospace; }
+  </style>
+</head>
+<body>
+  <h1>Ondertitelmenu &mdash; wist de extensie de vertaling, ook als het menu traag opent?</h1>
+  <div class="sub">
+    Laadt de <b>echte</b> <code>page-agent.js</code> op een nagebouwde YouTube-speler met settings-menu en roept
+    <code>apply()</code> aan voor een video waarvan de ondertitel op <b>&ldquo;Nederlands (automatisch gegenereerd)
+    &raquo; Engels&rdquo;</b> staat. Scenario A is precies de bugmelding van 2026-11-14: de eerste klik op het
+    tandwiel wordt opgegeten (de pagina was nog bezig) en de menu-rijen verschijnen pas even later &mdash; met de
+    oude vaste <code>sleep()</code> gaf dat <code>menu:no-panel</code> en bleef de video Engels.
+  </div>
+  <div id="verdict">bezig...</div>
+
+  <!-- Nagebouwde speler: dezelfde klassen die de page agent gebruikt. -->
+  <div id="stage">
+    <div id="movie_player" class="html5-video-player">
+      <div class="ytp-chrome-bottom">
+        <div class="ytp-right-controls">
+          <button class="ytp-subtitles-button" aria-pressed="true"></button>
+          <button class="ytp-settings-button">&#9881;</button>
+        </div>
+      </div>
+      <div class="ytp-popup ytp-settings-menu" style="display:none">
+        <div class="ytp-panel" data-panel="main">
+          <div class="ytp-panel-menu"></div>
+        </div>
+        <div class="ytp-panel" data-panel="captions" style="display:none">
+          <div class="ytp-panel-header"><button class="ytp-panel-back-button">&#8249;</button></div>
+          <div class="ytp-panel-menu"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <pre id="out"></pre>
+
+<script src="../extension/src/shared/lang-utils.js"></script>
+<script>
+  /* ------------------------------------------------------------------ *
+   * Nagebouwde YouTube-omgeving
+   * ------------------------------------------------------------------ */
+  var playerEl = document.getElementById('movie_player');
+  var menuEl = playerEl.querySelector('.ytp-settings-menu');
+  var mainPanel = menuEl.querySelector('[data-panel="main"]');
+  var capPanel = menuEl.querySelector('[data-panel="captions"]');
+  var settingsBtn = playerEl.querySelector('.ytp-settings-button');
+
+  var NL = 'Nederlands (automatisch gegenereerd)';
+  var NL_EN = NL + ' >> Engels';
+  var CUR = null;
+
+  function track(code, kind, vssId, name, tlang) {
+    var t = { languageCode: code, kind: kind, vss_id: vssId, displayName: name };
+    if (tlang) t.translationLanguage = { languageCode: tlang, languageName: 'Engels' };
+    return t;
+  }
+
+  var FAKE = {
+    settingsClicks: 0, entryClicks: 0, itemClicks: [],
+    clicksToOpen: 1, mainDelayMs: 0, itemDelayMs: 80,
+    breakEntry: false, translatedRowOnly: false, translated: false
+  };
+
+  playerEl.getVideoData = function () { return { video_id: 'menucheck01', title: 'test', author: 'Test' }; };
+  playerEl.getPlayerState = function () { return 1; };
+  playerEl.getAdState = function () { return 0; };
+  playerEl.getCurrentTime = function () { return 5; };
+  playerEl.getDuration = function () { return 600; };
+  playerEl.getAudioTrack = function () { return null; };
+  playerEl.getAvailableAudioTracks = function () { return []; };
+  playerEl.setOption = function () {};
+  playerEl.getSubtitlesUserSettings = function () {
+    return { color: '#ffffff', textOpacity: 1, background: '#080808', backgroundOpacity: 1, fontSizeIncrement: 0 };
+  };
+  playerEl.getOption = function (a, b) {
+    if (a === 'captions' && b === 'track') return CUR;
+    if (a === 'captions' && b === 'tracklist') {
+      return [track('nl', 'asr', 'a.nl', NL)];
+    }
+    return null;
+  };
+
+  function item(label, opts) {
+    var el = document.createElement('div');
+    el.className = 'ytp-menuitem';
+    el.setAttribute('aria-checked', opts && opts.checked ? 'true' : 'false');
+    var lab = document.createElement('div');
+    lab.className = 'ytp-menuitem-label';
+    lab.textContent = label;
+    el.appendChild(lab);
+    if (opts && opts.content) {
+      var c = document.createElement('div');
+      c.className = 'ytp-menuitem-content';
+      c.textContent = opts.content;
+      el.appendChild(c);
+    }
+    if (opts && opts.onClick) el.addEventListener('click', opts.onClick);
+    return el;
+  }
+
+  function clearPanel(panel) {
+    var m = panel.querySelector('.ytp-panel-menu');
+    while (m.firstChild) m.removeChild(m.firstChild);
+    return m;
+  }
+
+  function buildMainPanel() {
+    if (menuEl.style.display === 'none') return;
+    var m = clearPanel(mainPanel);
+    m.appendChild(item('Snelheid afspelen', { content: 'Normaal' }));
+    var entry = item('Subtitles/CC', {
+      content: CUR && CUR.displayName,
+      onClick: function onEntry() {
+        FAKE.entryClicks++;
+        if (FAKE.breakEntry) return;
+        setTimeout(showCaptionsPanel, 120);
+      }
+    });
+    m.appendChild(entry);
+    m.appendChild(item('Kwaliteit', { content: 'Auto' }));
+  }
+
+  function buildCaptionsPanel() {
+    var m = clearPanel(capPanel);
+    m.appendChild(item('Uit', {}));
+    if (!FAKE.translatedRowOnly) {
+      m.appendChild(item(NL, {
+        checked: !FAKE.translated,
+        onClick: function () {
+          FAKE.itemClicks.push(NL);
+          // YouTube past de track even later toe (geen synchrone reactie).
+          setTimeout(function () {
+            FAKE.translated = false;
+            CUR = track('nl', 'asr', 'a.nl', NL);
+            buildCaptionsPanel();
+          }, FAKE.itemDelayMs);
+        }
+      }));
+    }
+    m.appendChild(item(NL_EN, {
+      checked: FAKE.translated,
+      onClick: function () {
+        FAKE.itemClicks.push(NL_EN);
+        FAKE.translated = true;
+        CUR = track('nl', 'asr', 'a.nl', NL_EN, 'en');
+      }
+    }));
+    m.appendChild(item('Auto-translate', {}));
+  }
+
+  function showCaptionsPanel() {
+    if (menuEl.style.display === 'none') return;
+    mainPanel.style.display = 'none';
+    capPanel.style.display = 'block';
+    buildCaptionsPanel();
+  }
+
+  settingsBtn.addEventListener('click', function () {
+    FAKE.settingsClicks++;
+    // De eerste klik(ken) vallen in het niets: het menu is nog niet opgebouwd.
+    if (FAKE.settingsClicks < FAKE.clicksToOpen) return;
+    if (menuEl.style.display !== 'none') {
+      menuEl.style.display = 'none';
+      return;
+    }
+    menuEl.style.display = 'block';
+    mainPanel.style.display = 'block';
+    capPanel.style.display = 'none';
+    clearPanel(mainPanel);
+    // YouTube bouwt de rijen pas even later op.
+    if (FAKE.mainDelayMs) setTimeout(buildMainPanel, FAKE.mainDelayMs);
+    else buildMainPanel();
+  });
+
+  function resetFake(cfg) {
+    FAKE.settingsClicks = 0;
+    FAKE.entryClicks = 0;
+    FAKE.itemClicks = [];
+    FAKE.clicksToOpen = cfg.clicksToOpen || 1;
+    FAKE.mainDelayMs = cfg.mainDelayMs || 0;
+    FAKE.itemDelayMs = typeof cfg.itemDelayMs === 'number' ? cfg.itemDelayMs : 80;
+    FAKE.breakEntry = !!cfg.breakEntry;
+    FAKE.translatedRowOnly = !!cfg.translatedRowOnly;
+    FAKE.translated = true;
+    CUR = track('nl', 'asr', 'a.nl', NL_EN, 'en');
+    menuEl.style.display = 'none';
+    mainPanel.style.display = 'block';
+    capPanel.style.display = 'none';
+    clearPanel(mainPanel);
+    clearPanel(capPanel);
+  }
+
+  resetFake({});
+</script>
+<script src="../extension/src/page-agent.js"></script>
+<script>
+  /* ------------------------------------------------------------------ *
+   * Scenario's
+   * ------------------------------------------------------------------ */
+  var reqId = 0;
+  function ask(type, payload) {
+    return new Promise(function (resolve) {
+      var id = 'req' + (++reqId);
+      function onMsg(ev) {
+        var d = ev.data;
+        if (!d || d.__sc !== true || d.dir !== 'to-content') return;
+        if (d.id !== id || d.type !== 'reply') return;
+        window.removeEventListener('message', onMsg);
+        resolve(d.ok ? d.result : { ok: false, reason: 'error', error: d.error });
+      }
+      window.addEventListener('message', onMsg);
+      window.postMessage({ __sc: true, dir: 'to-page', id: id, type: type, payload: payload }, location.origin);
+    });
+  }
+
+  function target() {
+    return { languageCode: 'nl', kind: 'asr', vssId: 'a.nl', isAutoGenerated: true, displayName: NL };
+  }
+
+  function menuClosed() { return menuEl.style.display === 'none'; }
+
+  var results = [];
+  function check(name, ok, detail) {
+    results.push({ name: name, ok: !!ok, detail: ok ? null : detail });
+  }
+
+  async function runAll() {
+    var out = document.getElementById('out');
+
+    // A. De bugmelding van 2026-11-14: eerste klik opgegeten, rijen laat.
+    resetFake({ clicksToOpen: 2, mainDelayMs: 250, itemDelayMs: 150 });
+    var a = await ask('apply', { target: target(), allowManualFallback: true });
+    check('A: apply gelukt ondanks traag menu', a && a.ok === true, a);
+    check('A: vertaling is weg (track niet meer vertaald)', CUR && CUR.languageCode === 'nl' && !CUR.translationLanguage, CUR);
+    check('A: de niet-vertaalde rij is gekozen (nooit ">> Engels")',
+      FAKE.itemClicks.length === 1 && FAKE.itemClicks[0] === NL, FAKE.itemClicks);
+    check('A: menu netjes gesloten', menuClosed(), menuEl.style.display);
+    check('A: één keer opnieuw geklikt om het menu te openen (2 klikken)',
+      FAKE.settingsClicks === 3, FAKE.settingsClicks); // 2x openen + 1x sluiten
+
+    // B. Alles direct: één klik per stap, geen extra menu-flikkering.
+    resetFake({ clicksToOpen: 1, mainDelayMs: 0, itemDelayMs: 0 });
+    var b = await ask('apply', { target: target(), allowManualFallback: true });
+    check('B: apply gelukt bij een direct menu', b && b.ok === true, b);
+    check('B: vertaling is weg', CUR && !CUR.translationLanguage, CUR);
+    check('B: geen extra klikken (1x open, 1x sluiten)', FAKE.settingsClicks === 2, FAKE.settingsClicks);
+
+    // C. Het paneel bevat alleen de vertaalde rij: nooit die rij aanklikken.
+    resetFake({ translatedRowOnly: true });
+    var c = await ask('apply', { target: target(), allowManualFallback: true });
+    check('C: apply faalt (geen niet-vertaalde rij)', c && c.ok === false, c);
+    check('C: reden is menu-item-missing', c && c.reason === 'menu-item-missing', c);
+    check('C: de vertaalde rij is niet aangeklikt', FAKE.itemClicks.length === 0, FAKE.itemClicks);
+    check('C: menu weer dicht', menuClosed(), menuEl.style.display);
+
+    // D. Menu gaat helemaal niet open: eerlijke fout, geen eindeloos wachten.
+    resetFake({ clicksToOpen: 99 });
+    var d = await ask('apply', { target: target(), allowManualFallback: true });
+    check('D: apply faalt als het menu niet opengaat', d && d.ok === false, d);
+    check('D: poging logt waar het misging (menu:no-settings)',
+      d && d.attempts && d.attempts[0] === 'menu:no-settings', d && d.attempts);
+    check('D: de ondertitel staat na de fout eerlijk nog op de vertaling', CUR && !!CUR.translationLanguage, CUR);
+
+    var bad = results.filter(function (r) { return !r.ok; });
+    var ok = bad.length === 0;
+    var verdict = document.getElementById('verdict');
+    verdict.className = ok ? 'pass' : 'fail';
+    verdict.innerHTML = (ok ? 'PASS' : 'FAIL') + ' &mdash; ' + results.length + ' controles, ' + bad.length + ' fout';
+    out.textContent = JSON.stringify({ ok: ok, results: results }, null, 1);
+    window.SC_CHECK = { ok: ok, results: results };
+    document.title = (ok ? 'PASS' : 'FAIL') + ' ondertitelmenu: ' + (results.length - bad.length) + '/' + results.length;
+  }
+
+  runAll().catch(function (e) {
+    var verdict = document.getElementById('verdict');
+    verdict.className = 'fail';
+    verdict.textContent = 'FAIL - ' + (e && e.message || e);
+    window.SC_CHECK = { ok: false, error: String(e && e.message || e) };
+    document.title = 'FAIL ondertitelmenu';
+  });
+</script>
+</body>
+</html>

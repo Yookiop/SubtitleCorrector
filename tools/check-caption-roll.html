@@ -25,7 +25,7 @@
     YouTube (een woord per ~300 ms, af en toe een stilte = nieuwe run) op een <b>virtuele klok</b>: elke frame
     is deterministisch en het hele spoor loopt in een seconde of wat. In het midden wordt de speler groter
     (zoals fullscreen/theater), wat de tekst opnieuw opbouwt.<br><br>
-    Per <b>ruststand</b> (&plusmn; 0,4 s na de laatste verschuiving, dus na de slide-up en het opruimen) worden
+    Per <b>ruststand</b> (&plusmn; 0,5 s na de laatste verschuiving, dus na de slide-up en het opruimen) worden
     drie dingen gecontroleerd:<br>
     &bull; <b>geen onzichtbare woorden</b> meer in de flow (die duwden de eerste regel na een herindeling naar
     rechts &mdash; bug 2026-11-12);<br>
@@ -36,7 +36,12 @@
     &bull; <b>geen na-correctie</b>: de verschuiving mag niet veranderen terwijl er geen woord bij kwam en het
     aantal regels gelijk bleef. Zo'n sprong (een paar px net na de slide-up) is precies wat je ziet als de
     animatie op een berekende stand landt en de ruststand hem daarna bijstelt (bugmelding 2026-11-12, derde
-    ronde) &mdash; de animatie hoort meteen op de gemeten stand te landen.
+    ronde) &mdash; de animatie hoort meteen op de gemeten stand te landen.<br><br>
+    Sinds 2026-11-16 meet de page agent een regelovergang één frame later (op een schone layout, dus
+    <b>zonder gedwongen layout per woord</b>), en de ruststand wacht 240 ms na de <i>eerste</i> wijziging van
+    een reeks. Een grote inhaalslag (na het opnieuw opbouwen van de tekst) heeft daardoor tot &plusmn; 0,5 s
+    nodig om helemaal opgeruimd te zijn; daarom wordt er pas na 520 ms gecontroleerd en nooit in een frame
+    waarin net een woord bij kwam.
   </div>
   <div id="verdict">bezig...</div>
   <div id="stage"><div id="movie_player" class="html5-video-player"><button class="ytp-subtitles-button" aria-pressed="true"></button></div></div>
@@ -157,10 +162,12 @@
       var groups = [];
       var hidden = 0;
       var top = null;
+      var tops = [];
       for (var i = 0; i < spans.length; i++) {
         var r = spans[i].getBoundingClientRect();
         if (!(r.width > 0 && r.height > 0)) continue;
         if (spans[i].style.visibility === 'hidden') { hidden++; continue; }
+        tops.push(Math.round(r.top));
         var hit = false;
         for (var k = 0; k < groups.length; k++) if (Math.abs(groups[k] - r.top) < 6) { hit = true; break; }
         if (!hit) groups.push(r.top);
@@ -173,6 +180,7 @@
         lines: groups.length,
         hidden: hidden,
         words: spans.length,
+        tops: tops,
         shift: isFinite(inlineTop) ? -inlineTop : null,
         animating: computedTop !== null && isFinite(inlineTop) && Math.abs(computedTop - inlineTop) > 0.6,
         blockOffset: top === null ? null : Math.round((top - br.top) * 10) / 10
@@ -184,35 +192,46 @@
     var lastShift = null;
     var lastWords = null;
     var lastLines = null;
+    var sinceWord = 99;
     var settleAt = -1e9;
     var frames = 0;
     var settled = 0;
     var bad = [];
     var worst = 0;
     var resized = false;
+    var tail = [];       // laatste momentopnames, voor de foutdiagnose
     var jumps = [];      // verschuiving zonder nieuw woord / nieuwe regel = een correctie ná de animatie
 
     function checkFrame() {
       frames++;
       var s = sample();
       if (!s) { lastShift = null; lastWords = null; lastLines = null; return; }
-      // Een verschuiving terwijl er geen woord bij kwam en het aantal regels
-      // gelijk bleef = een na-correctie: precies de "sprong" die je ziet. De
-      // animatie hoort zelf al op de juiste stand te landen.
-      if (s.shift !== lastShift && lastShift !== null && s.words === lastWords && s.lines === lastLines) {
+      tail.push({ f: frames, t: Math.round(vnow), w: s.words, l: s.lines, sh: s.shift, h: s.hidden, off: s.blockOffset });
+      if (tail.length > 24) tail.shift();
+      var wordChanged = lastWords !== null && s.words !== lastWords;
+      sinceWord = wordChanged ? 0 : sinceWord + 1;
+      // Een verschuiving terwijl er al een paar frames geen woord bij kwam en
+      // het aantal regels gelijk bleef = een na-correctie: precies de "sprong"
+      // die je ziet als de animatie op een berekende stand landt en de ruststand
+      // hem daarna bijstelt. De page agent meet de regelovergang sinds
+      // 2026-11-16 één frame later (op een schone layout, dus zonder gedwongen
+      // layout per woord); de roll-up mag daarom tot twee frames na het laatste
+      // woord komen.
+      if (s.shift !== lastShift && lastShift !== null && !wordChanged && sinceWord > 2 && s.lines === lastLines) {
         jumps.push({ frame: frames, t: Math.round(vnow), from: lastShift, to: s.shift, delta: Math.round((s.shift - lastShift) * 100) / 100 });
       }
       lastWords = s.words;
       lastLines = s.lines;
       if (s.shift !== lastShift) { lastShift = s.shift; settleAt = vnow; return; }
-      if (s.animating || vnow - settleAt < 380) return;
+      if (s.animating || vnow - settleAt < 520) return;
+      if (sinceWord < 2) return;   // de roll-up loopt één frame achter op het woord
       settled++;
       var off = s.blockOffset;
       if (off !== null && Math.abs(off) > Math.abs(worst)) worst = off;
       if (s.hidden > 0 || off === null || Math.abs(off) > 2 || s.lines > 2) {
         var d = null;
         try { d = window.__scDiag ? window.__scDiag().drawing : null; } catch (e) { d = null; }
-        bad.push({ frame: frames, t: Math.round(vnow), s: s, diag: d ? { shift: d.windowShift, settle: d.settle, words: d.words, runKey: d.runKey, box: d.boxRect } : null });
+        bad.push({ frame: frames, t: Math.round(vnow), s: s, tail: tail.slice(), diag: d ? { shift: d.windowShift, settle: d.settle, words: d.words, runKey: d.runKey, box: d.boxRect } : null });
       }
     }
 

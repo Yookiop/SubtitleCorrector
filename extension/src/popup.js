@@ -188,16 +188,92 @@ function diagHint(st, probe) {
   return 'Zegt of de ondertiteling uit onze eigen, op de tracktijd gesynchroniseerde weergave komt of uit YouTube\'s (soms achterlopende) venster.';
 }
 
-/** Regel "Prestatie": haperingen van de pagina — en of die van ons komen. */
+/**
+ * Regel "Prestatie": wat deed ONZE code?
+ *
+ * `jank.mineMs` komt uit `long-animation-frame` en ziet alléén animatieframes;
+ * werk in een timer of netwerk-callback (de ruststand van het venster, de poll,
+ * het parsen van een track) valt daar buiten en werd dus nooit aan ons
+ * toegeschreven. Daarom tonen we de eigen metingen: het zwaarste eigen frame
+ * (`jank.own.maxMs`, met het aantal frames boven 16 ms) en het zwaarste eigen
+ * werk buiten de frame-lus (`jank.timers.maxMs`).
+ *
+ * Vroeger stond hier het aantal lange frames van de pagina. Dat zijn bijna
+ * altijd YouTube's eigen scripts en het zei niets over de extensie, terwijl de
+ * gebruiker het als "performance issues van de extensie" las (2026-11-16).
+ */
 function labelJank(diag) {
   const j = diag && diag.jank;
   if (!j) return { text: 'onbekend', cls: 'muted' };
-  if (!j.longFrames) return { text: 'geen haperingen', cls: 'ok' };
-  const worst = (j.worst && j.worst.ms) || 0;
-  const own = Math.round(j.mineMs || 0);
-  const text = j.longFrames + (j.longFrames === 1 ? ' lange frame' : ' lange frames') +
-    ', ergste ' + worst + ' ms' + (own ? ' (eigen code ' + own + ' ms)' : '');
-  return { text: text, cls: worst >= 500 ? 'err' : 'warn' };
+  const own = j.own || {};
+  const timers = j.timers || {};
+  const maxMs = Math.round((own.maxMs || 0) * 10) / 10;
+  const over = own.over16 || 0;
+  const tMax = Math.round((timers.maxMs || 0) * 10) / 10;
+  if (!own.frames && !timers.count) return { text: 'nog geen frames', cls: 'muted' };
+  let text = 'frame ' + maxMs + ' ms' + (over ? ' (' + over + 'x > 16 ms)' : '');
+  if (timers.count) text += ' · taak ' + tMax + ' ms';
+  const worst = Math.max(maxMs, tMax);
+  const cls = worst >= 25 || over > 20 ? 'err' : (worst >= 10 ? 'warn' : 'ok');
+  return { text: text, cls };
+}
+
+/**
+ * Regel "Video-frames": liet de pagina beeld vallen?
+ *
+ * Dit is de directe maat voor "het beeld stottert": `getVideoPlaybackQuality()`
+ * telt de frames die de decoder/compositor oversloeg (`diag.drop`, per poll
+ * gemeten). `ownAtBursts` zegt of onze eigen code op die momenten traag was —
+ * zo is een stotter aan te wijzen in plaats van te gokken.
+ */
+function labelDrop(diag) {
+  const d = diag && diag.drop;
+  const m = diag && diag.media;
+  if (!d || !d.samples) {
+    if (m && typeof m.droppedVideoFrames === 'number' && typeof m.totalVideoFrames === 'number') {
+      return { text: m.droppedVideoFrames + ' van ' + m.totalVideoFrames + ' (totaal)', cls: 'muted' };
+    }
+    return { text: 'n.v.t.', cls: 'muted' };
+  }
+  const perMin = Math.round((d.perMin || 0) * 10) / 10;
+  const pct = d.total ? Math.round((d.dropped / d.total) * 1000) / 10 : 0;
+  let text = perMin + '/min gedropt (' + pct + '%)';
+  if (d.bursts) text += ' · ' + d.bursts + ' stotters' + (d.ownAtBursts ? ', ' + d.ownAtBursts + 'x met eigen werk' : '');
+  const cls = perMin >= 30 ? 'err' : (perMin >= 6 ? 'warn' : 'ok');
+  return { text: text, cls };
+}
+
+/**
+ * Toelichting onder de diagnoseregels: wie was er traag?
+ *
+ * De lange frames van de pagina (`long-animation-frame`) worden hier wél
+ * genoemd — met de zwaarste bron erbij — maar alleen als context: onze eigen
+ * cijfers staan in de regel erboven.
+ */
+function perfHint(st) {
+  const d = st.diag || {};
+  const j = d.jank || {};
+  const own = j.own || {};
+  const timers = j.timers || {};
+  const drop = d.drop || {};
+  const worst = j.worst;
+  const ownMax = Math.round(Math.max(own.maxMs || 0, timers.maxMs || 0) * 10) / 10;
+  const bits = [];
+  if (j.longFrames) {
+    const script = worst && worst.scripts && worst.scripts.length ? worst.scripts[0].src : null;
+    bits.push('De pagina had ' + j.longFrames + ' lange frames (ergste ' + ((worst && worst.ms) || 0) + ' ms' +
+      (script ? ', met name ' + script : '') + ').');
+  }
+  if (ownMax > 0) {
+    bits.push((ownMax <= 8 ? 'Onze eigen code bleef onder ' : 'Onze eigen code had een uitschieter van ') +
+      ownMax + ' ms per frame/taak.');
+  }
+  if (drop.bursts && !drop.ownAtBursts) {
+    bits.push('Bij de ' + drop.bursts + ' stotters deed onze code niets: het beeld viel weg door YouTube, de decoder of de GPU.');
+  } else if (drop.bursts) {
+    bits.push('Bij ' + drop.ownAtBursts + ' van de ' + drop.bursts + ' stotters was onze code zelf traag — stuur dit mee met "Diagnose kopiëren".');
+  }
+  return bits.join(' ') || 'Meet of de stotters van de extensie komen of van YouTube/de decoder.';
 }
 
 async function render() {
@@ -237,6 +313,7 @@ async function render() {
     setText('lag', '-');
     setText('track', '-');
     setText('jank', '-');
+    setText('drop', '-');
     setText('clock', '-');
     $('apply').disabled = true;
     return;
@@ -253,6 +330,7 @@ async function render() {
     setText('lag', '-');
     setText('track', '-');
     setText('jank', '-');
+    setText('drop', '-');
     setText('clock', '-');
     $('apply').disabled = true;
     return;
@@ -271,13 +349,16 @@ async function render() {
   const lag = labelLag(st.diag);
   const cap = labelCaptured(st.diag);
   const jank = labelJank(st.diag);
+  const drop = labelDrop(st.diag);
   const clock = labelClock(st.diag);
   setText('boost', boost.text, boost.cls);
   setText('lag', lag.text, lag.cls);
   setText('track', cap.text, cap.cls);
   setText('jank', jank.text, jank.cls);
+  setText('drop', drop.text, drop.cls);
   setText('clock', clock.text, clock.cls);
   $('diagHint').textContent = diagHint(st, probe);
+  $('perfHint').textContent = perfHint(st);
 
   const det = L.detectAudioLanguage(probe);
   const plan = L.planFix(probe, {

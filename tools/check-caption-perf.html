@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <title>Caption Boost - werk per frame (meten, niet gokken)</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; padding: 20px; font: 14px/1.5 "Segoe UI", system-ui, sans-serif; background: #14161c; color: #e8eef7; }
+    h1 { font-size: 18px; margin: 0 0 6px; }
+    .sub { color: #93a1b5; max-width: 1000px; }
+    .sub code, td code { font-family: Consolas, monospace; background: #232936; padding: 1px 5px; border-radius: 4px; }
+    #verdict { font-size: 15px; font-weight: 600; padding: 10px 14px; border-radius: 8px; margin: 14px 0; display: inline-block; }
+    .pass { background: #12331f; color: #56e39f; border: 1px solid #1e5a37; }
+    .fail { background: #3a1414; color: #ff9a9a; border: 1px solid #6a2020; }
+    #stage { position: absolute; left: -4000px; top: 0; }
+    #movie_player { position: relative; width: 960px; height: 540px; background: #223; overflow: hidden; }
+    table { border-collapse: collapse; margin: 10px 0 16px; font: 13px/1.5 Consolas, monospace; }
+    th, td { text-align: left; padding: 3px 14px 3px 0; }
+    th { color: #93a1b5; font-weight: 600; }
+    tr.limit td { color: #ffd23f; }
+    pre { background: #0b0d12; padding: 10px; border-radius: 8px; white-space: pre-wrap; max-height: 320px; overflow: auto; font: 12px/1.4 Consolas, monospace; }
+  </style>
+</head>
+<body>
+  <h1>Caption Boost &mdash; werk per frame</h1>
+  <div class="sub">
+    Laadt de <b>echte</b> <code>page-agent.js</code> op een nep-speler en speelt doorlopende spraak af in de cadans van
+    YouTube (een woord per 300 ms video, sprekerswissels, een stilte). Vooraf worden de lezers omhuld die een
+    <b>synchrone style/layout</b> afdwingen (<code>getBoundingClientRect</code>, <code>getClientRects</code>,
+    <code>Range.getClientRects</code>, <code>getComputedStyle</code>, <code>offsetHeight</code>) en alle
+    DOM-/stijlwijzigingen; een leesactie op een <i>vuile</i> layout telt als een <b>gedwongen layout</b>.<br><br>
+    Doel: <b>0 gedwongen layouts per woord</b> &mdash; een woord toevoegen mag geen meting meer uitlokken &mdash; en
+    zo weinig mogelijk per regelwissel. Dit harnas meet <b>alleen</b> het werk (het leest zelf niets uit de DOM, anders
+    meet je de meetlat); de weergave-invarianten worden bewaakt door <code>check-caption-roll.html</code> en
+    <code>check-caption-window.html</code>.<br><br>
+    De telling is <b>per animatieframe</b>: aan het begin van een frame is de layout klaar (de browser heeft
+    de vorige frame gelegd), dus een lezing daar telt niet als gedwongen. Zo meet je precies het werk dat de
+    extensie zélf forceert: de sentinelbug van 2026-11-16 gaf <b>6,07</b> gedwongen layouts per woord en
+    32.044 rect-lezingen; daarna <b>0</b> en ± 2.500.<br><br>
+    Draai via een lokale server: <code>python -m http.server 8099</code> &rarr;
+    <code>http://localhost:8099/tools/check-caption-perf.html</code>. Optioneel <code>?ms=18000&amp;speed=2</code>.
+  </div>
+  <div id="verdict">bezig...</div>
+  <table id="counters"></table>
+  <pre id="out"></pre>
+
+  <div id="stage"><div id="movie_player" class="html5-video-player"><button class="ytp-subtitles-button" aria-pressed="true"></button></div></div>
+
+<script>
+  /* ------------------------------------------------------------------ *
+   * Meetlat: lezers die een synchrone style/layout afdwingen + alles wat
+   * de layout vuil maakt. Een leesactie op een vuile layout = gedwongen
+   * layout (dat is precies het werk dat een frame van YouTube kan laten
+   * haperen). Dit moet vóór page-agent.js gebeuren.
+   *
+   * De tellers zijn de harde maat: ze zijn deterministisch (aantallen, geen
+   * milliseconden) en direct te herleiden tot één woord of één regelwissel.
+   * ------------------------------------------------------------------ */
+  var C = {
+    rectReads: 0, rangeRects: 0, gcs: 0, reflows: 0,
+    flushes: 0,        // leesactie terwijl de layout vuil was
+    dirty: false,
+    appends: 0, removes: 0, styleWrites: 0,
+    frames: 0,
+    byReader: {}       // wie vroeg er, toen de layout vuil stond (functie in page-agent.js)
+  };
+  function markDirty() { C.dirty = true; }
+  /** Naam + regel van de eerste page-agent-frame op de stack (of 'extern'). */
+  function readerName() {
+    try {
+      var lines = String(new Error().stack || '').split('\n');
+      for (var i = 0; i < lines.length; i++) {
+        var m = /page-agent\.js:(\d+)/.exec(lines[i]);
+        if (!m) continue;
+        var fn = /at ([^( ]+)/.exec(lines[i]);
+        return (fn ? fn[1].replace(/^Object\./, '') : '?') + ':' + m[1];
+      }
+    } catch (e) { /* ignore */ }
+    return 'extern';
+  }
+  function noteRead(kind) {
+    if (!C.dirty) return;
+    C.flushes++;
+    C.dirty = false;
+    if (C.flushes <= 400) {
+      var k = kind + ' in ' + readerName();
+      C.byReader[k] = (C.byReader[k] || 0) + 1;
+    }
+  }
+
+  /* Een nieuwe animatieframe begint met een schone layout: de browser heeft de
+     wijzigingen van de vorige frame dan al gelegd. Zonder deze grens zou een
+     lezing aan het begin van de volgende frame als "gedwongen" tellen terwijl
+     hij in werkelijkheid niets forceert. Alle callbacks van één frame krijgen
+     dezelfde timestamp, dus dit reset precies één keer per frame. */
+  (function resetPerFrame() {
+    var orig = window.requestAnimationFrame.bind(window);
+    var lastTs = -1;
+    window.requestAnimationFrame = function (cb) {
+      return orig(function (ts) {
+        if (ts !== lastTs) { lastTs = ts; C.dirty = false; }
+        return cb(ts);
+      });
+    };
+  })();
+
+  (function instrument() {
+    var gbcr = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function () { C.rectReads++; noteRead('getBoundingClientRect'); return gbcr.call(this); };
+    var gcr = Element.prototype.getClientRects;
+    Element.prototype.getClientRects = function () { C.rectReads++; noteRead('getClientRects'); return gcr.call(this); };
+
+    var rgcr = Range.prototype.getClientRects;
+    Range.prototype.getClientRects = function () { C.rangeRects++; noteRead('Range.getClientRects'); return rgcr.call(this); };
+
+    var gcs = window.getComputedStyle;
+    window.getComputedStyle = function () { C.gcs++; noteRead('getComputedStyle'); return gcs.apply(window, arguments); };
+
+    ['offsetHeight', 'offsetWidth', 'clientHeight', 'clientWidth', 'scrollHeight', 'scrollWidth'].forEach(function (name) {
+      var d = Object.getOwnPropertyDescriptor(HTMLElement.prototype, name);
+      if (!d || !d.get) return;
+      Object.defineProperty(HTMLElement.prototype, name, {
+        get: function () { C.reflows++; noteRead(name); return d.get.call(this); },
+        configurable: true,
+        enumerable: d.enumerable
+      });
+    });
+
+    // Structuurmutaties: die maken de layout vuil.
+    ['appendChild', 'insertBefore', 'removeChild', 'replaceChild'].forEach(function (name) {
+      var orig = Node.prototype[name];
+      Node.prototype[name] = function (node) {
+        markDirty();
+        if (name === 'appendChild' && node && node.nodeType === 1 && node.className === 'sc-caption-word') C.appends++;
+        if (name === 'removeChild') C.removes++;
+        return orig.apply(this, arguments);
+      };
+    });
+    var tc = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent');
+    if (tc && tc.set) {
+      Object.defineProperty(Node.prototype, 'textContent', {
+        get: tc.get,
+        set: function (v) { markDirty(); return tc.set.call(this, v); },
+        configurable: true,
+        enumerable: tc.enumerable
+      });
+    }
+
+    // Stijlwijzigingen: de eigenschappen die de page agent zelf zet.
+    ['top', 'height', 'fontSize', 'visibility', 'paddingTop', 'paddingBottom', 'transition',
+      'width', 'left', 'right', 'bottom', 'fontFamily', 'fontWeight', 'color', 'background', 'maxWidth']
+      .forEach(function (prop) {
+        var d = Object.getOwnPropertyDescriptor(CSSStyleDeclaration.prototype, prop);
+        if (!d || !d.set) return;
+        Object.defineProperty(CSSStyleDeclaration.prototype, prop, {
+          get: d.get,
+          set: function (v) { C.styleWrites++; markDirty(); return d.set.call(this, v); },
+          configurable: true,
+          enumerable: d.enumerable
+        });
+      });
+    var sp = CSSStyleDeclaration.prototype.setProperty;
+    CSSStyleDeclaration.prototype.setProperty = function () {
+      C.styleWrites++; markDirty();
+      return sp.apply(this, arguments);
+    };
+  })();
+</script>
+
+<script src="../extension/src/shared/lang-utils.js"></script>
+<script>
+  var realSetTimeout = window.setTimeout.bind(window);
+  var Q = new URLSearchParams(location.search);
+  var RUN_MS = Math.max(4000, Math.min(60000, Number(Q.get('ms')) || 18000));
+  var SPEED = Math.max(1, Math.min(3, Number(Q.get('speed')) || 2));
+  var t0 = performance.now();
+  function wall() { return performance.now() - t0; }
+
+  var T0 = 10;
+  function nowVideo() { return T0 + (wall() / 1000) * SPEED; }
+
+  var playerEl = document.getElementById('movie_player');
+  var CUR = { languageCode: 'en', kind: 'asr', vss_id: 'a.en', displayName: 'English (auto-generated)' };
+  var PR = {
+    videoDetails: { video_id: 'perfcheck01', title: 'test', channelId: 'UCtest', author: 'Test', lengthSeconds: 7200 },
+    captions: { playerCaptionsTracklistRenderer: {
+      captionTracks: [{ languageCode: 'en', kind: 'asr', vssId: 'a.en', displayName: 'English (auto-generated)' }],
+      audioTracks: []
+    } }
+  };
+  playerEl.getVideoData = function () { return { video_id: 'perfcheck01', title: 'test', author: 'Test' }; };
+  playerEl.getPlayerResponse = function () { return PR; };
+  playerEl.getPlayerState = function () { return 1; };
+  playerEl.getAdState = function () { return 0; };
+  playerEl.getCurrentTime = function () { return nowVideo(); };
+  playerEl.getDuration = function () { return 7200; };
+  playerEl.getOption = function (a, b) {
+    if (a === 'captions' && b === 'track') return CUR;
+    if (a === 'captions' && b === 'tracklist') return [CUR];
+    return null;
+  };
+  playerEl.setOption = function () {};
+  playerEl.getAudioTrack = function () { return null; };
+  playerEl.getAvailableAudioTracks = function () { return []; };
+  playerEl.getSubtitlesUserSettings = function () {
+    return { color: '#ffffff', textOpacity: 1, background: '#080808', backgroundOpacity: 1, fontSizeIncrement: 0 };
+  };
+  playerEl.querySelector = function () { return null; };
+</script>
+<script src="../extension/src/page-agent.js"></script>
+<script>
+  (function () {
+    var BASE = ('so I am going to pull him out and have him sit by until Furry gets here and then we can do that deal ' +
+      'he has got his foot on the brake this entire time and I do not know why that is happening right now ' +
+      '>> I am sorry sir I did not know it was not valid documentation and that is on me ' +
+      'we are in Wisconsin and the rules here are different from what you are used to back home ' +
+      'and then we can go to Kourend to unlock this song after the meeting is over today ' +
+      'the quick brown fox jumps over the lazy dog near the river bank at dawn every single morning ' +
+      'sometimes the audio drifts a little behind the video and nobody in the room really notices it ' +
+      'but when you are reading along word for word it is the only thing you can see anymore ').split(' ');
+    var events = [];
+    var t = 0;
+    for (var rep = 0; rep < 14; rep++) {
+      for (var i = 0; i < BASE.length; i++) {
+        if (i === 0 && rep % 3 === 2) t += 2500;
+        events.push({ tStartMs: t, dDurationMs: 300, segs: [{ utf8: BASE[i] + ' ', tOffsetMs: 0 }] });
+        t += 300;
+      }
+    }
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', 'https://www.youtube.com/api/timedtext?v=perfcheck01&lang=en&kind=asr&fmt=json3');
+    Object.defineProperty(xhr, 'response', { get: function () { return { events: events }; } });
+    try { xhr.send(); } catch (e) { /* ignore */ }
+    try { xhr.dispatchEvent(new Event('load')); } catch (e) { /* ignore */ }
+  })();
+</script>
+<script>
+  (function () {
+    /* Regelwissels tellen zonder zelf te meten: een ResizeObserver op de
+       wrapper levert de hoogte ná de layout, gratis (geen gedwongen layout). */
+    var lineChanges = 0;
+    var lastH = -1;
+    var wrapWatch = null;
+    var wrapRo = null;
+    function watchWrap() {
+      var o = document.getElementById('sc-caption-overlay');
+      var wr = o ? o.querySelector('.sc-caption-scroll') : null;
+      if (!wr || wr === wrapWatch) return;
+      wrapWatch = wr;
+      if (wrapRo) { try { wrapRo.disconnect(); } catch (e) { /* ignore */ } }
+      if (typeof ResizeObserver !== 'function') return;
+      wrapRo = new ResizeObserver(function (entries) {
+        var e = entries[entries.length - 1];
+        var h = e && e.contentRect ? Math.round(e.contentRect.height * 10) / 10 : 0;
+        if (h !== lastH) { lastH = h; if (h > 0) lineChanges++; }
+      });
+      wrapRo.observe(wr);
+    }
+
+    var out = document.getElementById('out');
+    var verdict = document.getElementById('verdict');
+    var countersTable = document.getElementById('counters');
+
+    function diag() {
+      try { return window.__scDiag ? window.__scDiag() : null; } catch (e) { return null; }
+    }
+
+    function row(label, value, limit) {
+      var tr = document.createElement('tr');
+      if (limit) tr.className = 'limit';
+      tr.innerHTML = '<td>' + label + '</td><td>' + value + '</td>';
+      countersTable.appendChild(tr);
+    }
+
+    var frameCount = 0;
+    function loop() {
+      if (wall() > RUN_MS) { finish(); return; }
+      frameCount++;
+      C.frames = frameCount;
+      watchWrap();
+      requestAnimationFrame(loop);
+    }
+
+    function finish() {
+      var d = diag();
+      var own = d && d.jank && d.jank.own ? d.jank.own : {};
+      var words = C.appends;
+      var perWord = words ? Math.round((C.flushes / words) * 100) / 100 : 0;
+      var perLine = lineChanges ? Math.round((C.flushes / lineChanges) * 100) / 100 : 0;
+      // Harde eisen (de sentinelbug van 2026-11-16 gaf 6,07 per woord en 41 per
+      // regelwissel): een woord toevoegen mag geen meting meer uitlokken, en per
+      // regelwissel blijven we in de buurt van de twee sweeps die het ontwerp
+      // nodig heeft (meten na de padding, en de ruststand).
+      var okPerWord = perWord <= 0.35;
+      var okPerLine = perLine <= 4;
+      var okRan = words > 40 && lineChanges > 2;
+      var ok = okPerWord && okPerLine && okRan;
+
+      row('frames', C.frames);
+      row('woorden toegevoegd', words);
+      row('regelwissels', lineChanges);
+      row('gedwongen layouts (totaal)', C.flushes);
+      row('gedwongen layouts per woord', perWord, !okPerWord);
+      row('gedwongen layouts per regelwissel', perLine, !okPerLine);
+      row('rect-lezingen', C.rectReads);
+      row('Range.getClientRects', C.rangeRects);
+      row('getComputedStyle', C.gcs);
+      row('offsetHeight e.d. (reflow-truc)', C.reflows);
+      row('stijlwijzigingen', C.styleWrites);
+      row('eigen frame-body max (diag)', (own.maxMs || 0) + ' ms');
+      row('eigen frames > 16 ms (diag)', own.over16 || 0);
+
+      verdict.className = ok ? 'pass' : 'fail';
+      verdict.innerHTML = (ok ? 'PASS' : 'FAIL') + ' &mdash; ' + perWord + ' gedwongen layouts per woord, ' +
+        C.flushes + ' totaal in ' + C.frames + ' frames / ' + words + ' woorden / ' + lineChanges +
+        ' regelwissels (eigen code max ' + (own.maxMs || 0) + ' ms)';
+      out.textContent = JSON.stringify({
+        perWord: perWord, perLineChange: perLine, flushes: C.flushes, rectReads: C.rectReads,
+        rangeRects: C.rangeRects, gcs: C.gcs, reflows: C.reflows, styleWrites: C.styleWrites,
+        words: words, lineChanges: lineChanges, frames: C.frames,
+        ownMaxMs: own.maxMs || 0, ownOver16: own.over16 || 0,
+        flushesByReader: C.byReader
+      }, null, 1);
+      window.SC_PERF = {
+        ok: ok, perWord: perWord, perLineChange: perLine, flushes: C.flushes,
+        rectReads: C.rectReads, rangeRects: C.rangeRects, gcs: C.gcs, reflows: C.reflows,
+        words: words, lineChanges: lineChanges, frames: C.frames,
+        ownMaxMs: own.maxMs || 0, ownOver16: own.over16 || 0,
+        flushesByReader: C.byReader
+      };
+      document.title = (ok ? 'PASS ' : 'FAIL ') + 'perf: ' + perWord + '/woord, ' + C.flushes + ' gedwongen layouts';
+    }
+
+    loop();
+  })();
+</script>
+</body>
+</html>

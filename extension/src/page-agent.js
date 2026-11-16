@@ -67,7 +67,7 @@
   var diag = {
     bootAt: Date.now(),
     videoId: null,
-    timedtext: { requests: 0, stored: 0, ignored: Object.create(null) },
+    timedtext: { requests: 0, stored: 0, deduped: 0, ignored: Object.create(null) },
     lastTrack: null,
     boost: { starts: 0, stops: 0, restarts: 0, manualFrames: 0, nothingVisible: 0, active: false, since: 0, lastStop: null, byReason: Object.create(null) },
     frames: { count: 0, maxGapMs: 0, maxGapAt: null, maxGapVideoS: null, slowFrames: 0, lastGapMs: 0, lastAt: 0, hiddenFrames: 0 },
@@ -80,7 +80,33 @@
       totalBlockingMs: 0,   // som van de blokkerende tijd daarvan
       mineMs: 0,            // deel daarvan in onze eigen page-agent
       worst: null,          // zwaarste hapering, met de scripts die erin liepen
-      own: { frames: 0, maxMs: 0, over16: 0 } // onze eigen frame-body (elke browser)
+      // Onze eigen frame-body (elke browser). `windowMaxMs` is het zwaarste
+      // frame sinds de vorige poll en gaat mee met de gedropte beeld-frames
+      // (diag.drop), zodat een stotter aan onze code te koppelen is.
+      own: { frames: 0, maxMs: 0, over16: 0, windowMaxMs: 0 },
+      // Ons eigen werk BUITEN de frame-lus (ruststand, poll, track parsen).
+      // `long-animation-frame` ziet alleen animatieframes; dit werk gebeurde in
+      // een timer of netwerk-callback en was daardoor onzichtbaar — precies
+      // waarom "eigen code 0 ms" uit een log van 2026-11-16 niet klopte.
+      timers: { count: 0, totalMs: 0, maxMs: 0, over8: 0, lastLabel: null }
+    },
+    // Haperingen van het BEELD zelf: frames die de decoder/compositor liet
+    // vallen. Dat is de directe maat voor "micro-stutters" (het beeld stokt,
+    // het geluid loopt door), los van de main-thread-meting hierboven.
+    drop: {
+      videoId: null,
+      samples: 0,
+      dropped: 0,          // gedropte frames sinds de eerste meting van deze video
+      total: 0,            // getoonde frames sinds die meting
+      perMin: 0,           // gedropte frames per minuut
+      bursts: 0,           // metingen met >= 2 gedropte frames (= zichtbaar)
+      ownAtBursts: 0,      // daarvan: met ons eigen zwaarste frame > 16 ms
+      lastBurst: null,     // { at, dropped, ownMs, gapMs, videoS }
+      worst: null,
+      lastDropped: null,
+      baseDropped: 0,
+      baseTotal: 0,
+      baseAt: 0
     },
     // Loopt de player-API (`getCurrentTime()`) gelijk met het media-element?
     // Zo niet, dan tekende de oude klok de ondertitel naast beeld en geluid
@@ -106,6 +132,10 @@
     // Laatste ruststand van het rollende venster (settleWindow): hoeveel regels,
     // wat de verschuiving werd en of de bovenrand bijgesteld moest worden.
     settle: null,
+    // Line-watch: hoe vaak de regelovergang gedetecteerd werd en hoe vaak het
+    // venster daarna opnieuw gemeten/opgeruimd werd (een stille hapering hier
+    // betekent dat de roll-up op het vangnet van ± 2 s wacht).
+    lineWatch: { checks: 0, wraps: 0, updates: 0, settles: 0, skipped: 0, settleExit: null },
     apply: { count: 0, last: null }
   };
 
@@ -187,6 +217,7 @@
         // bijgesteld moest worden (offset != 0 betekent dat de eerste regel
         // niet vanzelf goed stond).
         settle: diag.settle,
+        lineWatch: diag.lineWatch,
         gaveUp: !!boost.gaveUpKey,
         overlayConnected: !!(boost.overlay && boost.overlay.isConnected),
         overlayVisible: boostDisplayed(),
@@ -248,6 +279,7 @@
       boost: diag.boost,
       frames: diag.frames,
       jank: diag.jank,
+      drop: diag.drop,
       own: diag.own,
       repairs: diag.repairs,
       lastRepair: diag.lastRepair,
@@ -391,6 +423,76 @@
     diag.jank.own.frames = 0;
     diag.jank.own.maxMs = 0;
     diag.jank.own.over16 = 0;
+    diag.jank.own.windowMaxMs = 0;
+    diag.jank.timers.count = 0;
+    diag.jank.timers.totalMs = 0;
+    diag.jank.timers.maxMs = 0;
+    diag.jank.timers.over8 = 0;
+    diag.jank.timers.lastLabel = null;
+  }
+
+  /**
+   * Ons eigen werk buiten de frame-lus meten (ruststand van het venster, poll,
+   * track parsen). Dat werk liep in een timer of netwerk-callback en werd door
+   * `long-animation-frame` dus nooit aan ons toegeschreven, terwijl het de main
+   * thread net zo goed blokkeert.
+   */
+  function noteOwnTimer(ms, label) {
+    var t = diag.jank.timers;
+    var r = Math.round(ms * 10) / 10;
+    t.count++;
+    t.totalMs = Math.round((t.totalMs + r) * 10) / 10;
+    if (r > t.maxMs) t.maxMs = r;
+    if (r > 8) t.over8++;
+    t.lastLabel = label || null;
+  }
+
+  /**
+   * Beeld-frames die de decoder/compositor liet vallen, per poll. De directe
+   * maat voor "de video stottert"; `getVideoPlaybackQuality()` is goedkoop en
+   * leest niets uit de layout. Per meting bewaren we ook ons eigen zwaarste
+   * frame in dat interval (`own.windowMaxMs`), zodat een golf gedropte frames
+   * wél of níet aan onze code te koppelen is.
+   */
+  function noteVideoDrops(videoId) {
+    var v = mediaEl();
+    var q = null;
+    try { q = v && v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : null; } catch (e) { q = null; }
+    if (!q) return;
+    var dropped = q.droppedVideoFrames | 0;
+    var total = q.totalVideoFrames | 0;
+    var ownMs = Math.round(diag.jank.own.windowMaxMs * 10) / 10;
+    diag.jank.own.windowMaxMs = 0;
+    var d = diag.drop;
+    if (d.videoId !== (videoId || null)) {
+      d.videoId = videoId || null;
+      d.samples = 0;
+      d.dropped = 0;
+      d.total = 0;
+      d.perMin = 0;
+      d.bursts = 0;
+      d.ownAtBursts = 0;
+      d.lastBurst = null;
+      d.worst = null;
+      d.lastDropped = dropped;
+      d.baseDropped = dropped;
+      d.baseTotal = total;
+      d.baseAt = Date.now();
+      return;
+    }
+    var delta = Math.max(0, dropped - (d.lastDropped === null ? dropped : d.lastDropped));
+    d.lastDropped = dropped;
+    d.samples++;
+    d.dropped = Math.max(0, dropped - d.baseDropped);
+    d.total = Math.max(0, total - d.baseTotal);
+    var mins = (Date.now() - d.baseAt) / 60000;
+    d.perMin = mins > 0.05 ? Math.round((d.dropped / mins) * 10) / 10 : 0;
+    if (delta < 2) return;
+    var rec = { at: new Date().toISOString(), dropped: delta, ownMs: ownMs, gapMs: diag.frames.lastGapMs, videoS: playerTimeNow() };
+    d.bursts++;
+    d.lastBurst = rec;
+    if (ownMs > 16) d.ownAtBursts++;
+    if (!d.worst || delta > d.worst.dropped) d.worst = rec;
   }
 
   try {
@@ -880,7 +982,48 @@
 
   /* ------------------------------------------------------------------ *
    * Menu-automatisering (settings -> Subtitles/CC -> item)
+   *
+   * YouTube bouwt het settings-menu pas op als je het opent, en op een pagina
+   * die nog aan het laden is duurt dat soms langer dan één vaste `sleep()`.
+   * Daardoor gaf `openCaptionsPanel()` op 2026-11-14 `menu:no-panel` terwijl
+   * dezelfde code een seconde later wél een paneel vond, en bleef een video op
+   * "Nederlands (automatisch gegenereerd) >> Engels" staan. Daarom: pollen tot
+   * het menu er écht is, de klik herhalen als er niets gebeurde, en pas
+   * terugkeren als het ondertitelpaneel open is.
    * ------------------------------------------------------------------ */
+  var MENU_POLL_MS = 100;    // poll-stap van de menu-automatisering
+  var MENU_OPEN_MS = 1200;   // het settings-menu moet binnen dit venster open zijn
+  var MENU_PANEL_MS = 1500;  // de rij "Subtitles/CC" / het subpaneel binnen dit venster
+  // Waar het openen van het paneel misging ('settings' | 'entry' | 'panel'),
+  // zodat de diagnose niet alleen "no-panel" hoeft te zeggen.
+  var menuError = null;
+
+  /**
+   * Poll `get()` tot het iets teruggeeft of de tijd om is (dan `null`).
+   * Nooit met een vaste `sleep()` wachten op iets dat YouTube asynchroon bouwt.
+   */
+  function waitFor(get, timeoutMs) {
+    var until = Date.now() + (timeoutMs || 0);
+    return new Promise(function (resolve) {
+      (function poll() {
+        var v = null;
+        try { v = get(); } catch (e) { v = null; }
+        if (v) { resolve(v); return; }
+        if (Date.now() >= until) { resolve(null); return; }
+        setTimeout(poll, MENU_POLL_MS);
+      })();
+    });
+  }
+
+  function isVisible(el) { return !!el && el.offsetParent !== null; }
+
+  /** Eerste zichtbare element voor `sel` (een verborgen paneel telt niet mee). */
+  function visibleOne(sel) {
+    var list = document.querySelectorAll(sel);
+    for (var i = 0; i < list.length; i++) if (list[i].offsetParent !== null) return list[i];
+    return null;
+  }
+
   function clickEl(el) {
     if (!el) return false;
     try {
@@ -906,7 +1049,7 @@
   }
 
   function visiblePanelMenus() {
-    return [].slice.call(document.querySelectorAll('.ytp-panel-menu')).filter(function (m) { return m.offsetParent !== null; });
+    return [].slice.call(document.querySelectorAll('.ytp-panel-menu')).filter(isVisible);
   }
 
   function visiblePanel() {
@@ -914,22 +1057,42 @@
     return m.length ? m[m.length - 1] : null;
   }
 
-  function settingsOpen() {
-    var el = document.querySelector('.ytp-settings-menu');
-    return !!el && el.offsetParent !== null;
+  /**
+   * Het settings-menu van *deze* speler. Document-breed zoeken pakt op een
+   * pagina met een miniplayer of preview ook het menu van die andere speler.
+   */
+  function settingsMenuEl() {
+    var p = player();
+    var el = p ? p.querySelector('.ytp-settings-menu') : null;
+    return el || document.querySelector('.ytp-settings-menu');
   }
 
-  function subPanelOpen() {
-    var b = document.querySelector('.ytp-panel-back-button');
-    return !!b && b.offsetParent !== null;
-  }
+  function settingsOpen() { return isVisible(settingsMenuEl()); }
 
-  function settingsButton() { return document.querySelector('.ytp-settings-button'); }
+  function subPanelOpen() { return !!visibleOne('.ytp-panel-back-button'); }
+
+  function settingsButton() {
+    var p = player();
+    var btn = p ? p.querySelector('.ytp-settings-button') : null;
+    return btn || visibleOne('.ytp-settings-button') || document.querySelector('.ytp-settings-button');
+  }
 
   async function closeSettings() {
     if (!settingsOpen()) return;
     clickEl(settingsButton());
-    await sleep(250);
+    await waitFor(function () { return !settingsOpen(); }, 600);
+  }
+
+  /** Het settings-menu openen; de klik gaat één keer opnieuw als er niets gebeurde. */
+  async function openSettings() {
+    if (settingsOpen()) return true;
+    for (var i = 0; i < 2; i++) {
+      var btn = settingsButton();
+      if (!btn) return false;
+      clickEl(btn);
+      if (await waitFor(settingsOpen, MENU_OPEN_MS)) return true;
+    }
+    return false;
   }
 
   /** De rij "Subtitles/CC" in het hoofdmenu van de settings. */
@@ -955,22 +1118,43 @@
     return null;
   }
 
+  /**
+   * Het ondertitelpaneel openen. `null` betekent: niet gelukt (het menu is dan
+   * gesloten en de `menuError` zegt waar het misging).
+   */
   async function openCaptionsPanel() {
-    if (!settingsOpen()) {
-      clickEl(settingsButton());
-      await sleep(500);
+    menuError = 'panel';
+    if (!(await openSettings())) {
+      menuError = 'settings';
+      dbg('settings-menu ging niet open');
+      return null;
     }
     if (!subPanelOpen()) {
-      var entry = findSubtitlesEntry();
+      // De menu-rijen worden pas ná het openen opgebouwd: wachten tot de rij
+      // "Subtitles/CC" er écht is in plaats van 500 ms slapen.
+      var entry = await waitFor(findSubtitlesEntry, MENU_PANEL_MS);
       if (!entry) {
+        menuError = 'entry';
         dbg('Subtitles/CC-rij niet gevonden', menuItems().map(labelOf));
         await closeSettings();
         return null;
       }
-      clickEl(entry);
-      await sleep(700);
+      // Het paneel komt ná de klik, en de klik valt in het niets als YouTube
+      // het menu net opnieuw opbouwt: pollen op het subpaneel + één herkansing.
+      for (var i = 0; i < 2 && !subPanelOpen(); i++) {
+        clickEl(entry);
+        await waitFor(subPanelOpen, MENU_PANEL_MS);
+        if (!subPanelOpen()) entry = findSubtitlesEntry() || entry;
+      }
+      if (!subPanelOpen()) {
+        dbg('ondertitelpaneel ging niet open');
+        await closeSettings();
+        return null;
+      }
     }
-    return visiblePanel();
+    var panel = await waitFor(visiblePanel, MENU_PANEL_MS);
+    if (!panel) await closeSettings();
+    return panel;
   }
 
   /**
@@ -1026,7 +1210,7 @@
 
   async function applyViaMenu(target) {
     var panel = await openCaptionsPanel();
-    if (!panel) return { ok: false, reason: 'no-panel' };
+    if (!panel) return { ok: false, reason: 'no-' + (menuError || 'panel') };
     var item = findTargetItem(panel, target);
     if (!item) {
       dbg('doel-item niet gevonden voor', target, menuItems(panel).map(labelOf));
@@ -1035,7 +1219,10 @@
     }
     var clicked = labelOf(item);
     clickEl(item);
-    await sleep(900);
+    // Wachten tot de speler de track overneemt (meestal < 300 ms) in plaats van
+    // blind 900 ms: sneller klaar, en de klik telt alleen als YouTube hem ook
+    // heeft toegepast.
+    await waitFor(function () { return verifyState(readCurrentTrack(), target); }, 1500);
     await closeSettings();
     return { ok: true, clicked: clicked };
   }
@@ -1284,16 +1471,28 @@
     blockKey: null,       // starttijd van het blok dat nu in de DOM staat
     runKey: null,         // starttijd van de run die nu in de DOM staat
     wordCount: 0,         // aantal woorden van die run dat al in de DOM staat
-    windowShift: -1,      // laatst gezette venster-verschuiving in px (-1 = opnieuw meten)
+    // Laatst gezette venster-verschuiving in px; **null** = nog niet gemeten.
+    // Bewust geen getal als "nog niet gemeten": de gemeten stand is soms
+    // negatief (de bovenkant van de eerste regel ligt een paar px boven de rand
+    // van het venster), en met `-1` als sentinel zag de frame-lus zo'n stand als
+    // "nog niet gemeten" en mat hij ELKE frame opnieuw — een volledige sweep
+    // langs alle woordblokjes, 60x per seconde, met gedwongen layouts en een
+    // ruststand elke 240 ms (gemeten 2026-11-16, klacht "micro-stutters").
+    windowShift: null,
     shiftAt: 0,           // Date.now() van de laatste GEANIMEERDE verschuiving (ruststand wacht daarop)
+    jump: false,          // overgang staat uit na een sprong; endJump() zet hem terug
     lastWordTop: null,    // bovenkant (px) van het laatst gezette woord (alleen voor de meting)
-    lastWordEl: null,     // element van het laatst gezette woord (zelfde-frame vergelijking)
+    lastWordEl: null,     // element van het laatst gezette woord (vergelijking in de volgende frame)
+    pendingLine: null,    // { prev, last }: regelovergang die de volgende frame meet
     invisible: 0,         // frames op rij met tekst in de DOM maar niets in het venster
     gaveUpKey: null,      // trackKey waarvoor we stopten: er kwam niets in beeld
     lineChanged: false,   // laatste woord begon een nieuwe regel -> venster opnieuw meten
     currentTrack: null,   // track uit de 900ms-poll; niet opnieuw via de player-API per frame
     ownsCaptions: false,  // wij tekenen de ondertitel -> YouTube's eigen venster verborgen
     styleReady: false,
+    // Laatst gezette verticale padding (em) van de woordblokjes: alleen een
+    // echte wijziging schrijven (zie applyBoostVerticalLayout).
+    wordPad: { top: '', bottom: '' },
     missingSince: 0,      // sinds wanneer deze video geen opgevangen track heeft (0 = niets aan de hand)
     repairs: 0,           // reparatiepogingen (ondertiteling uit/aan) voor deze video
     repairAt: 0,          // tijdstip van de laatste reparatiepoging
@@ -1315,9 +1514,38 @@
     return m ? decodeURIComponent(m[1]) : null;
   }
 
+  /**
+   * Goedkope vingerafdruk van een ruwe json3-payload, vóór het parsen: het
+   * aantal events, de totale tekstlengte en een rolling hash over alle
+   * starttijden, duur, segmentlengtes en woord-offsets. Twee tracks met dezelfde
+   * afdruk zijn voor de weergave identiek; zo slaat storeBoostTrack() een
+   * herhaling over zonder eerst de hele track te parsen en te knippen.
+   */
+  function captionRawSig(data) {
+    var ev = data && data.events;
+    if (!ev || !ev.length) return null;
+    var chars = 0;
+    var h = 5381;
+    for (var i = 0; i < ev.length; i++) {
+      var e = ev[i];
+      if (!e) return null;
+      h = (((h * 33) >>> 0) + (e.tStartMs || 0)) >>> 0;
+      h = (((h * 33) >>> 0) + (e.dDurationMs || 0)) >>> 0;
+      var segs = e.segs || [];
+      for (var j = 0; j < segs.length; j++) {
+        var s = segs[j] || {};
+        var u = s.utf8 ? String(s.utf8) : '';
+        chars += u.length;
+        h = (((h * 33) >>> 0) + u.length * 7 + (s.tOffsetMs || 0)) >>> 0;
+      }
+    }
+    return ev.length + '|' + chars + '|' + h;
+  }
+
   /** Timedtext-respons (json3) bewaren; nooit een fout naar de speler laten lekken. */
   function storeBoostTrack(url, body) {
     if (!CAPTION_BOOST_ENABLED) { diagIgnore('boost-off'); return; }
+    var t0 = nowMs();
     try {
       var lang = urlParam(url, 'lang');
       var v = urlParam(url, 'v');
@@ -1330,6 +1558,19 @@
         try { data = JSON.parse(data); } catch (e) { diagIgnore('not-json'); return; }
       }
       if (!data || !data.events) { diagIgnore('no-events-field'); return; }
+      var key = boostKey(v, L.baseLang(lang), urlParam(url, 'kind') || '');
+      // Dezelfde payload nog een keer? Dan niets doen. YouTube vraagt dezelfde
+      // track vaak opnieuw op (prefetch, een reparatie, een CC-wissel); in het
+      // log van 2026-11-16 stonden drie identieke versies binnen drie seconden
+      // (`813|324|0|1600.893`). Elke herhaling parste de hele track opnieuw,
+      // knipte hem in blokken/woorden/runs en bouwde de weergave opnieuw op —
+      // tientallen ms hoofd-threadwerk per keer, midden in het afspelen.
+      var rawSig = captionRawSig(data);
+      var prevRec = boostTracks[key];
+      if (rawSig && prevRec && prevRec.rawSig === rawSig) {
+        diag.timedtext.deduped++;
+        return;
+      }
       var events = L.parseCaptionJson(data);
       if (!events.length) { diagIgnore('no-events'); return; }
       var blocks = L.buildCaptionBlocks(events, {
@@ -1341,7 +1582,6 @@
       // Woord-voor-woord (optie): dezelfde events, maar als losse woorden en
       // in runs van doorlopende spraak — een stilte begint een nieuw venster.
       var runs = L.buildCaptionRuns(L.buildCaptionWords(events), BOOST_SILENCE_GAP);
-      var key = boostKey(v, L.baseLang(lang), urlParam(url, 'kind') || '');
       // Dezelfde track kan opnieuw binnenkomen (bv. nadat YouTube de track
       // opnieuw ophaalt). Haal de sleutel dan eerst uit de volgorde: anders
       // staat hij er dubbel in en gooit het opruimen hieronder de gegevens van
@@ -1358,7 +1598,7 @@
       var lastEv = events.length ? events[events.length - 1] : null;
       var lastEnd = lastEv ? Math.round((lastEv.start + (lastEv.dur || 0)) * 1000) / 1000 : 0;
       var sig = events.length + '|' + blocks.length + '|' + first + '|' + lastEnd;
-      boostTracks[key] = { at: Date.now(), events: events, blocks: blocks, runs: runs, sig: sig };
+      boostTracks[key] = { at: Date.now(), events: events, blocks: blocks, runs: runs, sig: sig, rawSig: rawSig };
       // Nieuwe/verversde trackdata voor deze sleutel: een eerdere "ik gaf op"
       // (niets in beeld) mag opnieuw geprobeerd worden.
       if (boost.gaveUpKey === key) boost.gaveUpKey = null;
@@ -1390,7 +1630,11 @@
         if (old !== key) delete boostTracks[old];
       }
       dbg('timedtext opgevangen', key, events.length + ' events / ' + blocks.length + ' blokken / ' + runs.length + ' runs');
-    } catch (e) { /* ignore */ }
+    } catch (e) {
+      /* ignore */
+    } finally {
+      noteOwnTimer(nowMs() - t0, 'track');
+    }
   }
 
   /**
@@ -1511,7 +1755,7 @@
                                 // (optie 30-100; het vlak staat gecentreerd, dus links en
                                 // rechts blijft video zichtbaar)
   var SUBTITLES_OFF = false;   // per-tab kill switch (knop in de controlbar)
-  var boostStyle = { at: 0, textColor: 'rgba(255,255,255,1)', bgColor: 'rgba(0,0,0,1)', increment: 0, applied: '' };
+  var boostStyle = { at: 0, textColor: 'rgba(255,255,255,1)', bgColor: 'rgba(0,0,0,1)', increment: 0, applied: '', bgApplied: '', fontFamily: '', fontWeight: '' };
 
   function refreshBoostStyle(force) {
     var now = Date.now();
@@ -1608,12 +1852,21 @@
     if (el.style.fontFamily !== family) el.style.fontFamily = family;
     var weight = String(L.captionFontWeight(BOOST_WEIGHT));
     if (el.style.fontWeight !== weight) el.style.fontWeight = weight;
+    // Voor de inktmeting (boostInkMetrics): dezelfde waarden die hier gezet
+    // zijn, zodat die meting geen getComputedStyle nodig heeft.
+    boostStyle.fontFamily = family;
+    boostStyle.fontWeight = weight;
     // Kleur van de zwarte blokjes achter elk woord. Elk woord is een eigen
     // element met een eigen achtergrond; in de woord-voor-woord-weergave komen
     // die elementen er één voor één bij. Via deze CSS-variabele krijgt een
     // nieuw blokje meteen de juiste kleur en volgt een kleurwissel in YouTube's
-    // ondertitelinstellingen alle blokjes die al in beeld staan.
-    el.style.setProperty('--sc-caption-bg', boostStyle.bgColor);
+    // ondertitelinstellingen alle blokjes die al in beeld staan. Alleen bij een
+    // echte wijziging schrijven: deze functie draait elke 30 frames en elke
+    // poll, en een schrijfactie maakt de layout vuil (haperingmeting 2026-11-16).
+    if (boostStyle.bgApplied !== boostStyle.bgColor) {
+      boostStyle.bgApplied = boostStyle.bgColor;
+      el.style.setProperty('--sc-caption-bg', boostStyle.bgColor);
+    }
     // Verticale positie (optie *Y-offset*): de ondertiteling hangt standaard
     // 10,5% boven de onderrand van de speler; de offset verschuift hem in
     // %-punten van de spelerhoogte (positief = omlaag).
@@ -1788,6 +2041,12 @@
     boost.overlay = el;
     boost.box = box;
     boost.scrollEl = scrollEl;
+    // Een nieuw element heeft geen inline stijl: de caches van de laatst
+    // gezette waarden horen bij het oude element en moeten leeg.
+    boostPadCache.key = '';
+    boostStyle.bgApplied = '';
+    boost.wordPad.top = '';
+    boost.wordPad.bottom = '';
     applyBoostStyle();
     // Een nieuwe speler (SPA-navigatie) mist de klasse die YouTube's venster
     // verbergt; zolang wij de captions tekenen zetten we hem terug.
@@ -1847,8 +2106,16 @@
    * Met `animate=true` schuift de tekst zichtbaar omhoog via de CSS-overgang op
    * `top` (slide-up, zoals YouTube's auto-ondertitels). Bij het opnieuw opbouwen
    * van het venster (nieuwe run, terugspoelen, moduswissel) gaat het juist
-   * met-een: anders zou de tekst zichtbaar terugschuiven naar boven. Daarvoor
-   * wordt de overgang heel even uitgezet en met een reflow afgedwongen.
+   * met-een: anders zou de tekst zichtbaar terugschuiven naar boven.
+   *
+   * Voor die sprong zetten we de overgang UIT en pas in de volgende frame weer
+   * AAN (`endJump()`). Vroeger gebeurde dat met een reflow-truc in dezelfde
+   * frame (de hoogte van de wrapper lezen om de style-wijziging af te dwingen) —
+   * dat is een gedwongen style+layout, en deze sprong komt bij elke run-, regel-
+   * en stijlvissel voor (haperingmeting 2026-11-16). Het uitgestelde herstel
+   * doet hetzelfde: de style-herberekening van deze frame ziet
+   * `transition:none` mét de nieuwe `top`, de volgende frame zet de overgang
+   * terug zonder dat `top` verandert (dus zonder animatie).
    */
   function setWordShift(px, animate) {
     var wrap = boost.scrollEl;
@@ -1858,17 +2125,24 @@
     // animeren maar in één keer springen.
     var val = (px ? -px : 0) + 'px';
     if (wrap.style.top === val) return;
-    if (animate) {
+    if (animate && !boost.jump) {
       wrap.style.top = val;
       // De ruststand (settleWindow) moet wachten tot deze overgang klaar is:
       // een meting tijdens de slide-up ziet een tussenstand.
       boost.shiftAt = Date.now();
       return;
     }
+    boost.jump = true;
     wrap.style.transition = 'none';
     wrap.style.top = val;
-    try { void wrap.offsetHeight; } catch (e) { /* ignore */ }
-    wrap.style.transition = '';
+  }
+
+  /** De overgang van de wrapper weer aanzetten, ná de sprong-frame. */
+  function endJump() {
+    if (!boost.jump) return;
+    boost.jump = false;
+    var wrap = boost.scrollEl;
+    if (wrap) wrap.style.transition = '';
   }
 
   /**
@@ -1880,7 +2154,8 @@
     boost.blockKey = null;
     boost.runKey = null;
     boost.wordCount = 0;
-    boost.windowShift = -1;
+    boost.windowShift = null;
+    boost.pendingLine = null;
     boost.lastWordTop = null;
     boost.lastWordEl = null;
     boost.lineChanged = false;
@@ -2016,7 +2291,7 @@
    * woordblokjes toch een andere line-height geeft).
    *
    * De waarde wordt bewaard: `getComputedStyle` na een DOM-wijziging forceren
-   * een style-herberekening, en deze functie hangt aan elk nieuw woord
+   * een style-herberekening, en deze functie hangt aan elke frame met een nieuw woord
    * (`noteWordLine`). De cache vervalt bij een stijl-/groottewissel (de sleutel
    * is de laatst toegepaste stijl) en bij het vangnet van ± 2 s
    * (`invalidateLineHeightCache`), zodat een wijziging door de pagina alsnog
@@ -2136,13 +2411,13 @@
 
   function boostInkMetrics() {
     var fs = boostFontPx();
-    var family = '';
-    var weight = '';
-    try {
-      var cs = getComputedStyle(boost.overlay);
-      family = cs.fontFamily || '';
-      weight = cs.fontWeight || '';
-    } catch (e) { /* ignore */ }
+    // Fontfamilie en -dikte zijn de waarden die applyBoostStyle() zélf op de
+    // overlay zet. Ze hier uit `getComputedStyle` lezen zou een
+    // style-herberekening forceren — en deze meting hangt aan elke
+    // regelwissel, dus dat gebeurde tientallen keren per minuut, precies op het
+    // moment dat de DOM net gewijzigd was (haperingmeting 2026-11-16).
+    var family = boostStyle.fontFamily || '';
+    var weight = boostStyle.fontWeight || '';
     var key = Math.round(fs * 10) + '|' + weight + '|' + family;
     if (key === boostInk.key) return boostInk;
     var next = { key: key, fontBoxPx: 0, inkAbovePx: 0, inkBelowPx: 0 };
@@ -2176,19 +2451,35 @@
   }
 
   /**
+   * De verticale padding van de box (px), één keer per toegepaste stijl
+   * gemeten. `getComputedStyle` forceert een style-herberekening; deze waarde
+   * hangt aan elke regelwissel en verandert alleen als de stijl verandert
+   * (sleutel = boostStyle.applied, net als de line-height-cache).
+   */
+  var boostPadCache = { key: '', top: 0, bottom: 0 };
+
+  function boostBoxPaddingPx() {
+    var key = 'v' + (boostStyle.applied || '');
+    if (key === boostPadCache.key) return boostPadCache;
+    var top = 0;
+    var bottom = 0;
+    try {
+      var cs = getComputedStyle(boost.box);
+      top = parseFloat(cs.paddingTop) || 0;
+      bottom = parseFloat(cs.paddingBottom) || 0;
+    } catch (e) { /* ignore */ }
+    boostPadCache = { key: key, top: top, bottom: bottom };
+    return boostPadCache;
+  }
+
+  /**
    * De layout voor het huidige venster: de gemeten regelafstand + de fontmaten
    * van het gebruikte font + de padding van de box. Geeft het resultaat van
    * `L.captionVerticalLayout()` (hoogte in em, verschuiving in px en de
    * verticale padding van de woordblokjes).
    */
   function boostVerticalLayout(advancePx, lines) {
-    var padTop = 0;
-    var padBottom = 0;
-    try {
-      var cs = getComputedStyle(boost.box);
-      padTop = parseFloat(cs.paddingTop) || 0;
-      padBottom = parseFloat(cs.paddingBottom) || 0;
-    } catch (e) { /* ignore */ }
+    var pad = boostBoxPaddingPx();
     var ink = boostInkMetrics();
     return L.captionVerticalLayout({
       advancePx: advancePx,
@@ -2196,8 +2487,8 @@
       fontBoxPx: ink.fontBoxPx,
       inkAbovePx: ink.inkAbovePx,
       inkBelowPx: ink.inkBelowPx,
-      padTopPx: padTop,
-      padBottomPx: padBottom,
+      padTopPx: pad.top,
+      padBottomPx: pad.bottom,
       lines: lines
     });
   }
@@ -2213,13 +2504,26 @@
     var box = boost.box;
     if (!box || !layout) return;
     if (layout.heightEm > 0) {
-      var css = layout.heightEm + 'em';
+      // Afronden op 0,001 em (~0,02 px): de gemeten regelafstand jittert met
+      // fracties van een px, en elke wijziging hier zet de CSS-variabelen van
+      // ALLE woordblokjes opnieuw (style-herberekening + layout) én maakt de
+      // layout vuil vlak vóór de hermeting. Alleen een echte wijziging schrijven
+      // (haperingmeting 2026-11-16).
+      var css = (Math.round(layout.heightEm * 1000) / 1000) + 'em';
       if (box.style.height !== css) box.style.height = css;
     }
     var el = boost.overlay;
     if (el && el.style && el.style.setProperty) {
-      el.style.setProperty('--sc-word-pad-top', layout.wordPadTopEm + 'em');
-      el.style.setProperty('--sc-word-pad-bottom', layout.wordPadBottomEm + 'em');
+      var padTop = (Math.round(layout.wordPadTopEm * 1000) / 1000) + 'em';
+      var padBottom = (Math.round(layout.wordPadBottomEm * 1000) / 1000) + 'em';
+      if (boost.wordPad.top !== padTop) {
+        boost.wordPad.top = padTop;
+        el.style.setProperty('--sc-word-pad-top', padTop);
+      }
+      if (boost.wordPad.bottom !== padBottom) {
+        boost.wordPad.bottom = padBottom;
+        el.style.setProperty('--sc-word-pad-bottom', padBottom);
+      }
     }
   }
 
@@ -2481,20 +2785,31 @@
    * tussenstand zien. De ruststand wordt dan even uitgesteld.
    */
   function settleWindow() {
+    var t0 = nowMs();
+    try {
+      settleWindowBody();
+    } finally {
+      noteOwnTimer(nowMs() - t0, 'settle');
+    }
+  }
+
+  function settleWindowBody() {
     boostHideTimer = null;
     var wrap = boost.scrollEl;
-    if (!wrap || !boost.wordCount || !boostDisplayed()) return;
+    if (!wrap || !boost.wordCount || !boostDisplayed()) { diag.lineWatch.settleExit = 'nothing-yet'; return; }
     // Alleen in de woord-voor-woord-weergave: in de blokweergave staat het hele
     // blok bewust bovenaan en mag er niets opgeruimd of verschoven worden.
-    if (!BOOST_WORD_BY_WORD) return;
+    if (!BOOST_WORD_BY_WORD) { diag.lineWatch.settleExit = 'block-mode'; return; }
     var since = Date.now() - (boost.shiftAt || 0);
     if (since >= 0 && since < BOOST_WINDOW_SETTLE_MS - 20) {
       boostHideTimer = setTimeout(settleWindow, BOOST_WINDOW_SETTLE_MS - since);
       return;
     }
+    diag.lineWatch.settles++;
+    diag.lineWatch.settleExit = null;
     var lh = boostLineHeightPx();
     var m = boostLineMetrics(lh);
-    if (!m || !m.lines || !m.items || !m.index) return;
+    if (!m || !m.lines || !m.items || !m.index) { diag.lineWatch.settleExit = 'no-measure'; return; }
     var range = L.captionVisibleGroupRange(m.lines, BOOST_LINES, true);
     applyHiddenAbove(m, range);
     var removed = 0;
@@ -2511,7 +2826,7 @@
     }
     // Opnieuw meten (na het verwijderen) en de bovenrand erop leggen.
     var m2 = boostLineMetrics(lh);
-    if (!m2 || !m2.lines || !m2.items.length) return;
+    if (!m2 || !m2.lines || !m2.items.length) { diag.lineWatch.settleExit = 'no-remeasure'; return; }
     var step = m2.advance > 0 ? m2.advance : lh;
     var layout = boostVerticalLayout(step, BOOST_LINES);
     applyBoostVerticalLayout(layout);
@@ -2626,12 +2941,13 @@
     // Meten kan alleen als het venster echt in de layout staat: bij een
     // verborgen overlay (`display:none`) zijn alle rects 0 en zou de geometrie
     // op lucht gezet worden — met een veel te klein venster en een verkeerde
-    // verschuiving tot gevolg. Dan blijft `windowShift` op -1 staan, zodat de
+    // verschuiving tot gevolg. Dan blijft `windowShift` null staan, zodat de
     // eerstvolgende zichtbare frame opnieuw meet.
     if (!boostDisplayed()) {
-      boost.windowShift = -1;
+      boost.windowShift = null;
       return;
     }
+    diag.lineWatch.updates++;
     var lh = boostLineHeightPx();
     var h = 0;
     try { h = wrap.getBoundingClientRect().height; } catch (e) { h = 0; }
@@ -2678,7 +2994,7 @@
     if (trimmed.px > 0) shift = Math.round((shift - trimmed.px) * 100) / 100;
     boost.lineChanged = false;
     if (shift !== boost.windowShift || trimmed.px > 0) {
-      var animate = boost.windowShift >= 0 && !(trimmed.px > 0);
+      var animate = boost.windowShift !== null && !(trimmed.px > 0);
       boost.windowShift = shift;
       setWordShift(shift, animate);
     }
@@ -2748,34 +3064,50 @@
   }
 
   /**
-   * Eén goedkope meting per nieuw woord: begint het op een nieuwe regel?
+   * Begint het laatst toegevoegde woord op een nieuwe regel?
+   *
+   * Deze meting gebeurt aan het BEGIN van de volgende frame, vóór er weer
+   * woorden bijkomen. Op dat moment is de layout klaar (de browser heeft tussen
+   * twee frames gelegd), dus `getBoundingClientRect()` forceren niets. Deed de
+   * frame-lus dit direct ná het toevoegen — zoals vroeger — dan was de layout
+   * vuil en kostte elk woord een **gedwongen layout**: op een echte
+   * YouTube-pagina neemt zo'n flush ook al het openstaande layoutwerk van de
+   * pagina mee, midden in een frame. Dat is het werk dat het beeld laat
+   * stotteren (gemeten 2026-11-16: 32.044 rect-lezingen en 1.154 gedwongen
+   * layouts in 18 s; daarna 3.035 en 75).
    *
    * Alle woorden van één regel hebben (vrijwel) exact dezelfde bovenkant; het
    * verschil tussen twee regels is de regelafstand. Alleen als de bovenkant
    * meer dan de meettolerantie verspringt (0,4 x de regelafstand, dezelfde maat
    * als `L.captionLineMetrics`) hoeft het venster opnieuw gemeten te worden.
-   * Dat scheelt het dure meetwerk (alle woordblokjes langsgaan) bij elk woord —
-   * precies het werk dat de weergave kon laten haperen en dan de hele rest van
-   * de zin in één keer in beeld bracht.
    *
-   * Beide blokjes worden in dezelfde frame gemeten: de slide-up schuift de
-   * hele wrapper (`top`), dus een meting uit een vorige frame zou tijdens die
-   * beweging een verschil van een halve regel kunnen zien.
+   * De prijs is één frame vertraging (16 ms) voordat het venster omhoog rolt —
+   * onzichtbaar, en de ruststand meet daarna toch opnieuw.
    */
-  function noteWordLine(prevEl, el) {
-    if (!el) return;
+  function checkPendingWordLine() {
+    var p = boost.pendingLine;
+    if (!p) return;
+    diag.lineWatch.checks++;
+    boost.pendingLine = null;
+    if (!p.last || !p.last.isConnected) { diag.lineWatch.skipped++; return; }
     var top = null;
     var prevTop = null;
     try {
-      top = el.getBoundingClientRect().top;
-      if (prevEl && prevEl !== el) prevTop = prevEl.getBoundingClientRect().top;
+      top = p.last.getBoundingClientRect().top;
+      // Het vórige blokje kan door het opruimen van de ruststand weg zijn; dan
+      // valt er niets te vergelijken (de nieuwe regel volgt dan uit de meting
+      // van het venster zelf).
+      if (p.prev && p.prev !== p.last && p.prev.isConnected) prevTop = p.prev.getBoundingClientRect().top;
     } catch (e) {
       return;
     }
     if (top == null || !isFinite(top)) return;
     var lh = boostLineHeightPx();
     var tol = Math.max(1, lh * L.CAPTION_LINE_GROUP_TOL);
-    if (prevTop != null && isFinite(prevTop) && Math.abs(top - prevTop) > tol) boost.lineChanged = true;
+    if (prevTop != null && isFinite(prevTop) && Math.abs(top - prevTop) > tol) {
+      diag.lineWatch.wraps++;
+      boost.lineChanged = true;
+    }
     boost.lastWordTop = top;
   }
 
@@ -2820,6 +3152,16 @@
     var prevEl = boost.lastWordEl || null;
     var lastEl = null;
     var want = Math.min(reveal, run.words.length - boost.wordCount);
+    // Regelovergang van de vórige frame afhandelen: nu is de layout klaar, dus
+    // deze meting forceren niets (zie checkPendingWordLine). Direct ná het
+    // toevoegen meten zou een gedwongen layout per woord zijn.
+    checkPendingWordLine();
+    // Een openstaande regelwissel eerst verwerken: op dit punt is de layout
+    // schoon, dus meten kost niets. Deed de lus dit ná de toevoegingen
+    // hieronder, dan lokte de meting zelf een gedwongen layout uit (met de
+    // nieuwe woorden erbij). Bij de eerste opbouw (windowShift null) moet er
+    // juist éérst een woord in de DOM staan om iets te kunnen meten.
+    if (boost.lineChanged && boost.shownOnce && boost.windowShift !== null) updateWordWindow();
     for (var k = 0; k < want; k++) {
       var word = run.words[boost.wordCount];
       // Sprekerswissel (">>") begint op een nieuwe regel, net als bij YouTube's
@@ -2833,12 +3175,6 @@
       lastEl = wrap.lastChild;
       boost.wordCount++;
     }
-    // Eén meting per frame, ná alle toevoegingen: meten tussen twee DOM-
-    // wijzigingen in forceren de browser per woord een layout. Het laatste woord
-    // van de reeks ligt per definitie op dezelfde regel als het vorige of een
-    // regel lager, dus de vergelijking met het vórige frame detecteert een
-    // regelovergang net zo goed als meten per woord (bugfix 2026-10-12: bij een
-    // inhaalslag kwam anders de halve zin in één keer in beeld).
     // Eerst de overlay zichtbaar maken en dán pas meten: in een verborgen
     // venster (`display:none`) geeft elke rect 0 en zou de geometrie op lucht
     // gezet worden (zie updateWordWindow).
@@ -2846,9 +3182,9 @@
       boost.shownOnce = true;
       hideBoost(true);
     }
-    if (lastEl) noteWordLine(prevEl, lastEl);
+    if (lastEl) boost.pendingLine = { prev: prevEl, last: lastEl };
     boost.lastWordEl = lastEl || prevEl;
-    if (boost.windowShift < 0 || boost.lineChanged) updateWordWindow();
+    if (boost.windowShift === null || boost.lineChanged) updateWordWindow();
   }
 
   /**
@@ -2897,6 +3233,7 @@
     var ownMs = nowMs() - t0;
     diag.jank.own.frames++;
     if (ownMs > diag.jank.own.maxMs) diag.jank.own.maxMs = Math.round(ownMs * 10) / 10;
+    if (ownMs > diag.jank.own.windowMaxMs) diag.jank.own.windowMaxMs = ownMs;
     if (ownMs > 16) diag.jank.own.over16++;
     if (boost.rafActive) boost.rafHandle = requestAnimationFrame(renderBoost);
   }
@@ -2952,6 +3289,9 @@
       stopBoost('no-track-or-ad');
       return;
     }
+    // Een sprong van de vórige frame heeft de overgang uitgezet; hier weer aan
+    // (zonder reflow, zie setWordShift).
+    endJump();
     boost.frame++;
     if (boost.frame % 30 === 0) {
       var idNow = currentVideoId();
@@ -2987,6 +3327,7 @@
       return;
     }
     if (!boost.ownsCaptions) ownCaptions(true);
+    var wordsBefore = boost.wordCount;
     if (BOOST_WORD_BY_WORD) renderWordFrame(t);
     else renderBlockFrame(t);
     // Harde controle: staat er tekst in de DOM maar geen enkel blokje in het
@@ -2995,8 +3336,10 @@
     // leest alle woordblokjes (zie de prestatieronde van 2026-10-15). Om de 30
     // frames (± 0,5 s) is ruim genoeg — drie metingen op rij beslissen nog
     // steeds binnen ± 1,5 s — en scheelt de helft van de geforceerde layouts
-    // ten opzichte van om de 10 (haperingmeting 2026-11-02).
-    if (boost.frame % 30 === 0 && boost.shownOnce && boostDisplayed()) {
+    // ten opzichte van om de 10 (haperingmeting 2026-11-02). Niet op een frame
+    // waarin net een woord is toegevoegd: dan is de layout vuil en zou deze
+    // controle zelf een gedwongen layout uitlokken (haperingmeting 2026-11-16).
+    if (boost.frame % 30 === 0 && boost.wordCount === wordsBefore && boost.shownOnce && boostDisplayed()) {
       var vis = boostWordsInView();
       if (vis.total > 0 && vis.inView === 0) {
         boost.invisible++;
@@ -3577,6 +3920,15 @@
   }
 
   function tick() {
+    var t0 = nowMs();
+    try {
+      tickBody();
+    } finally {
+      noteOwnTimer(nowMs() - t0, 'poll');
+    }
+  }
+
+  function tickBody() {
     var p = player();
     if (!p) return;
 
@@ -3585,6 +3937,9 @@
     noteClockSkew();
 
     var id = currentVideoId();
+    // Gedropte beeld-frames: de directe maat voor "de video stottert" (en of
+    // ons eigen werk in dat interval meespeelde).
+    noteVideoDrops(id);
     if (id && id !== lastVideoId) {
       lastVideoId = id;
       // Haperingen van de vorige video (en van het laden van de pagina) zeggen

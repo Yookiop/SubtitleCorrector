@@ -349,6 +349,63 @@
         /var m = boostLineMetrics\(lh\);\s*if \(!m\.lines\) m = first;/.test(agent);
       record('page-agent.js: de slide-up landt meteen op de gemeten stand (geen na-correctie)', measuredTarget,
         measuredTarget ? undefined : 'verwacht boostMeasuredShift() als doelstand in updateWordWindow() en een HERmeting na applyBoostVerticalLayout()');
+
+      // Prestaties (haperingmeting 2026-11-16): de frame-lus deed per woord een
+      // gedwongen layout (gemeten 6,07 per woord en 1.154 in 18 s). Twee harde
+      // regels houden dat tegen:
+      //  1. `windowShift` gebruikt `null` als "nog niet gemeten" — met `-1` zag
+      //     de lus een geldige negatieve stand als "opnieuw meten" en mat hij
+      //     ELKE frame (een volledige sweep langs alle woordblokjes, 60x/s);
+      //  2. een regelovergang wordt pas in de VÓLIGE frame gemeten
+      //     (checkPendingWordLine), als de layout van de vorige frame klaar is.
+      const noSentinel = /windowShift: null,/.test(agent) &&
+        !/windowShift = -1/.test(agent) && !/windowShift < 0/.test(agent) &&
+        /if \(boost\.windowShift === null \|\| boost\.lineChanged\) updateWordWindow\(\);/.test(agent);
+      record('page-agent.js: "nog niet gemeten" is null, geen -1 (geen meetlus per frame)', noSentinel,
+        noSentinel ? undefined : 'verwacht windowShift = null als sentinel (een gemeten stand mág negatief zijn) en geen `windowShift < 0`');
+
+      const deferredLine = /function checkPendingWordLine\s*\(/.test(agent) &&
+        /boost\.pendingLine = \{ prev: prevEl, last: lastEl \};/.test(agent) &&
+        /checkPendingWordLine\(\);\s*\n\s*\/\/ Een openstaande regelwissel eerst verwerken/.test(agent);
+      record('page-agent.js: een regelovergang wordt één frame later gemeten (geen gedwongen layout per woord)', deferredLine,
+        deferredLine ? undefined : 'verwacht checkPendingWordLine() vóór de toevoegingen en boost.pendingLine = { prev, last } erna');
+
+      const cachedStyleReads = /function boostBoxPaddingPx\s*\(/.test(agent) &&
+        /boostStyle\.fontFamily/.test(agent) &&
+        /if \(boostStyle\.bgApplied !== boostStyle\.bgColor\)/.test(agent);
+      record('page-agent.js: stijlmetingen zijn gecached (geen getComputedStyle per regelwissel)', cachedStyleReads,
+        cachedStyleReads ? undefined : 'verwacht boostBoxPaddingPx(), boostStyle.fontFamily voor de inktmeting en de bgApplied-guard');
+
+      const noReflowJump = !/void wrap\.offsetHeight/.test(agent) && /function endJump\s*\(/.test(agent);
+      record('page-agent.js: een sprong van het venster forceert geen reflow meer (endJump)', noReflowJump,
+        noReflowJump ? undefined : 'verwacht endJump() in plaats van `void wrap.offsetHeight`');
+
+      const dedupe = /function captionRawSig\s*\(/.test(agent) &&
+        /prevRec\.rawSig === rawSig/.test(agent) && /deduped: 0/.test(agent);
+      record('page-agent.js: een identieke herhaling van dezelfde track wordt niet opnieuw geparsed', dedupe,
+        dedupe ? undefined : 'verwacht captionRawSig() en de dedupe op rawSig in storeBoostTrack()');
+
+      // Eigen werk buiten de frame-lus is met `long-animation-frame` onzichtbaar;
+      // zonder deze meting bleef er "eigen code 0 ms" staan terwijl een timer
+      // tienduizenden ms hoofd-threadwerk deed. De popup toont daarom ons eigen
+      // frame- én taakwerk, plus de gedropte beeld-frames.
+      const ownTimers = /function noteOwnTimer\s*\(/.test(agent) && /function noteVideoDrops\s*\(/.test(agent) &&
+        /noteOwnTimer\(nowMs\(\) - t0, 'settle'\)/.test(agent) && /drop: diag\.drop,/.test(agent);
+      record('page-agent.js: eigen timerwerk en gedropte beeld-frames worden gemeten', ownTimers,
+        ownTimers ? undefined : 'verwacht noteOwnTimer(), noteVideoDrops() en `drop` in de diagnose');
+    }
+
+    /** Popup-regels: ons eigen werk en de gedropte beeld-frames. */
+    async function checkPopupPerf() {
+      const html = await (await fetch('../extension/src/popup.html', { cache: 'no-store' })).text();
+      const js = await (await fetch('../extension/src/popup.js', { cache: 'no-store' })).text();
+      const rows = /id="drop"/.test(html) && /id="perfHint"/.test(html) && /function labelDrop\(/.test(js) &&
+        /setText\('drop'/.test(js) && /function perfHint\(/.test(js);
+      record('popup: "Prestatie" toont eigen werk en "Video-frames" de gedropte frames', rows,
+        rows ? undefined : 'verwacht een #drop-row, labelDrop(), perfHint() en setText(\'drop\', ...)');
+      const ownFirst = /own\.maxMs/.test(js) && /timers\.maxMs/.test(js) && /ownAtBursts/.test(js);
+      record('popup: eigen frame-/taakwerk en de koppeling met de stotters staan in de popup', ownFirst,
+        ownFirst ? undefined : 'verwacht own.maxMs, timers.maxMs en ownAtBursts in popup.js');
     }
 
     /**
@@ -513,6 +570,42 @@
         popupRow ? undefined : "verwacht een #clock-row, labelClock() en setText('clock', ...)");
     }
 
+    // Het ondertitelmenu moet *wachten* op YouTube in plaats van één keer na
+    // een vaste `sleep()` te klikken (bugmelding 2026-11-14: `menu:no-panel`
+    // liet een video op "Nederlands (automatisch gegenereerd) >> Engels" staan,
+    // terwijl dezelfde code een seconde later wél een paneel vond). En een
+    // mislukte toepassing moet herdacht worden, anders blijft de video in de
+    // verkeerde taal staan tot de gebruiker zelf ingrijpt.
+    // Gedragstest: tools/check-caption-menu.html.
+    async function checkCaptionMenu() {
+      const agent = await (await fetch('../extension/src/page-agent.js', { cache: 'no-store' })).text();
+
+      const waits = /async function openSettings\(\)\s*\{[\s\S]*?await waitFor\(settingsOpen/.test(agent) &&
+        /async function openCaptionsPanel\(\)\s*\{[\s\S]*?await waitFor\(findSubtitlesEntry/.test(agent);
+      record('page-agent.js: het ondertitelmenu pollt op het menu/paneel (geen vaste sleep)', waits,
+        waits ? undefined : 'verwacht waitFor(settingsOpen) in openSettings() en waitFor(findSubtitlesEntry) in openCaptionsPanel()');
+
+      const clickRetry = /for \(var i = 0; i < 2 && !subPanelOpen\(\); i\+\+\)/.test(agent);
+      record('page-agent.js: de klik op "Subtitles/CC" wordt één keer herhaald', clickRetry,
+        clickRetry ? undefined : 'verwacht een lus die de entry-klik herhaalt zolang !subPanelOpen()');
+
+      const scoped = /function settingsMenuEl\(\)\s*\{[\s\S]{0,200}?p\.querySelector\('\.ytp-settings-menu'\)/.test(agent) &&
+        /function visibleOne\(sel\)/.test(agent);
+      record('page-agent.js: menu-elementen komen uit de speler en alleen zichtbare tellen', scoped,
+        scoped ? undefined : 'verwacht settingsMenuEl() via player().querySelector en de visibleOne()-helper');
+
+      const menuWait = /await waitFor\(function \(\) \{ return verifyState\(readCurrentTrack\(\), target\); \}, 1500\)/.test(agent);
+      record('page-agent.js: applyViaMenu wacht tot de speler de track overneemt', menuWait,
+        menuWait ? undefined : 'verwacht een waitFor(...verifyState(readCurrentTrack(), target)...) na de menu-klik');
+
+      const content = await (await fetch('../extension/src/content.js', { cache: 'no-store' })).text();
+      const retry = /function scheduleApplyRetry\(/.test(content) &&
+        /if \(!res \|\| !res\.ok\) scheduleApplyRetry\(videoId\);/.test(content) &&
+        /APPLY_RETRY_MAX/.test(content);
+      record('content.js: een mislukte toepassing wordt herkansd (scheduleApplyRetry)', retry,
+        retry ? undefined : 'verwacht scheduleApplyRetry() + de aanroep na een mislukte apply en APPLY_RETRY_MAX');
+    }
+
     (async function () {
       for (const rel of SCRIPTS) await checkScript(rel);      await checkManifest();
       try {
@@ -544,6 +637,16 @@
         await checkMediaClock();
       } catch (e) {
         record('klok-check (page-agent/popup)', false, String(e.message || e));
+      }
+      try {
+        await checkCaptionMenu();
+      } catch (e) {
+        record('ondertitelmenu-check (page-agent/content)', false, String(e.message || e));
+      }
+      try {
+        await checkPopupPerf();
+      } catch (e) {
+        record('prestatie-check (popup)', false, String(e.message || e));
       }
 
       const li = (r) => {
