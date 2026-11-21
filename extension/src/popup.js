@@ -171,10 +171,17 @@ function diagHint(st, probe) {
   const d = st.diag || {};
   const vid = st.videoId || (probe && probe.videoId) || null;
   if (st.recovering) {
-    return 'De pagina is ververst om de ondertiteling te herstellen; de extensie zet de juiste track en de weergave nu opnieuw aan.';
+    const why = st.reload && st.reload.pending && st.reload.pending.reason;
+    const cause = why === 'lag' ? ' (onze weergave liep te ver achter)'
+      : (why === 'no-track' ? ' (de ondertitel-track kwam niet binnen)' : '');
+    return 'De pagina is ververst om de ondertiteling te herstellen' + cause +
+      '; de extensie zet de juiste track en de weergave nu opnieuw aan.';
   }
   if (st.reloadedFor && st.reloadedFor === vid) {
-    return 'Deze video is één keer ververst om de ondertiteling te herstellen en daarna opnieuw ingesteld.';
+    const last = st.reload && st.reload.log && st.reload.log.length ? st.reload.log[st.reload.log.length - 1] : null;
+    const why = last && last.reason === 'lag' ? ' (onze weergave liep te ver achter)'
+      : (last && last.reason === 'no-track' ? ' (de ondertitel-track kwam niet binnen)' : '');
+    return 'Deze video is één keer ververst om de ondertiteling te herstellen' + why + ' en daarna opnieuw ingesteld.';
   }
   if (d.reloadReports) {
     return 'Gemeld dat de ondertiteling niet te herstellen was: de pagina wordt dan één keer ververst en daarna opnieuw ingesteld.';
@@ -420,7 +427,10 @@ $('diagCopy').addEventListener('click', async () => {
     url: tab ? tab.url : null,
     diag: st ? st.diag || null : null,
     probe: st ? st.probe || null : null,
-    verify: st ? st.verify || null : null
+    verify: st ? st.verify || null : null,
+    // Waarom de pagina ververst is (overleeft de reload in sessionStorage); de
+    // page-agent-diagnose hierboven begint na een verversing weer op nul.
+    reload: st ? st.reload || null : null
   };
   const text = JSON.stringify(report, null, 2);
   $('diagCopy').textContent = 'Gekopieerd';

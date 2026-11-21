@@ -376,9 +376,21 @@
       record('page-agent.js: stijlmetingen zijn gecached (geen getComputedStyle per regelwissel)', cachedStyleReads,
         cachedStyleReads ? undefined : 'verwacht boostBoxPaddingPx(), boostStyle.fontFamily voor de inktmeting en de bgApplied-guard');
 
+      // Een sprong van het venster ("met-een", zonder animatie) mag geen LAYOUT
+      // forceren, maar moet WÉL een stijlberekening afdwingen: zonder die
+      // berekening herstelt endJump() de overgang vóórdat de browser de nieuwe
+      // `top` heeft gezien, en dan animeert de sprong alsnog — het venster liep
+      // na elke regelwissel 200 ms terug (bugmelding 2026-11-20). Bewijs:
+      // `tools/check-caption-slide.html` (echte klok, echte overgang): met de
+      // recalc 9 overgangen / 0 fout, zonder 19 overgangen / 8 fout.
       const noReflowJump = !/void wrap\.offsetHeight/.test(agent) && /function endJump\s*\(/.test(agent);
       record('page-agent.js: een sprong van het venster forceert geen reflow meer (endJump)', noReflowJump,
         noReflowJump ? undefined : 'verwacht endJump() in plaats van `void wrap.offsetHeight`');
+
+      const instantJump = /getComputedStyle\(wrap\)\.transitionDuration/.test(agent) &&
+        /wrap\.style\.transition = 'none';[\s\S]{0,120}wrap\.style\.top = val;[\s\S]{0,400}getComputedStyle\(wrap\)\.transitionDuration/.test(agent);
+      record('page-agent.js: een sprong landt met-een (stijl-recalc tussen transition:none en endJump)', instantJump,
+        instantJump ? undefined : 'verwacht een getComputedStyle(wrap).transitionDuration-recalc direct ná transition:none + top in setWordShift()');
 
       const dedupe = /function captionRawSig\s*\(/.test(agent) &&
         /prevRec\.rawSig === rawSig/.test(agent) && /deduped: 0/.test(agent);
@@ -606,6 +618,43 @@
         retry ? undefined : 'verwacht scheduleApplyRetry() + de aanroep na een mislukte apply en APPLY_RETRY_MAX');
     }
 
+    /**
+     * Beleid rond verversen (klacht 2026-11-19: "de pagina herstart ineens
+     * tijdens het afspelen"). Twee meldwegen hadden een drempel die een
+     * gezonde video kan halen: de achterstand (5 woorden / 3 metingen is bij
+     * ASR-normale voorsprong) en de ontbrekende track (zelfs als YouTube's
+     * eigen venster nog tekst toonde). En de speelpositie moet over de reload
+     * heen bewaard worden. Gedragstest: tools/check-resume-after-reload.html.
+     */
+    async function checkReloadPolicy() {
+      const agent = await (await fetch('../extension/src/page-agent.js', { cache: 'no-store' })).text();
+      const content = await (await fetch('../extension/src/content.js', { cache: 'no-store' })).text();
+      const popup = await (await fetch('../extension/src/popup.js', { cache: 'no-store' })).text();
+
+      const lagGate = /var BEHIND_REPORT_WORDS = 20;/.test(agent) &&
+        /var BEHIND_REPORT_STREAK = 8;/.test(agent) &&
+        /lagWatch\.deepStreak = res\.ahead >= BEHIND_REPORT_WORDS/.test(agent) &&
+        /if \(lagWatch\.deepStreak < BEHIND_REPORT_STREAK\) return;/.test(agent);
+      record('page-agent.js: verversen bij achterstand pas bij 20 woorden die 8 metingen aanhouden (deepStreak)', lagGate,
+        lagGate ? undefined : 'verwacht BEHIND_REPORT_WORDS/BEHIND_REPORT_STREAK en de deepStreak-poort vóór captionLagPersist');
+
+      const visibleGate = /if \(youtubeCaptionText\(\)\) \{[\s\S]{0,260}?diag\.boost\.reloadSkipped\+\+;/.test(agent);
+      record('page-agent.js: geen verversing voor een ontbrekende track zolang YouTube zelf nog tekst toont', visibleGate,
+        visibleGate ? undefined : 'verwacht een youtubeCaptionText()-controle vóór captionsNeedReload, met boost.reloadSkipped');
+
+      const resume = /function resumeSave\s*\(/.test(agent) && /function maybeResumePosition\s*\(/.test(agent) &&
+        /resumeSave\(\);\s*\n\s*try \{ location\.reload\(\); \}/.test(agent) &&
+        /maybeResumePosition\(id, ps\);/.test(agent) && /seekTo\(r\.t, true\)/.test(agent) && /resume: diag\.resume,/.test(agent);
+      record('page-agent.js: de speelpositie wordt vóór de verversing bewaard en erna teruggezet (sc.resumePos)', resume,
+        resume ? undefined : 'verwacht resumeSave() vóór location.reload(), maybeResumePosition() in de poll, seekTo(t, true) en resume in de diagnose');
+
+      const reloadLog = /function reloadLogAdd\s*\(/.test(content) && /reloadLogGet\(\)/.test(content) &&
+        /reload: \{[\s\S]{0,220}?log: reloadLogGet\(\)/.test(content) &&
+        /reload: st \? st\.reload \|\| null : null/.test(popup);
+      record('content/popup: de aanleiding van een verversing staat in Diagnose kopiëren (reload.log)', reloadLog,
+        reloadLog ? undefined : 'verwacht reloadLogAdd() bij de verversing, reload.log in buildPopupState() en `reload` in het gekopieerde rapport');
+    }
+
     (async function () {
       for (const rel of SCRIPTS) await checkScript(rel);      await checkManifest();
       try {
@@ -647,6 +696,11 @@
         await checkPopupPerf();
       } catch (e) {
         record('prestatie-check (popup)', false, String(e.message || e));
+      }
+      try {
+        await checkReloadPolicy();
+      } catch (e) {
+        record('verversingsbeleid-check (page-agent/content/popup)', false, String(e.message || e));
       }
 
       const li = (r) => {

@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <title>Caption Boost - de slide-up: precies één animatie per regelwissel</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; padding: 20px; font: 14px/1.5 "Segoe UI", system-ui, sans-serif; background: #14161c; color: #e8eef7; }
+    h1 { font-size: 18px; margin: 0 0 6px; }
+    .sub { color: #93a1b5; max-width: 1000px; }
+    .sub code { font-family: Consolas, monospace; background: #232936; padding: 1px 5px; border-radius: 4px; }
+    #verdict { font-size: 15px; font-weight: 600; padding: 10px 14px; border-radius: 8px; margin: 14px 0; display: inline-block; }
+    .pass { background: #12331f; color: #56e39f; border: 1px solid #1e5a37; }
+    .fail { background: #3a1414; color: #ff9a9a; border: 1px solid #6a2020; }
+    .busy { background: #232936; color: #93a1b5; border: 1px solid #333c4d; }
+    #stage { position: absolute; left: -4000px; top: 0; }
+    #movie_player { position: relative; width: 960px; height: 540px; background: #223; overflow: hidden; }
+    pre { background: #0b0d12; padding: 10px; border-radius: 8px; white-space: pre-wrap; max-height: 420px; overflow: auto; font: 12px/1.4 Consolas, monospace; }
+  </style>
+</head>
+<body>
+  <h1>Caption Boost &mdash; de slide-up: precies één animatie per regelwissel</h1>
+  <div class="sub">
+    Laadt de <b>echte</b> <code>page-agent.js</code> en speelt doorlopende spraak af in de cadans van
+    YouTube. Dit harnas draait op de <b>echte klok</b> met de <b>echte CSS-overgang</b> aan: alleen zo is
+    te zien of een verschuiving ook echt animeert.<br><br>
+    Gecontroleerd wordt:<br>
+    &bull; elke regelwissel start <b>precies één</b> overgang op <code>top</code> (de slide-up van 200 ms);<br>
+    &bull; de <b>ruststand</b> (het opruimen van de regel boven het venster, 240 ms later) start er
+    <b>geen tweede</b>: die verschuiving moet met-een landen. Gebeurt dat niet, dan schuift het venster na
+    elke wissel 200 ms terug &mdash; de klacht van 2026-11-20 (&ldquo;het naar boven schuiven van de 1e
+    regel verloopt niet soepel&rdquo;).<br><br>
+    <b>Open deze pagina in een zichtbaar tabblad:</b> een verborgen tabblad levert geen frames en dus
+    geen animaties. Duurt &plusmn; 20 s.
+  </div>
+  <div id="verdict" class="busy">bezig...</div>
+  <div id="stage"><div id="movie_player" class="html5-video-player"><button class="ytp-subtitles-button" aria-pressed="true"></button></div></div>
+  <pre id="out"></pre>
+
+<script>
+  /* Nep-YouTube-speler op de ECHTE klok: de spelerpositie loopt mee met
+     performance.now(), zodat de frame-lus en de timedtext-tijden kloppen. */
+  var realT0 = performance.now();
+  function nowVideo() { return 4 + (performance.now() - realT0) / 1000; }
+  var playerEl = document.getElementById('movie_player');
+  var CUR = { languageCode: 'en', kind: 'asr', vss_id: 'a.en', displayName: 'English (auto-generated)' };
+  var PR = {
+    videoDetails: { video_id: 'slidecheck01', title: 'test', channelId: 'UCtest', author: 'Test', lengthSeconds: 7200 },
+    captions: { playerCaptionsTracklistRenderer: {
+      captionTracks: [ { languageCode: 'en', kind: 'asr', vssId: 'a.en', displayName: 'English (auto-generated)' } ],
+      audioTracks: []
+    } }
+  };
+  playerEl.getVideoData = function () { return { video_id: 'slidecheck01', title: 'test', author: 'Test' }; };
+  playerEl.getPlayerResponse = function () { return PR; };
+  playerEl.getPlayerState = function () { return 1; };
+  playerEl.getAdState = function () { return 0; };
+  playerEl.getCurrentTime = function () { return nowVideo(); };
+  playerEl.getDuration = function () { return 7200; };
+  playerEl.getOption = function (a, b) {
+    if (a === 'captions' && b === 'track') return CUR;
+    if (a === 'captions' && b === 'tracklist') return [CUR];
+    return null;
+  };
+  playerEl.setOption = function () {};
+  playerEl.getAudioTrack = function () { return null; };
+  playerEl.getAvailableAudioTracks = function () { return []; };
+  playerEl.getSubtitlesUserSettings = function () {
+    return { color: '#ffffff', textOpacity: 1, background: '#080808', backgroundOpacity: 1, fontSizeIncrement: 0 };
+  };
+  playerEl.querySelector = function () { return null; };
+</script>
+<script src="../extension/src/shared/lang-utils.js"></script>
+<script src="../extension/src/page-agent.js"></script>
+<script>
+  (function () {
+    /* Transcript in de cadans van YouTube. Iets sneller dan echt (220 ms per
+       woord), zodat er in ± 15 s genoeg regelwissels zijn. */
+    var BASE = ('so I am going to pull him out and have him sit by until Furry gets here and then we can do that deal ' +
+      'he has got his foot on the brake this entire time and I do not know why that is happening right now ' +
+      '>> I am sorry sir I did not know it was not valid documentation and that is on me ' +
+      'we are in Wisconsin and the rules here are different from what you are used to back home ' +
+      'and then we can go to Kourend to unlock this song after the meeting is over today ' +
+      'the quick brown fox jumps over the lazy dog near the river bank at dawn every single morning ').split(' ');
+    var events = [];
+    var t = 0;
+    for (var rep = 0; rep < 10; rep++) {
+      for (var i = 0; i < BASE.length; i++) {
+        if (i === 0 && rep % 3 === 2) t += 2500;
+        events.push({ tStartMs: t, dDurationMs: 220, segs: [ { utf8: BASE[i] + ' ', tOffsetMs: 0 } ] });
+        t += 220;
+      }
+    }
+    /* De timedtext-hook van de agent leest dit antwoord (de echte fetch faalt
+       hier: dat is alleen de XHR die we nabootsen). */
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', 'https://www.youtube.com/api/timedtext?v=slidecheck01&lang=en&kind=asr&fmt=json3');
+    Object.defineProperty(xhr, 'response', { get: function () { return JSON.stringify({ events: events }); } });
+    try { xhr.send(); } catch (e) { /* ignore */ }
+    try { xhr.dispatchEvent(new Event('load')); } catch (e) { /* ignore */ }
+
+    var out = document.getElementById('out');
+    var verdict = document.getElementById('verdict');
+    var trans = [];   // { t, kind } per overgang op de wrapper
+    var frames = 0;
+    var wrap = null;
+
+    function hook() {
+      var w = document.querySelector('#sc-caption-overlay .sc-caption-scroll');
+      if (!w || w === wrap) return;
+      wrap = w;
+      ['transitionrun', 'transitionend'].forEach(function (n) {
+        w.addEventListener(n, function () {
+          trans.push({ t: Math.round(performance.now() - realT0), kind: n });
+        });
+      });
+    }
+
+    function loop() {
+      hook();
+      frames++;
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+
+    /**
+     * Een overgang die binnen 120 ms na het EINDE van de vorige begint, is de
+     * sprong van de ruststand die alsnog animeert: de opruimactie haalt een
+     * regel uit de DOM (de inhoud schuift een regel omhoog) en de `top` moet
+     * dat met-een compenseren. Animeert die compensatie, dan schuift het
+     * venster eerst terug en daarna weer op — de klacht van 2026-11-20.
+     * Twee reguliere wissels liggen altijd seconden uit elkaar, dus 120 ms is
+     * ruim.
+     */
+    var GAP_MS = 120;
+
+    function report() {
+      var problems = [];
+      var lastEnd = -1e9;
+      var runs = 0;
+      for (var i = 0; i < trans.length; i++) {
+        var e = trans[i];
+        if (e.kind === 'transitionrun') {
+          runs++;
+          if (e.t - lastEnd < GAP_MS) {
+            problems.push('overgang ' + (e.t - lastEnd) + ' ms na het einde van de vorige (t=' + e.t + ' ms)');
+          }
+        } else {
+          lastEnd = e.t;
+        }
+      }
+      return { frames: frames, hidden: document.hidden, transitionRuns: runs, problems: problems, transitions: trans.slice(-8) };
+    }
+
+    function finish() {
+      var r = report();
+      // Niet op `document.hidden` afgaan: een pagina kan verborgen heten en
+      // toch frames krijgen (focus-emulatie). Het aantal gemeten wissels zegt
+      // hetzelfde en is betrouwbaarder; zonder wissels is er niets bewezen.
+      var enough = r.transitionRuns >= 3;
+      var ok = r.problems.length === 0 && enough;
+      verdict.className = ok ? 'pass' : 'fail';
+      verdict.innerHTML = (ok ? 'PASS' : 'FAIL') + ' &mdash; ' + r.transitionRuns + ' overgangen, ' +
+        r.problems.length + ' fout' +
+        (enough ? '' : ' (te weinig regelwissels gemeten: open de pagina in een zichtbaar tabblad)');
+      out.textContent = JSON.stringify(r, null, 1);
+      window.SC_CHECK = { ok: ok, report: r };
+      document.title = (ok ? 'PASS' : 'FAIL') + ' slide-up: ' + r.transitionRuns + ' overgangen, ' + r.problems.length + ' fout';
+    }
+
+    setTimeout(finish, 20000);
+  })();
+</script>
+</body>
+</html>

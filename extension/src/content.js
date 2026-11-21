@@ -363,6 +363,8 @@
    * CC-knopje (`probe.captionsOn`). Pas dan is het klaar.
    * ------------------------------------------------------------------ */
   var RELOAD_KEY = 'sc.reloadIntent';
+  var RELOAD_LOG_KEY = 'sc.reloadLog';
+  var RELOAD_LOG_MAX = 4;
   var RELOAD_MAX_AGE_MS = 180000;    // een bewaarde bedoeling is 3 minuten geldig
   var RELOAD_MIN_INTERVAL_MS = 60000;// nooit twee verversingen kort na elkaar
   var RELOAD_MAX_ATTEMPTS = 12;      // ± 24 s na de reload (speler moet nog starten)
@@ -389,6 +391,31 @@
 
   function reloadIntentClear() {
     try { sessionStorage.removeItem(RELOAD_KEY); } catch (e) { /* ignore */ }
+  }
+
+  /**
+   * Waarom er ververst is, bewaren over de reload heen. De page-agent-diagnose
+   * begint na een verversing weer op nul, dus zonder dit logboek is in
+   * "Diagnose kopiëren" niet te zien wat de aanleiding was (klacht 2026-11-19,
+   * waar het logboek alleen de *gezonde* toestand ná de reload liet zien).
+   */
+  function reloadLogAdd(entry) {
+    try {
+      var raw = sessionStorage.getItem(RELOAD_LOG_KEY);
+      var list = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(list)) list = [];
+      list.push(entry);
+      while (list.length > RELOAD_LOG_MAX) list.shift();
+      sessionStorage.setItem(RELOAD_LOG_KEY, JSON.stringify(list));
+    } catch (e) { /* ignore */ }
+  }
+
+  function reloadLogGet() {
+    try {
+      var raw = sessionStorage.getItem(RELOAD_LOG_KEY);
+      var list = raw ? JSON.parse(raw) : [];
+      return Array.isArray(list) ? list : [];
+    } catch (e) { return []; }
   }
 
   /**
@@ -443,8 +470,19 @@
     // Eerst de bedoeling vastleggen, dan pas verversen: na de reload leest
     // resumeReloadIntent() hem terug.
     reloadIntentSet(intent);
+    reloadLogAdd({
+      at: new Date().toISOString(),
+      videoId: vid,
+      reason: intent.reason,
+      behindWords: intent.behindWords || 0,
+      waitedMs: (d && d.waitedMs) || 0,
+      track: (d && d.track) || null,
+      lang: intent.lang
+    });
     if (settings.debug) console.log('[SC] videopagina verversen om de ondertiteling te herstellen', intent);
-    toast('Ondertiteling herstellen - de pagina wordt één keer ververst', 'warn');
+    toast(intent.reason === 'no-track'
+      ? 'Ondertiteling herstellen - de pagina wordt één keer ververst'
+      : 'Ondertiteling loopt te ver achter - de pagina wordt één keer ververst', 'warn');
     ask('reloadPage', null, 1500).catch(function () {});
   }
 
@@ -1274,6 +1312,15 @@
       reloadedFor: reloadedFor,
       recovering: !!state.reload.pending,
       reloadAt: state.reload.pending ? state.reload.pending.at : null,
+      // Aanleiding van elke verversing in dit tabblad (overleeft de reload; zie
+      // reloadLogAdd), zodat een diagnose ná de verversing toch laat zien
+      // waaróm hij kwam.
+      reload: {
+        pending: state.reload.pending,
+        lastAt: state.reload.lastAt || null,
+        reloadedFor: reloadedFor,
+        log: reloadLogGet()
+      },
       settings: settings
     };
   }

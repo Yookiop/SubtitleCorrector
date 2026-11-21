@@ -69,7 +69,7 @@
     videoId: null,
     timedtext: { requests: 0, stored: 0, deduped: 0, ignored: Object.create(null) },
     lastTrack: null,
-    boost: { starts: 0, stops: 0, restarts: 0, manualFrames: 0, nothingVisible: 0, active: false, since: 0, lastStop: null, byReason: Object.create(null) },
+    boost: { starts: 0, stops: 0, restarts: 0, manualFrames: 0, nothingVisible: 0, reloadSkipped: 0, active: false, since: 0, lastStop: null, byReason: Object.create(null) },
     frames: { count: 0, maxGapMs: 0, maxGapAt: null, maxGapVideoS: null, slowFrames: 0, lastGapMs: 0, lastAt: 0, hiddenFrames: 0 },
     // Haperingen van de pagina (zie installJankWatch): het enige wat hard kan
     // maken of "de video loopt achter op het geluid" door ons komt of door
@@ -136,7 +136,10 @@
     // venster daarna opnieuw gemeten/opgeruimd werd (een stille hapering hier
     // betekent dat de roll-up op het vangnet van ± 2 s wacht).
     lineWatch: { checks: 0, wraps: 0, updates: 0, settles: 0, skipped: 0, settleExit: null },
-    apply: { count: 0, last: null }
+    apply: { count: 0, last: null },
+    // Laatste herstel van de speelpositie na een verversing door de extensie
+    // (zie resumeSave / maybeResumePosition).
+    resume: null
   };
 
   function diagIgnore(reason) {
@@ -260,6 +263,7 @@
         ahead: lagWatch.ahead,
         best: lagWatch.best,
         behindStreak: lagWatch.behindStreak,
+        deepStreak: lagWatch.deepStreak,
         checks: lagWatch.checks,
         ytSeen: lagWatch.ytSeen,
         repairs: lagWatch.repairs,
@@ -286,6 +290,7 @@
       audioSwitches: diag.audioSwitches,
       lastAudioSwitch: diag.lastAudioSwitch,
       apply: diag.apply,
+      resume: diag.resume,
       docHidden: document.hidden,
       pageVisibility: document.visibilityState
     };
@@ -539,11 +544,84 @@
       // pagina weggaat.
       case 'reloadPage':
         setTimeout(function () {
+          resumeSave();
           try { location.reload(); } catch (e) { /* ignore */ }
         }, 400);
         return Promise.resolve({ ok: true });
       default: return Promise.resolve({ ok: false, reason: 'unknown-request:' + d.type });
     }
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Speelpositie over de verversing tillen (2026-11-19)
+   *
+   * YouTube hervat na een reload meestal zelf waar je was, maar niet altijd
+   * (en dan begint de video opnieuw — klacht 2026-11-19). Vlak vóór de
+   * verversing bewaren we daarom de speeltijd in `sessionStorage` (overleeft
+   * een reload, hoort bij dit tabblad); de verse page agent leest hem één keer
+   * en zet de speler terug als hij duidelijk eerder begon. Alleen als de
+   * verversing door de extensie zelf kwam: bij een gewone F5 staat er niets.
+   * ------------------------------------------------------------------ */
+  var RESUME_KEY = 'sc.resumePos';
+  var RESUME_MAX_AGE_MS = 120000;   // een bewaarde positie is 2 minuten geldig
+  var RESUME_TOLERANCE_S = 10;      // zoveel s eerder hervatten we nog als "goed"
+  var RESUME_MIN_T = 20;            // begin van de video: niets te herstellen
+  var resumePos = null;
+  var resumeLoaded = false;
+
+  function resumeSave() {
+    try {
+      var v = mediaEl();
+      var t = mediaTime();
+      var id = currentVideoId();
+      var dur = v && isFinite(v.duration) ? v.duration : null;
+      // Zonder geldige duur (livestream) of te vroeg in de video is er niets
+      // zinnigs te bewaren.
+      if (!id || t === null || !dur || t < RESUME_MIN_T || t > dur - 3) return;
+      sessionStorage.setItem(RESUME_KEY, JSON.stringify({ videoId: id, t: t, at: Date.now() }));
+    } catch (e) { /* ignore */ }
+  }
+
+  function resumeLoad() {
+    resumeLoaded = true;
+    try {
+      var raw = sessionStorage.getItem(RESUME_KEY);
+      sessionStorage.removeItem(RESUME_KEY);
+      var r = raw ? JSON.parse(raw) : null;
+      if (r && r.videoId && isFinite(r.t) && r.at) resumePos = r;
+    } catch (e) { resumePos = null; }
+  }
+
+  function resumeDone(why) {
+    var r = resumePos;
+    diag.resume = { at: new Date().toISOString(), videoId: r.videoId, from: Math.round(r.t * 1000) / 1000, action: why };
+    resumePos = null;
+    dbg('speelpositie na verversen:', why);
+  }
+
+  /**
+   * Eén keer per poll: staat de speler van dezelfde video (veel) eerder dan de
+   * bewaarde tijd, dan terugzetten. Nooit tegen de gebruiker in: alleen als de
+   * video speelt, geen advertentie, en pas na een echte sprong terug.
+   */
+  function maybeResumePosition(id, ps) {
+    if (!resumeLoaded) resumeLoad();
+    var r = resumePos;
+    if (!r) return;
+    if (Date.now() - r.at > RESUME_MAX_AGE_MS) { resumeDone('expired'); return; }
+    if (!id || id !== r.videoId) { resumeDone('other-video'); return; }
+    if (isAd() || ps !== 1) return;
+    var v = mediaEl();
+    var t = mediaTime();
+    var dur = v && isFinite(v.duration) ? v.duration : null;
+    if (t === null || !dur) return;
+    if (r.t > dur - 3) { resumeDone('beyond-duration'); return; }
+    if (t >= r.t - RESUME_TOLERANCE_S) { resumeDone(r.seeked ? 'restored' : 'kept'); return; }
+    var p = player();
+    var ok = safe(function () { return p && p.seekTo ? p.seekTo(r.t, true) : false; }, false);
+    r.tries = (r.tries || 0) + 1;
+    if (ok) r.seeked = true;
+    if (!ok || r.tries >= 3) resumeDone(ok ? 'seeked' : 'seek-failed');
   }
 
   /* ------------------------------------------------------------------ *
@@ -965,6 +1043,11 @@
       title: (vd && vd.title) || null,
       adShowing: isAd(),
       playerState: safe(function () { return p.getPlayerState(); }, -1),
+      currentTime: mediaTime(),
+      duration: (function () {
+        var v = mediaEl();
+        return v && isFinite(v.duration) ? Math.round(v.duration * 1000) / 1000 : null;
+      })(),
       captionsOn: captionsOn(),
       current: readCurrentTrack(),
       audioTrack: readAudioTrack(),
@@ -1441,12 +1524,22 @@
   var BEHIND_WORDS = 5;              // zoveel woorden vóór = echt achter
   var BEHIND_SAMPLES = 3;            // zoveel poll-rondes op rij (± 2,7 s)
   var BEHIND_REPORT_AFTER_MS = 9000; // zo lang na de reparatie nog steeds achter -> melden
+  // Een *verversing* vraagt veel meer bewijs dan de reparatie hierboven (die
+  // is ongedaan te maken). YouTube's eigen venster staat bij gewone spraak al
+  // snel een paar woorden vóór: de ASR toont tekst eerder dan de woordtijd in
+  // json3, en bij 2,5 woord/s is 5 woorden maar ~2 s. Met de oude drempel
+  // ververste de pagina dus ook als er niets aan de hand was (klacht
+  // 2026-11-19: "de pagina herstart ineens tijdens het afspelen"). Pas bij
+  // ~8 s spraak (20 woorden) die ~7 s aanhoudt is het onmiskenbaar.
+  var BEHIND_REPORT_WORDS = 20;
+  var BEHIND_REPORT_STREAK = 8;
 
   var lagWatch = {
     checks: 0,          // hoeveel keer we YouTube's venster konden vergelijken
     ahead: 0,           // laatste meting: woorden dat YouTube verder staat
     best: 0,            // hoogste gemeten achterstand deze track
     behindStreak: 0,    // opeenvolgende rondes met een echte achterstand
+    deepStreak: 0,      // opeenvolgende rondes met een onmiskenbare achterstand
     ytSeen: 0,          // rondes waarin YouTube's venster tekst had
     repairs: 0,         // reparaties die deze meting uitlokte
     repairAt: 0,        // tijdstip van die reparatie
@@ -1499,7 +1592,8 @@
     trackStableSince: 0,  // sinds wanneer de track-key onveranderd is
     dataSig: null,        // vingerafdruk van de trackversie die we nu tekenen
     dataAt: 0,            // wanneer die versie binnenkwam
-    reloadReported: null  // videoId waarvoor we verversen al voorstelden
+    reloadReported: null, // videoId waarvoor we verversen al voorstelden
+    reloadSkipLogged: null // videoId waarvoor we "YouTube toont nog tekst" al meldden
   };
 
   var boostTracks = Object.create(null);
@@ -2109,13 +2203,14 @@
    * met-een: anders zou de tekst zichtbaar terugschuiven naar boven.
    *
    * Voor die sprong zetten we de overgang UIT en pas in de volgende frame weer
-   * AAN (`endJump()`). Vroeger gebeurde dat met een reflow-truc in dezelfde
-   * frame (de hoogte van de wrapper lezen om de style-wijziging af te dwingen) —
-   * dat is een gedwongen style+layout, en deze sprong komt bij elke run-, regel-
-   * en stijlvissel voor (haperingmeting 2026-11-16). Het uitgestelde herstel
-   * doet hetzelfde: de style-herberekening van deze frame ziet
-   * `transition:none` mét de nieuwe `top`, de volgende frame zet de overgang
-   * terug zonder dat `top` verandert (dus zonder animatie).
+   * AAN (`endJump()`). ⚠️ Het uitzetten van de overgang moet in dezelfde frame
+   * een **stijlberekening** afdwingen: zonder die berekening zet `endJump()` de
+   * overgang terug vóórdat de browser de nieuwe `top` heeft gezien, en dan
+   * animeert de sprong alsnog — het venster liep na elke regelwissel 200 ms
+   * terug naar de vorige stand (`transitionrun` op het moment van de ruststand,
+   * gemeten 2026-11-20). Alleen de stijl wordt hier afgedwongen
+   * (`transitionDuration` lezen kost geen layout); de reflow-truc van vóór
+   * 2026-11-16 las de hoogte en kostte daarmee een gedwongen style+layout.
    */
   function setWordShift(px, animate) {
     var wrap = boost.scrollEl;
@@ -2135,6 +2230,9 @@
     boost.jump = true;
     wrap.style.transition = 'none';
     wrap.style.top = val;
+    // De sprong moet met-een landen (zie de uitleg hierboven): dit forcerert de
+    // stijlberekening waarin `transition:none` samen met de nieuwe `top` geldt.
+    try { getComputedStyle(wrap).transitionDuration; } catch (e) { /* ignore */ }
   }
 
   /** De overgang van de wrapper weer aanzetten, ná de sprong-frame. */
@@ -2993,7 +3091,13 @@
     var trimmed = boostTrimAbove(m);
     if (trimmed.px > 0) shift = Math.round((shift - trimmed.px) * 100) / 100;
     boost.lineChanged = false;
-    if (shift !== boost.windowShift || trimmed.px > 0) {
+    // Een verschil van minder dan 0,05 px is afrondingsruis: de gemeten stand
+    // wordt op 0,01 px afgerond en de mediaan-regelafstand jittert met fracties
+    // van een px. Zo'n "correctie" is onzichtbaar, maar kost wel een
+    // style-write per ronde (de vangnetmeting elke ± 2 s) en telt in
+    // check-caption-roll als na-correctie (gemeten 2026-11-20: 1,78 → 1,79 px).
+    var moved = boost.windowShift === null || Math.abs(shift - boost.windowShift) > 0.05;
+    if (moved || trimmed.px > 0) {
       var animate = boost.windowShift !== null && !(trimmed.px > 0);
       boost.windowShift = shift;
       setWordShift(shift, animate);
@@ -3410,6 +3514,7 @@
       boost.repairs = 0;
       boost.repairAt = 0;
       boost.reloadReported = null;
+      boost.reloadSkipLogged = null;
       return;
     }
     // De menu-automatisering van de content script kan net een track gezet
@@ -3433,6 +3538,20 @@
     // en dwingt daarna de juiste track én de weergave af.
     if (boost.repairs >= BOOST_REPAIR_MAX && waited >= BOOST_RELOAD_AFTER_MS &&
         !document.hidden && id && boost.reloadReported !== id) {
+      // Alleen als er écht niets te zien is. Toont YouTube's eigen venster nog
+      // tekst, dan doet alleen ónze weergave het niet — dat is geen reden om
+      // midden in een video de pagina te verversen (klacht 2026-11-19: "de
+      // pagina herstart ineens tijdens het afspelen"). Een gemiste
+      // timedtext-respons is geen kapotte ondertiteling: YouTube tekent zelf
+      // door, en zodra de track alsnog binnenkomt neemt de overlay het over.
+      if (youtubeCaptionText()) {
+        if (boost.reloadSkipLogged !== id) {
+          boost.reloadSkipLogged = id;
+          diag.boost.reloadSkipped++;
+          dbg('geen eigen track, maar YouTube toont nog tekst - niet verversen');
+        }
+        return;
+      }
       boost.reloadReported = id;
       diag.reloadReports++;
       diag.lastReloadReport = {
@@ -3477,23 +3596,26 @@
   function checkCaptionAhead(ps, ad) {
     if (!CAPTION_BOOST_ENABLED || SUBTITLES_OFF || ad || ps !== 1 || document.hidden) {
       lagWatch.behindStreak = 0;
+      lagWatch.deepStreak = 0;
       return;
     }
     if (!boost.rafActive || !boost.ownsCaptions || !boost.runs || !boost.runs.length) {
       lagWatch.behindStreak = 0;
+      lagWatch.deepStreak = 0;
       return;
     }
     var yt = youtubeCaptionText();
     if (!yt) {
       lagWatch.behindStreak = 0;
+      lagWatch.deepStreak = 0;
       lagWatch.ahead = 0;
       return;
     }
     var t = playerTimeRaw();
-    if (t === null) { lagWatch.behindStreak = 0; return; }
+    if (t === null) { lagWatch.behindStreak = 0; lagWatch.deepStreak = 0; return; }
     var ts = t + L.wordLeadSeconds(BOOST_SYNC_MS);
     var idx = L.captionRunAt(boost.runs, ts, BOOST_LINGER);
-    if (idx < 0) { lagWatch.behindStreak = 0; lagWatch.ahead = 0; return; }
+    if (idx < 0) { lagWatch.behindStreak = 0; lagWatch.deepStreak = 0; lagWatch.ahead = 0; return; }
     var run = boost.runs[idx];
     // Wat er volgens de track gezegd is, niet wat er toevallig al in de DOM
     // staat: de getemperde reveal mag geen achterstand veinzen.
@@ -3506,6 +3628,7 @@
     lagWatch.ahead = res.ahead;
     if (res.ahead > lagWatch.best) lagWatch.best = res.ahead;
     lagWatch.behindStreak = res.ahead >= BEHIND_WORDS ? lagWatch.behindStreak + 1 : 0;
+    lagWatch.deepStreak = res.ahead >= BEHIND_REPORT_WORDS ? lagWatch.deepStreak + 1 : 0;
     if (lagWatch.behindStreak < BEHIND_SAMPLES) return;
 
     var key = boost.trackKey;
@@ -3529,6 +3652,7 @@
         return;
       }
     }
+    if (lagWatch.deepStreak < BEHIND_REPORT_STREAK) return;
     if (now - lagWatch.repairAt < BEHIND_REPORT_AFTER_MS) return;
     if (lagWatch.reportedKey === key) return;
     lagWatch.reportedKey = key;
@@ -3537,17 +3661,18 @@
       at: new Date().toISOString(),
       videoId: videoId,
       track: key,
-      behindWords: lagWatch.best,
+      behindWords: res.ahead,
+      best: lagWatch.best,
       ahead: res.ahead,
-      streak: lagWatch.behindStreak,
+      streak: lagWatch.deepStreak,
       ytText: lagWatch.lastYtText
     };
-    dbg('ondertiteling blijft achter (' + lagWatch.best + ' woorden) - verversen voorstellen');
+    dbg('ondertiteling blijft achter (' + res.ahead + ' woorden) - verversen voorstellen');
     post({
       type: 'captionLagPersist',
       videoId: videoId,
       reason: 'lag',
-      behindWords: lagWatch.best,
+      behindWords: res.ahead,
       track: key,
       ytText: lagWatch.lastYtText
     });
@@ -3582,6 +3707,7 @@
       lagWatch.ahead = 0;
       lagWatch.best = 0;
       lagWatch.behindStreak = 0;
+      lagWatch.deepStreak = 0;
       lagWatch.repairAt = 0;
       diag.videoId = id;
     }
@@ -3993,6 +4119,10 @@
     // Caption Boost: eigen weergave aan/uitzetten zodra de juiste track actief is.
     // De al gelezen waarden gaan mee (geen tweede ronde langs de player-API).
     boostTick(cur, id, ad);
+
+    // Speelpositie terugzetten als de pagina door de extensie is ververst en
+    // YouTube niet zelf op de oude plek hervatte (zie resumeSave).
+    maybeResumePosition(id, ps);
 
     // Loopt de weergave achter op YouTube's eigen (tweede) captionvenster?
     // Alleen een diagnose + een melding; de goedkope reparatie en de

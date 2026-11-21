@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <title>Subtitle Corrector - speelpositie na een verversing (frame)</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; padding: 10px; font: 12px/1.4 "Segoe UI", system-ui, sans-serif; background: #14161c; color: #e8eef7; }
+    pre { margin: 0; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <div id="movie_player">
+    <video class="html5-main-video"></video>
+  </div>
+  <pre id="out">bezig...</pre>
+
+  <script>
+    /*
+     * Testframe voor tools/check-resume-after-reload.html: een nep-speler
+     * (`#movie_player` + een <video> waarvan readyState/duration/currentTime
+     * overschreven zijn) waarop de ECHTE page-agent draait. Zo is het herstel
+     * van `sc.resumePos` na een verversing te testen zonder echte video.
+     *
+     *   ?case=restore     -> bewaarde positie 300, speler begint op 3   => seek terug
+     *   ?case=kept        -> bewaarde positie 300, speler staat op 295  => niets doen
+     *   ?case=other-video -> bewaarde positie hoort bij een andere video => niets doen
+     *   ?case=reload      -> echte reloadPage-aanvraag: bewaren vóór de reload,
+     *                        daarna begint de speler op 3 => seek terug
+     */
+    var params = new URLSearchParams(location.search);
+    var scenario = params.get('case') || 'restore';
+    var savedT = 300;
+    var phase = scenario === 'reload' ? (sessionStorage.getItem('sc.testPhase') || 'before') : 'before';
+    if (scenario === 'reload' && phase === 'after') sessionStorage.removeItem('sc.testPhase');
+    var ct = 3;
+
+    if (scenario === 'kept') ct = savedT - 5;
+    if (scenario === 'reload' && phase === 'before') ct = savedT;
+
+    var video = document.querySelector('#movie_player video');
+    Object.defineProperty(video, 'readyState', { get: function () { return 4; } });
+    Object.defineProperty(video, 'duration', { get: function () { return 1000; } });
+    Object.defineProperty(video, 'currentTime', { get: function () { return ct; }, set: function (v) { ct = v; } });
+    video.getVideoPlaybackQuality = function () { return { droppedVideoFrames: 0, totalVideoFrames: 0 }; };
+
+    var player = document.getElementById('movie_player');
+    player.getVideoData = function () { return { video_id: 'testvid12345', title: 'test' }; };
+    player.getPlayerState = function () { return 1; };
+    player.getAdState = function () { return 0; };
+    player.getCurrentTime = function () { return ct; };
+    player.getOption = function () { return null; };          // geen track: alleen tick + resume
+    player.seekTo = function (t) { ct = t; window.__seekTo = t; return true; };
+    player.querySelector = function (sel) { return String(sel).indexOf('video') !== -1 ? video : null; };
+    player.classList = { add: function () {}, remove: function () {}, contains: function () { return false; } };
+    player.appendChild = function () {};
+
+    if (scenario === 'reload') {
+      if (phase === 'before') sessionStorage.setItem('sc.testPhase', 'after');
+    } else if (scenario !== 'none') {
+      sessionStorage.setItem('sc.resumePos', JSON.stringify({
+        videoId: scenario === 'other-video' ? 'anderevid999' : 'testvid12345',
+        t: savedT,
+        at: Date.now()
+      }));
+    }
+  </script>
+  <script src="../extension/src/shared/lang-utils.js"></script>
+  <script src="../extension/src/page-agent.js"></script>
+  <script>
+    function report(payload) {
+      payload.case = scenario;
+      payload.phase = phase;
+      payload.ok = (scenario === 'restore' || scenario === 'reload')
+        ? (window.__seekTo === savedT && !!payload.resume && payload.resume.action === 'restored')
+        : scenario === 'kept'
+          ? (!window.__seekTo && !!payload.resume && payload.resume.action === 'kept')
+          : (!window.__seekTo && !!payload.resume && payload.resume.action === 'other-video');
+      document.getElementById('out').textContent = JSON.stringify(payload, null, 2);
+      document.title = (payload.ok ? 'PASS ' : 'FAIL ') + scenario;
+      try { parent.postMessage({ scResumeTest: scenario, ok: payload.ok, payload: payload }, '*'); } catch (e) { /* ignore */ }
+    }
+
+    if (scenario === 'reload' && phase === 'before') {
+      setTimeout(function () {
+        window.postMessage({ __sc: true, dir: 'to-page', id: 99, type: 'reloadPage' }, location.origin);
+      }, 500);
+    } else {
+      // De poll loopt op een verborgen tabblad maar één keer per 2,6 s: wachten
+      // tot de herstelronde geweest is in plaats van een vaste timeout.
+      var started = Date.now();
+      (function wait() {
+        var diag = null;
+        try { diag = window.__scDiag ? window.__scDiag() : null; } catch (e) { diag = null; }
+        var resume = diag && diag.resume ? diag.resume : null;
+        if (!resume && Date.now() - started < 12000) { setTimeout(wait, 400); return; }
+        report({
+          currentTime: Math.round(ct * 1000) / 1000,
+          seekTo: window.__seekTo || null,
+          resume: resume
+        });
+      })();
+    }
+  </script>
+</body>
+</html>

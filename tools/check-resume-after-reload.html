@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <title>Subtitle Corrector - speelpositie na een verversing</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; padding: 24px; font: 14px/1.5 "Segoe UI", system-ui, sans-serif; background: #14161c; color: #e8eef7; }
+    h1 { font-size: 18px; margin: 0 0 6px; }
+    .sub { color: #93a1b5; margin-bottom: 18px; max-width: 950px; }
+    #summary { font-size: 15px; font-weight: 600; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; display: inline-block; }
+    .pass { background: #12331f; color: #56e39f; border: 1px solid #1e5a37; }
+    .fail { background: #3a1414; color: #ff9a9a; border: 1px solid #6a2020; }
+    ul { list-style: none; padding: 0; margin: 0 0 18px; max-width: 950px; }
+    li { padding: 7px 10px; border-bottom: 1px solid #232936; display: flex; gap: 10px; }
+    li .mark { width: 18px; flex: 0 0 18px; font-weight: 700; }
+    li.ok .mark { color: #56e39f; }
+    li.err .mark { color: #ff7a7a; }
+    li .info { color: #93a1b5; font-size: 12.5px; margin-top: 3px; white-space: pre-wrap; }
+    code { font-family: Consolas, monospace; background: #232936; padding: 1px 5px; border-radius: 4px; }
+    iframe { width: 100%; max-width: 640px; height: 210px; border: 1px solid #232936; border-radius: 8px; margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Subtitle Corrector - speelpositie na een verversing</h1>
+  <div class="sub">
+    Test de herstel-logica van <code>sc.resumePos</code> (klacht 2026-11-19: de pagina herstartte tijdens het
+    afspelen en de video begon soms opnieuw) met de <em>echte</em> <code>page-agent.js</code> op een nep-speler,
+    in vier scenario's: <code>restore</code>, <code>kept</code>, <code>other-video</code> en een echte
+    <code>reloadPage</code>-aanvraag. Draai dit via een lokale server, bv.<br>
+    <code>python -m http.server 8099</code> → <code>http://localhost:8099/tools/check-resume-after-reload.html</code>
+  </div>
+  <div id="summary">bezig...</div>
+  <ul id="results"></ul>
+  <div id="frames"></div>
+
+  <script>
+    var CASES = [
+      { name: 'restore', label: 'bewaarde positie 300, speler begint op 3 -> terug naar 300' },
+      { name: 'kept', label: 'bewaarde positie 300, speler staat op 295 -> niets doen' },
+      { name: 'other-video', label: 'bewaarde positie hoort bij een andere video -> niets doen' },
+      { name: 'reload', label: 'echte reloadPage-aanvraag -> bewaren, herladen, terug naar 300' }
+    ];
+
+    function record(name, ok, payload) {
+      var li = document.createElement('li');
+      li.className = ok ? 'ok' : 'err';
+      var mark = document.createElement('span');
+      mark.className = 'mark';
+      mark.textContent = ok ? '\u2713' : '\u2717';
+      var body = document.createElement('span');
+      body.textContent = name;
+      if (payload) {
+        var info = document.createElement('div');
+        info.className = 'info';
+        info.textContent = JSON.stringify(payload);
+        body.appendChild(info);
+      }
+      li.appendChild(mark);
+      li.appendChild(body);
+      document.getElementById('results').appendChild(li);
+    }
+
+    function runCase(name) {
+      return new Promise(function (resolve) {
+        // Resten van een vorige ronde (of van een handmatige test) mogen het
+        // scenario niet beïnvloeden: sessionStorage is per tab gedeeld.
+        try {
+          sessionStorage.removeItem('sc.resumePos');
+          sessionStorage.removeItem('sc.testPhase');
+        } catch (e) { /* ignore */ }
+        var frame = document.createElement('iframe');
+        var done = false;
+        function finish(d) {
+          if (done) return;
+          done = true;
+          window.removeEventListener('message', onMsg);
+          clearTimeout(timer);
+          frame.remove();
+          resolve(d);
+        }
+        function onMsg(ev) {
+          var d = ev.data;
+          if (!d || d.scResumeTest !== name) return;
+          finish(d);
+        }
+        var timer = setTimeout(function () {
+          finish({ scResumeTest: name, ok: false, payload: { error: 'timeout (geen resultaat binnen 25 s)' } });
+        }, 25000);
+        window.addEventListener('message', onMsg);
+        frame.src = 'check-resume-frame.html?case=' + name;
+        document.getElementById('frames').appendChild(frame);
+      });
+    }
+
+    (async function () {
+      for (var i = 0; i < CASES.length; i++) {
+        var c = CASES[i];
+        var d = await runCase(c.name);
+        record(c.name + ' - ' + c.label, !!(d && d.ok), d && d.payload);
+      }
+      var failed = document.querySelectorAll('#results li.err').length;
+      var total = document.querySelectorAll('#results li').length;
+      var summary = document.getElementById('summary');
+      summary.textContent = (total - failed) + ' / ' + total + ' geslaagd' + (failed ? ' - ' + failed + ' GEFAALD' : ' - alles goed');
+      summary.className = failed ? 'fail' : 'pass';
+      document.title = (failed ? 'FAIL ' : 'PASS ') + (total - failed) + '/' + total + ' - Subtitle Corrector resume-check';
+    })();
+  </script>
+</body>
+</html>
